@@ -1,11 +1,118 @@
-.page { max-width: 1000px; margin: 40px auto; padding: 0 20px; }
-.title { font-size: 24px; font-weight: 700; margin-bottom: 24px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
-.value { font-size: 28px; font-weight: 700; }
-.chart { margin-bottom: 24px; }
-.tableWrap { overflow-x: auto; }
-.table { width: 100%; border-collapse: collapse; font-size: 14px; }
-.table th { text-align: left; color: var(--muted); font-weight: 600; padding: 8px 12px; border-bottom: 1px solid #1e3048; }
-.table td { padding: 10px 12px; border-bottom: 1px solid #1a2535; }
-.mono { font-family: monospace; font-size: 13px; }
+.page {
+  max-width: 1000px;
+  margin: 40px auto;
+  padding: 0 20px;
+}
+.title {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 24px;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+.value {
+  font-size: 28px;
+  font-weight: 700;
+}
+.chart {
+  margin-bottom: 24px;
+}
+.tableWrap {
+  overflow-x: auto;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1e3048;
+}
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #1a2535;
+}
+.mono {
+  font-family: monospace;
+  font-size: 13px;
+}
+
+/* ── Register Meter Form ── */
+.formCard {
+  margin-bottom: 24px;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.formRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 180px;
+}
+
+.field label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.field input {
+  background: #0f1e2e;
+  border: 1px solid #1e3048;
+  border-radius: 6px;
+  color: #f0f4f8;
+  padding: 8px 12px;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.field input:focus {
+  border-color: #1a73e8;
+}
+
+.field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.feedbackOk {
+  font-size: 13px;
+  color: #4ade80;
+  word-break: break-all;
+}
+
+.feedbackErr {
+  font-size: 13px;
+  color: #f87171;
+}

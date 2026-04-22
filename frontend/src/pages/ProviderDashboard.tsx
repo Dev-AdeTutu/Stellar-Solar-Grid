@@ -1,3 +1,4 @@
+import { useState } from "react";
 import styles from "./ProviderDashboard.module.css";
 import {
   BarChart,
@@ -8,7 +9,15 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-const mockMeters = [
+type Meter = {
+  id: string;
+  owner: string;
+  active: boolean;
+  balance: number;
+  usage: number;
+};
+
+const initialMeters: Meter[] = [
   { id: "METER1", owner: "GABC…1234", active: true, balance: 4.5, usage: 12.3 },
   { id: "METER2", owner: "GDEF…5678", active: false, balance: 0, usage: 8.1 },
   { id: "METER3", owner: "GHIJ…9012", active: true, balance: 2.1, usage: 5.7 },
@@ -24,9 +33,56 @@ const revenueData = [
   { month: "Jun", xlm: 300 },
 ];
 
+const API = import.meta.env.VITE_API_URL ?? "http://localhost:3001";
+
 export default function ProviderDashboard() {
-  const activeCount = mockMeters.filter((m) => m.active).length;
+  const [meters, setMeters] = useState<Meter[]>(initialMeters);
+  const [meterId, setMeterId] = useState("");
+  const [ownerAddress, setOwnerAddress] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
+    null,
+  );
+
+  const activeCount = meters.filter((m) => m.active).length;
   const totalRevenue = revenueData.reduce((s, r) => s + r.xlm, 0);
+
+  async function handleRegister(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setFeedback(null);
+    try {
+      const res = await fetch(`${API}/api/meters`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          meter_id: meterId.trim(),
+          owner: ownerAddress.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Registration failed");
+
+      // Optimistically append the new meter to the table
+      setMeters((prev) => [
+        ...prev,
+        {
+          id: meterId.trim(),
+          owner: ownerAddress.trim(),
+          active: false,
+          balance: 0,
+          usage: 0,
+        },
+      ]);
+      setMeterId("");
+      setOwnerAddress("");
+      setFeedback({ ok: true, msg: `Meter registered. Tx: ${data.hash}` });
+    } catch (err: any) {
+      setFeedback({ ok: false, msg: err.message });
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <div className={styles.page}>
@@ -35,7 +91,7 @@ export default function ProviderDashboard() {
       <div className={styles.stats}>
         <div className="card">
           <p className={styles.label}>Total Meters</p>
-          <p className={styles.value}>{mockMeters.length}</p>
+          <p className={styles.value}>{meters.length}</p>
         </div>
         <div className="card">
           <p className={styles.label}>Active Meters</p>
@@ -45,6 +101,47 @@ export default function ProviderDashboard() {
           <p className={styles.label}>Total Revenue</p>
           <p className={styles.value}>{totalRevenue} XLM</p>
         </div>
+      </div>
+
+      {/* ── Register Meter Form ── */}
+      <div className={`card ${styles.formCard}`}>
+        <p className={styles.label}>Register New Meter</p>
+        <form className={styles.form} onSubmit={handleRegister}>
+          <div className={styles.formRow}>
+            <div className={styles.field}>
+              <label htmlFor="meterId">Meter ID</label>
+              <input
+                id="meterId"
+                type="text"
+                placeholder="e.g. METER5"
+                value={meterId}
+                onChange={(e) => setMeterId(e.target.value)}
+                required
+                disabled={submitting}
+              />
+            </div>
+            <div className={styles.field}>
+              <label htmlFor="ownerAddress">Owner Address</label>
+              <input
+                id="ownerAddress"
+                type="text"
+                placeholder="G…"
+                value={ownerAddress}
+                onChange={(e) => setOwnerAddress(e.target.value)}
+                required
+                disabled={submitting}
+              />
+            </div>
+            <button type="submit" className="btn-primary" disabled={submitting}>
+              {submitting ? "Registering…" : "Register Meter"}
+            </button>
+          </div>
+          {feedback && (
+            <p className={feedback.ok ? styles.feedbackOk : styles.feedbackErr}>
+              {feedback.msg}
+            </p>
+          )}
+        </form>
       </div>
 
       <div className={`card ${styles.chart}`}>
@@ -72,12 +169,14 @@ export default function ProviderDashboard() {
             </tr>
           </thead>
           <tbody>
-            {mockMeters.map((m) => (
+            {meters.map((m) => (
               <tr key={m.id}>
                 <td>{m.id}</td>
                 <td className={styles.mono}>{m.owner}</td>
                 <td>
-                  <span className={m.active ? "badge-active" : "badge-inactive"}>
+                  <span
+                    className={m.active ? "badge-active" : "badge-inactive"}
+                  >
                     {m.active ? "Active" : "Inactive"}
                   </span>
                 </td>
