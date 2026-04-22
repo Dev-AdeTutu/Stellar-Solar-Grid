@@ -1,7 +1,102 @@
-.page { max-width: 900px; margin: 40px auto; padding: 0 20px; }
-.title { font-size: 24px; font-weight: 700; margin-bottom: 24px; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
-.label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; }
-.value { font-size: 22px; font-weight: 700; }
-.chart { margin-top: 8px; }
-.empty { text-align: center; margin-top: 100px; color: var(--muted); font-size: 16px; }
+.page {
+  max-width: 900px;
+  margin: 40px auto;
+  padding: 0 20px;
+}
+.title {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 24px;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
+}
+.value {
+  font-size: 22px;
+  font-weight: 700;
+}
+.chart {
+  margin-top: 8px;
+}
+.empty {
+  text-align: center;
+  margin-top: 100px;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.status {
+  color: var(--muted);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.errorBox {
+  background: #2a1a1a;
+  border: 1px solid #7f1d1d;
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: #f87171;
+  font-size: 14px;
+}
+
+.notFound {
+  background: #0f1e2e;
+  border: 1px solid #1e3048;
+  border-radius: 8px;
+  padding: 24px;
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.notFound p {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.lookupForm {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.lookupForm input {
+  background: #0a1624;
+  border: 1px solid #1e3048;
+  border-radius: 6px;
+  color: #f0f4f8;
+  padding: 8px 14px;
+  font-size: 14px;
+  outline: none;
+  min-width: 200px;
+  transition: border-color 0.15s;
+}
+
+.lookupForm input:focus {
+  border-color: #1a73e8;
+}
+.lookupForm input:disabled {
+  opacity: 0.5;
+}
