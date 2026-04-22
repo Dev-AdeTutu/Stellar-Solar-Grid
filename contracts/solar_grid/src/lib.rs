@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -32,6 +32,7 @@ pub struct Meter {
 #[contracttype]
 pub enum DataKey {
     Meter(Symbol),
+    OwnerMeters(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -52,12 +53,12 @@ impl SolarGridContract {
     /// Register a new smart meter for an owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
-        let key = DataKey::Meter(meter_id);
+        let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
             panic!("meter already registered");
         }
         let meter = Meter {
-            owner,
+            owner: owner.clone(),
             active: false,
             balance: 0,
             units_used: 0,
@@ -65,6 +66,25 @@ impl SolarGridContract {
             last_payment: env.ledger().timestamp(),
         };
         env.storage().persistent().set(&key, &meter);
+
+        // Append meter_id to the owner's meter list
+        let owner_key = DataKey::OwnerMeters(owner);
+        let mut list: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(meter_id);
+        env.storage().persistent().set(&owner_key, &list);
+    }
+
+    /// Get all meter IDs registered under a given owner address.
+    pub fn get_meters_by_owner(env: Env, owner: Address) -> Vec<Symbol> {
+        let owner_key = DataKey::OwnerMeters(owner);
+        env.storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env])
     }
 
     /// Make a payment to top up a meter's balance and activate it.

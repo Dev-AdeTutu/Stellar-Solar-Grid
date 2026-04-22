@@ -41,11 +41,29 @@ export async function adminInvoke(
   tx = StellarSdk.SorobanRpc.assembleTransaction(tx, sim).build();
   tx.sign(adminKeypair);
 
-  const result = await server.sendTransaction(tx);
-  if (result.status === "ERROR") {
-    throw new Error(`Transaction failed: ${result.errorResult}`);
+  const sendResult = await server.sendTransaction(tx);
+  if (sendResult.status === "ERROR") {
+    throw new Error(`Transaction submission failed: ${sendResult.errorResult}`);
   }
-  return result.hash;
+
+  // Poll until SUCCESS or FAILED (fixes #30)
+  const hash = sendResult.hash;
+  const timeoutMs = Number(process.env.TX_TIMEOUT_MS ?? 30_000);
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1_500));
+    const status = await server.getTransaction(hash);
+    if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      return hash;
+    }
+    if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.FAILED) {
+      throw new Error(`Transaction ${hash} failed on-chain`);
+    }
+    // NOT_FOUND means still pending — keep polling
+  }
+
+  throw new Error(`Transaction ${hash} not confirmed within ${timeoutMs}ms`);
 }
 
 /** Read-only simulation. */
