@@ -141,19 +141,23 @@ mod tests {
     use super::*;
     use soroban_sdk::{symbol_short, testutils::Address as _, Env};
 
-    #[test]
-    fn test_register_and_pay() {
+    fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
         let env = Env::default();
         env.mock_all_auths();
-
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
-
         let admin = Address::generate(&env);
+        client.initialize(&admin);
+        (env, client, admin)
+    }
+
+    #[test]
+    fn test_register_and_pay() {
+        let (env, client, _admin) = setup();
+
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER1");
 
-        client.initialize(&admin);
         client.register_meter(&meter_id, &user);
 
         // Before payment — inactive
@@ -166,5 +170,126 @@ mod tests {
         // Simulate usage that drains balance
         client.update_usage(&meter_id, &100_u64, &5_000_000_i128);
         assert!(!client.check_access(&meter_id));
+    }
+
+    /// Registering the same meter_id twice should panic.
+    #[test]
+    #[should_panic(expected = "meter already registered")]
+    fn test_register_meter_duplicate_panics() {
+        let (env, client, _admin) = setup();
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METER2");
+
+        client.register_meter(&meter_id, &user);
+        // Second registration with the same id must panic
+        client.register_meter(&meter_id, &user);
+    }
+
+    /// make_payment with amount = 0 should panic.
+    #[test]
+    #[should_panic(expected = "amount must be positive")]
+    fn test_make_payment_zero_amount_panics() {
+        let (env, client, _admin) = setup();
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METER3");
+
+        client.register_meter(&meter_id, &user);
+        client.make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily);
+    }
+
+    /// make_payment with a negative amount should panic.
+    #[test]
+    #[should_panic(expected = "amount must be positive")]
+    fn test_make_payment_negative_amount_panics() {
+        let (env, client, _admin) = setup();
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METER4");
+
+        client.register_meter(&meter_id, &user);
+        client.make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily);
+    }
+
+    /// update_usage drains balance correctly and deactivates at zero.
+    #[test]
+    fn test_update_usage_balance_drains_correctly() {
+        let (env, client, _admin) = setup();
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METER5");
+
+        client.register_meter(&meter_id, &user);
+        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::UsageBased);
+
+        // Partial drain — meter stays active
+        client.update_usage(&meter_id, &50_u64, &4_000_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.balance, 6_000_000);
+        assert_eq!(meter.units_used, 50);
+        assert!(meter.active);
+
+        // Drain the rest — meter deactivates
+        client.update_usage(&meter_id, &60_u64, &6_000_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.balance, 0);
+        assert_eq!(meter.units_used, 110);
+        assert!(!meter.active);
+    }
+
+    /// set_active called by a non-admin should panic (auth not mocked for non-admin).
+    #[test]
+    #[should_panic]
+    fn test_set_active_non_admin_panics() {
+        let env = Env::default();
+        // Only mock auth for the non-admin user, not the contract admin
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+        let meter_id = symbol_short!("METER6");
+
+        // Initialize with real admin (mock all for setup only)
+        env.mock_all_auths();
+        client.initialize(&admin);
+        client.register_meter(&meter_id, &non_admin);
+        client.make_payment(&meter_id, &non_admin, &1_000_000_i128, &PaymentPlan::Daily);
+
+        // Stop mocking all auths — now only non_admin is authorized
+        // set_active requires admin auth, so this must panic
+        env.set_auths(&[soroban_sdk::auth::ContractContext {
+            contract: contract_id.clone(),
+            fn_name: soroban_sdk::symbol_short!("set_active"),
+            args: (meter_id.clone(), false).into_val(&env),
+        }
+        .into()]);
+        client.set_active(&meter_id, &false);
+    }
+
+    /// check_access returns false when balance is zero even if active flag is true.
+    #[test]
+    fn test_check_access_false_when_balance_zero() {
+        let (env, client, _admin) = setup();
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METER7");
+
+        client.register_meter(&meter_id, &user);
+
+        // Newly registered meter: active=false, balance=0
+        assert!(!client.check_access(&meter_id));
+
+        // Pay then fully drain
+        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Weekly);
+        assert!(client.check_access(&meter_id));
+
+        client.update_usage(&meter_id, &10_u64, &2_000_000_i128);
+        assert!(!client.check_access(&meter_id));
+
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.balance, 0);
+        assert!(!meter.active);
     }
 }
