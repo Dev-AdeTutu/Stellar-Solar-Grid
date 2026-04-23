@@ -510,12 +510,20 @@ mod tests {
     #[test]
     fn test_check_access_false_when_plan_expired() {
         let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _token_client) = setup_token(&env);
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER9");
 
         allowlist_and_register(&client, &meter_id, &user);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily);
+        token_admin_client.mint(&user, &2_000_000_i128);
+        client.make_payment(
+            &meter_id,
+            &token_address,
+            &user,
+            &2_000_000_i128,
+            &PaymentPlan::Daily,
+        );
         assert!(client.check_access(&meter_id));
 
         let meter = client.get_meter(&meter_id);
