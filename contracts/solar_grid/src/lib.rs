@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -33,6 +33,7 @@ pub struct Meter {
 #[contracttype]
 pub enum DataKey {
     Meter(Symbol),
+    OwnerMeters(Address),
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -62,28 +63,12 @@ impl SolarGridContract {
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
-
-        // Ensure the owner is on the admin-managed allowlist.
-        // Only addresses explicitly approved by the admin (expected to be
-        // G… user accounts) may be registered as meter owners.
-        let allowlist: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !allowlist.contains(&owner) {
-            panic!("owner not in allowlist");
-        }
-
-        // Owner must authorize their own registration.
-        owner.require_auth();
-
-        let key = DataKey::Meter(meter_id);
+        let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
             panic!("meter already registered");
         }
         let meter = Meter {
-            owner,
+            owner: owner.clone(),
             active: false,
             balance: 0,
             units_used: 0,
@@ -91,6 +76,25 @@ impl SolarGridContract {
             last_payment: env.ledger().timestamp(),
         };
         env.storage().persistent().set(&key, &meter);
+
+        // Append meter_id to the owner's meter list
+        let owner_key = DataKey::OwnerMeters(owner);
+        let mut list: Vec<Symbol> = env
+            .storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(meter_id);
+        env.storage().persistent().set(&owner_key, &list);
+    }
+
+    /// Get all meter IDs registered under a given owner address.
+    pub fn get_meters_by_owner(env: Env, owner: Address) -> Vec<Symbol> {
+        let owner_key = DataKey::OwnerMeters(owner);
+        env.storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env])
     }
 
     /// Add an address to the meter-owner allowlist.
