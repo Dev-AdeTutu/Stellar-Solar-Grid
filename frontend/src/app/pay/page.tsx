@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { useWalletStore } from "@/store/walletStore";
 import { makePayment } from "@/services/meterService";
@@ -164,11 +165,17 @@ export default function PayPage() {
                       href={`${EXPLORER_BASE}/${txHash}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-blue-400 underline underline-offset-2 font-mono text-xs hover:text-blue-300 transition"
+                      className="block text-blue-400 underline underline-offset-2 font-mono text-xs hover:text-blue-300 transition mb-2"
                     >
                       {txHash.slice(0, 10)}…{txHash.slice(-8)} ↗
                     </a>
                   )}
+                  <Link
+                    href="/dashboard/user"
+                    className="inline-block mt-1 text-xs text-green-300 underline underline-offset-2 hover:text-green-200 transition"
+                  >
+                    ← Back to My Meter
+                  </Link>
                 </div>
               )}
 
