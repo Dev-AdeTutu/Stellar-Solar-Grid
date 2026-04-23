@@ -80,13 +80,19 @@ impl SolarGridContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
-        let key = DataKey::Meter(meter_id);
+        let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         meter.balance += amount;
         meter.active = true;
-        meter.plan = plan;
+        meter.plan = plan.clone();
         meter.last_payment = env.ledger().timestamp();
         env.storage().persistent().set(&key, &meter);
+
+        // Emit event so payment history can be queried via Soroban RPC
+        env.events().publish(
+            (symbol_short!("payment"), meter_id, payer),
+            (amount, plan),
+        );
     }
 
     /// Check whether a meter currently has active energy access.

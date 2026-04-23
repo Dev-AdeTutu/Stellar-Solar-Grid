@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import { meterRouter } from "./routes/meters.js";
+import { paymentsRouter } from "./routes/payments.js";
 import { startIoTBridge } from "./iot/bridge.js";
 
 const app = express();
@@ -14,6 +15,7 @@ app.use((_, res, next) => {
 });
 
 app.use("/api/meters", meterRouter);
+app.use("/api/payments", paymentsRouter);
 
 app.get("/health", (_, res) => res.json({ status: "ok" }));
 

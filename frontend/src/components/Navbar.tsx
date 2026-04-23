@@ -24,6 +24,12 @@ export default function Navbar() {
         >
           Provider
         </Link>
+        <Link
+          href="/history"
+          className="text-sm text-gray-300 hover:text-white transition"
+        >
+          History
+        </Link>
 
         {address ? (
           <button
