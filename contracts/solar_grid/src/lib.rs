@@ -98,6 +98,12 @@ impl SolarGridContract {
             .unwrap_or_else(|| vec![&env]);
         list.push_back(meter_id);
         env.storage().persistent().set(&owner_key, &list);
+
+        // meter_registered
+        env.events().publish(
+            (symbol_short!("mtr_reg"), EVT_NS, meter_id),
+            owner,
+        );
     }
 
     /// Get all meter IDs registered under a given owner address.
@@ -648,5 +654,92 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
 
         client.withdraw_revenue(&token_address, &admin, &1_i128);
+    }
+
+    // ── Event emission tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_event_meter_registered() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("EV_REG");
+
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, _)| {
+            topics.len() >= 2
+                && topics.get(0) == Some(symbol_short!("mtr_reg").into())
+                && topics.get(1) == Some(EVT_NS.into())
+        });
+        assert!(found, "mtr_reg event not emitted");
+    }
+
+    #[test]
+    fn test_event_payment_received_and_meter_activated() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("EV_PMT");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_000_i128);
+        client.make_payment(&meter_id, &token_address, &user, &1_000_000_i128, &PaymentPlan::Daily);
+
+        let events = env.events().all();
+        let has_pmt = events.iter().any(|(_, topics, _)| {
+            topics.get(0) == Some(symbol_short!("pmt_rcvd").into())
+        });
+        let has_actv = events.iter().any(|(_, topics, _)| {
+            topics.get(0) == Some(symbol_short!("mtr_actv").into())
+        });
+        assert!(has_pmt, "pmt_rcvd event not emitted");
+        assert!(has_actv, "mtr_actv event not emitted");
+    }
+
+    #[test]
+    fn test_event_usage_updated_and_meter_deactivated() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("EV_USG");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &500_i128);
+        client.make_payment(&meter_id, &token_address, &user, &500_i128, &PaymentPlan::UsageBased);
+
+        // Drain balance fully — triggers both usg_upd and mtr_deact
+        client.update_usage(&meter_id, &10_u64, &500_i128);
+
+        let events = env.events().all();
+        let has_usg = events.iter().any(|(_, topics, _)| {
+            topics.get(0) == Some(symbol_short!("usg_upd").into())
+        });
+        let has_deact = events.iter().any(|(_, topics, _)| {
+            topics.get(0) == Some(symbol_short!("mtr_deact").into())
+        });
+        assert!(has_usg, "usg_upd event not emitted");
+        assert!(has_deact, "mtr_deact event not emitted on balance drain");
+    }
+
+    #[test]
+    fn test_event_meter_deactivated_via_set_active() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("EV_SET");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &token_address, &user, &1_000_i128, &PaymentPlan::Daily);
+
+        client.set_active(&meter_id, &false);
+
+        let events = env.events().all();
+        let has_deact = events.iter().any(|(_, topics, _)| {
+            topics.get(0) == Some(symbol_short!("mtr_deact").into())
+        });
+        assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
     }
 }
