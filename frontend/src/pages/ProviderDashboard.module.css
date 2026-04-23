@@ -116,3 +116,8 @@
   font-size: 13px;
   color: #f87171;
 }
+
+.fieldErr {
+  font-size: 11px;
+  color: #f87171;
+}

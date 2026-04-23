@@ -47,8 +47,20 @@ export default function ProviderDashboard() {
   const activeCount = meters.filter((m) => m.active).length;
   const totalRevenue = revenueData.reduce((s, r) => s + r.xlm, 0);
 
+  /** Stellar public keys: G + 55 base32 chars, 56 total */
+  function isValidStellarAddress(addr: string): boolean {
+    return /^G[A-Z2-7]{55}$/.test(addr);
+  }
+
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
+    if (!isValidStellarAddress(ownerAddress.trim())) {
+      setFeedback({
+        ok: false,
+        msg: "Invalid Stellar address. Must start with G and be 56 characters.",
+      });
+      return;
+    }
     setSubmitting(true);
     setFeedback(null);
     try {
@@ -130,7 +142,13 @@ export default function ProviderDashboard() {
                 onChange={(e) => setOwnerAddress(e.target.value)}
                 required
                 disabled={submitting}
+                aria-describedby="ownerAddressHint"
               />
+              {ownerAddress && !isValidStellarAddress(ownerAddress.trim()) && (
+                <span id="ownerAddressHint" className={styles.fieldErr}>
+                  Must be a valid Stellar address (G…, 56 chars)
+                </span>
+              )}
             </div>
             <button type="submit" className="btn-primary" disabled={submitting}>
               {submitting ? "Registering…" : "Register Meter"}
