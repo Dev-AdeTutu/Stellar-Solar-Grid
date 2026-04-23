@@ -36,7 +36,10 @@ pub enum DataKey {
     OwnerMeters(Address),
 }
 
-// ── Contract ──────────────────────────────────────────────────────────────────
+// ── Event topics (contract namespace) ────────────────────────────────────────
+
+const EVT_NS: Symbol = symbol_short!("solargrid");
+
 
 #[contract]
 pub struct SolarGridContract;
@@ -181,8 +184,54 @@ impl SolarGridContract {
             .unwrap_or(Vec::new(&env))
     }
 
+    /// Add an address to the meter-owner allowlist.
+    /// Only the admin may call this. Use this to pre-approve user accounts
+    /// (G… addresses) before they can be registered as meter owners.
+    pub fn allowlist_add(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let mut list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !list.contains(&owner) {
+            list.push_back(owner);
+            env.storage().instance().set(&ALLOWLIST, &list);
+        }
+    }
+
+    /// Remove an address from the meter-owner allowlist.
+    /// Only the admin may call this.
+    pub fn allowlist_remove(env: Env, owner: Address) {
+        Self::require_admin(&env);
+        let list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        let mut new_list: Vec<Address> = Vec::new(&env);
+        for addr in list.iter() {
+            if addr != owner {
+                new_list.push_back(addr);
+            }
+        }
+        env.storage().instance().set(&ALLOWLIST, &new_list);
+    }
+
+    /// Returns the current allowlist.
+    pub fn get_allowlist(env: Env) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env))
+    }
+
     /// Make a payment to top up a meter's balance and activate it.
     /// `amount` is in stroops. `plan` sets the billing cycle.
+    ///
+    /// Emits:
+    /// - `payment_received { meter_id, payer, amount, plan }`
+    /// - `meter_activated  { meter_id }` (always, since payment activates the meter)
     pub fn make_payment(
         env: Env,
         meter_id: Symbol,
@@ -202,10 +251,15 @@ impl SolarGridContract {
         meter.last_payment = env.ledger().timestamp();
         env.storage().persistent().set(&key, &meter);
 
-        // Emit event so payment history can be queried via Soroban RPC
+        // payment_received
         env.events().publish(
-            (symbol_short!("payment"), meter_id, payer),
-            (amount, plan),
+            (symbol_short!("pmt_rcvd"), EVT_NS, meter_id.clone()),
+            (payer, amount, plan),
+        );
+        // meter_activated — payment always activates the meter
+        env.events().publish(
+            (symbol_short!("mtr_actv"), EVT_NS, meter_id),
+            (),
         );
     }
 
@@ -218,17 +272,37 @@ impl SolarGridContract {
 
     /// Called by the IoT oracle to record energy consumption (milli-kWh).
     /// Deducts cost from balance; deactivates meter if balance runs out.
+    ///
+    /// Emits:
+    /// - `usage_updated    { meter_id, units, cost }`
+    /// - `meter_deactivated { meter_id }` (only when balance hits zero)
     pub fn update_usage(env: Env, meter_id: Symbol, units: u64, cost: i128) {
         Self::require_admin(&env);
-        let key = DataKey::Meter(meter_id);
+        let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         meter.units_used += units;
         meter.balance -= cost;
-        if meter.balance <= 0 {
+        let deactivated = if meter.balance <= 0 {
             meter.balance = 0;
             meter.active = false;
-        }
+            true
+        } else {
+            false
+        };
         env.storage().persistent().set(&key, &meter);
+
+        // usage_updated
+        env.events().publish(
+            (symbol_short!("usg_upd"), EVT_NS, meter_id.clone()),
+            (units, cost),
+        );
+        // meter_deactivated — only when balance drained to zero
+        if deactivated {
+            env.events().publish(
+                (symbol_short!("mtr_deact"), EVT_NS, meter_id),
+                (),
+            );
+        }
     }
 
     /// Get meter details.
@@ -238,12 +312,28 @@ impl SolarGridContract {
     }
 
     /// Admin can manually toggle meter access (e.g. maintenance).
+    ///
+    /// Emits:
+    /// - `meter_activated   { meter_id }` when toggled on
+    /// - `meter_deactivated { meter_id }` when toggled off
     pub fn set_active(env: Env, meter_id: Symbol, active: bool) {
         Self::require_admin(&env);
-        let key = DataKey::Meter(meter_id);
+        let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         meter.active = active;
         env.storage().persistent().set(&key, &meter);
+
+        if active {
+            env.events().publish(
+                (symbol_short!("mtr_actv"), EVT_NS, meter_id),
+                (),
+            );
+        } else {
+            env.events().publish(
+                (symbol_short!("mtr_deact"), EVT_NS, meter_id),
+                (),
+            );
+        }
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
