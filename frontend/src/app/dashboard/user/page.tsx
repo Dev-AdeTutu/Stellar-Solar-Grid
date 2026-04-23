@@ -93,10 +93,16 @@ export default function UserDashboardPage() {
     }
   }, [meterId]);
 
-  // Fetch on wallet connect / address change
+  // Clear stale data immediately when wallet disconnects, fetch when connected
   useEffect(() => {
+    if (!address) {
+      setMeter(null);
+      setError(null);
+      setLastRefresh(null);
+      return;
+    }
     fetchMeterData();
-  }, [fetchMeterData]);
+  }, [address, fetchMeterData]);
 
   return (
     <>
