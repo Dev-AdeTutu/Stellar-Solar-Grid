@@ -268,9 +268,10 @@ impl SolarGridContract {
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         meter.units_used += units;
-        meter.balance = meter.balance.saturating_sub(cost);
-        let deactivated = if meter.balance <= 0 {
-            meter.balance = 0;
+        // Clamp to 0: saturating_sub on i128 would bottom out at i128::MIN on
+        // underflow; .max(0) normalises any negative result to exactly 0.
+        meter.balance = meter.balance.saturating_sub(cost).max(0);
+        let deactivated = if meter.balance == 0 {
             meter.active = false;
             true
         } else {
@@ -654,6 +655,33 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
 
         client.withdraw_revenue(&token_address, &admin, &1_i128);
+    }
+
+    /// Exact-balance drain: cost == balance should deactivate the meter.
+    /// Regression test for the `<= 0` vs `== 0` edge case.
+    #[test]
+    fn test_update_usage_exact_balance_deactivates_meter() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("EXACT");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &5_000_000_i128);
+        client.make_payment(
+            &meter_id,
+            &token_address,
+            &user,
+            &5_000_000_i128,
+            &PaymentPlan::UsageBased,
+        );
+
+        // cost == balance exactly
+        client.update_usage(&meter_id, &1_u64, &5_000_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.balance, 0, "balance should be 0");
+        assert!(!meter.active, "meter should be deactivated when balance hits 0");
     }
 
     // ── Event emission tests ──────────────────────────────────────────────────
