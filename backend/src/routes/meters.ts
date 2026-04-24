@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke, contractQuery } from "../lib/stellar.js";
+import { activeMeters, paymentVolume } from "../lib/metrics.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const meterRouter = Router();
@@ -100,6 +101,63 @@ meterRouter.post(
       StellarSdk.nativeToScVal(BigInt(Math.trunc(units)), { type: "u64" }),
       StellarSdk.nativeToScVal(BigInt(Math.trunc(cost)), { type: "i128" }),
     ]);
+    // Decrement active meters gauge when cost drains balance (best-effort)
+    activeMeters.dec();
+    res.json({ hash });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+const TTL_MS = 24 * 60 * 60 * 1_000; // 24 hours
+const idempotencyCache = new Map<string, { hash: string; timestamp: number }>();
+
+/**
+ * POST /api/meters/:id/pay
+ *
+ * Body: { token_address, payer, amount_stroops, plan }
+ * Header: Idempotency-Key: <uuid>  (optional — duplicate within 24 h returns cached txHash)
+ */
+meterRouter.post("/:id/pay", async (req, res) => {
+  const ikey = req.headers["idempotency-key"] as string | undefined;
+
+  if (ikey) {
+    const cached = idempotencyCache.get(ikey);
+    if (cached && Date.now() - cached.timestamp < TTL_MS) {
+      return res.json({ hash: cached.hash });
+    }
+  }
+
+  const { token_address, payer, amount_stroops, plan } = req.body as {
+    token_address: string;
+    payer: string;
+    amount_stroops: number;
+    plan: string;
+  };
+
+  if (!token_address || !payer || amount_stroops == null || !plan) {
+    return res.status(400).json({ error: "token_address, payer, amount_stroops, and plan are required" });
+  }
+
+  try {
+    const hash = await adminInvoke("make_payment", [
+      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
+      StellarSdk.nativeToScVal(token_address, { type: "address" }),
+      StellarSdk.nativeToScVal(payer, { type: "address" }),
+      StellarSdk.nativeToScVal(BigInt(amount_stroops), { type: "i128" }),
+      StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol(plan)]),
+    ]);
+
+    if (ikey) {
+      // Evict expired entries lazily before inserting
+      for (const [k, v] of idempotencyCache) {
+        if (Date.now() - v.timestamp >= TTL_MS) idempotencyCache.delete(k);
+      }
+      idempotencyCache.set(ikey, { hash, timestamp: Date.now() });
+    }
+
+    paymentVolume.inc(amount_stroops / 10_000_000);
+    activeMeters.inc();
     res.json({ hash });
   }),
 );

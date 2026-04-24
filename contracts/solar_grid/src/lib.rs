@@ -420,6 +420,10 @@ impl SolarGridContract {
 
     /// Admin can manually toggle meter access (e.g. maintenance).
     ///
+    /// # Panics
+    /// - `"cannot activate meter with zero balance"` — enforces the PAYG invariant:
+    ///   a meter with no credit must never be activated.
+    ///
     /// Emits:
     /// - `meter_activated   { meter_id }` when toggled on
     /// - `meter_deactivated { meter_id }` when toggled off

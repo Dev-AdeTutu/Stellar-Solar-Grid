@@ -1,4 +1,5 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { contractCalls } from "./metrics.js";
 
 const NETWORK = process.env.STELLAR_NETWORK ?? "testnet";
 export const NETWORK_PASSPHRASE =
@@ -43,6 +44,7 @@ export async function adminInvoke(
 
   const sendResult = await server.sendTransaction(tx);
   if (sendResult.status === "ERROR") {
+    contractCalls.inc({ method, status: "error" });
     throw new Error(`Transaction submission failed: ${sendResult.errorResult}`);
   }
 
@@ -54,13 +56,16 @@ export async function adminInvoke(
     await new Promise((r) => setTimeout(r, 1_500));
     const status = await server.getTransaction(hash);
     if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      contractCalls.inc({ method, status: "success" });
       return hash;
     }
     if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.FAILED) {
+      contractCalls.inc({ method, status: "error" });
       throw new Error(`Transaction ${hash} failed on-chain`);
     }
   }
 
+  contractCalls.inc({ method, status: "timeout" });
   throw new Error(`Transaction ${hash} not confirmed within ${timeoutMs}ms`);
 }
 

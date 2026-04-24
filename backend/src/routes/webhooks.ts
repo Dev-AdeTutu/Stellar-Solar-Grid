@@ -2,6 +2,7 @@ import { Router } from "express";
 import * as crypto from "crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "../lib/stellar.js";
+import { activeMeters, paymentVolume } from "../lib/metrics.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const webhookRouter = Router();
@@ -73,6 +74,8 @@ webhookRouter.post(
       StellarSdk.nativeToScVal(stroops, { type: "i128" }),
       StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol("Daily")]),
     ]);
+    paymentVolume.inc(amount_xlm);
+    activeMeters.inc();
     return res.status(200).json({ hash });
   }),
 );
