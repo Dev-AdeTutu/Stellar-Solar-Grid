@@ -58,13 +58,25 @@ npm run dev
 
 The `SolarGrid` contract manages:
 
-| Function | Description |
-|---|---|
-| `register_meter(meter_id, owner)` | Register a new smart meter |
-| `make_payment(meter_id, amount, plan)` | Pay for energy access |
-| `check_access(meter_id)` | Check if meter is currently active |
-| `get_usage(meter_id)` | Retrieve usage data |
-| `update_usage(meter_id, units)` | Called by IoT oracle to update consumption |
+| Function                               | Description                                |
+| -------------------------------------- | ------------------------------------------ |
+| `register_meter(meter_id, owner)`      | Register a new smart meter                 |
+| `make_payment(meter_id, amount, plan)` | Pay for energy access                      |
+| `check_access(meter_id)`               | Check if meter is currently active         |
+| `get_usage(meter_id)`                  | Retrieve usage data                        |
+| `update_usage(meter_id, units)`        | Called by IoT oracle to update consumption |
+
+### Event Schema
+
+The contract emits Soroban events for off-chain indexing and backend automation:
+
+| Function       | Topic                   | Data                                |
+| -------------- | ----------------------- | ----------------------------------- |
+| `make_payment` | `("payment", meter_id)` | `(payer, amount, ledger_timestamp)` |
+| `update_usage` | `("usage", meter_id)`   | `(units, cost, meter_balance)`      |
+| `set_active`   | `("access", meter_id)`  | `active`                            |
+
+The backend event indexer subscribes to these contract events and stores parsed records for downstream processing.
 
 ## Network
 
