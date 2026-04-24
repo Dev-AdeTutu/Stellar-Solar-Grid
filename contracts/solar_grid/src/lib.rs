@@ -325,7 +325,7 @@ impl SolarGridContract {
         Self::require_admin(&env);
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
-        if active && meter.balance == 0 {
+        if active && meter.balance <= 0 {
             panic!("cannot activate meter with zero balance");
         }
         meter.active = active;
@@ -784,6 +784,30 @@ mod tests {
 
         allowlist_and_register(&client, &meter_id, &user);
         // Meter has balance=0 right after registration — activating must panic.
+        client.set_active(&meter_id, &true);
+    }
+
+    /// set_active(true) must panic when a meter was drained to zero balance.
+    #[test]
+    #[should_panic(expected = "cannot activate meter with zero balance")]
+    fn test_set_active_true_panics_after_balance_drained() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("ZERO_DRN");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(
+            &meter_id,
+            &token_address,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+        );
+        client.update_usage(&meter_id, &1_u64, &1_000_i128);
+        assert!(!client.check_access(&meter_id));
+
         client.set_active(&meter_id, &true);
     }
 
