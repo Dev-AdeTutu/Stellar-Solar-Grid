@@ -66,6 +66,28 @@ The `SolarGrid` contract manages:
 | `get_usage(meter_id)` | Retrieve usage data |
 | `update_usage(meter_id, units)` | Called by IoT oracle to update consumption |
 
+## Contract Upgrades
+
+The `Meter` struct carries a `version: u32` field (currently `1`). When the struct layout changes in a future release, existing persistent storage entries must be migrated before they can be read by the new code.
+
+### Migration flow
+
+1. Deploy the new contract WASM (the old entries remain in persistent storage).
+2. For each registered meter, call the admin-only `migrate_meter(meter_id)` function.  
+   It reads the entry as the previous schema (`LegacyMeter`) and writes it back as the current `Meter` v1.
+3. Once all entries are migrated, the `LegacyMeter` type and `migrate_meter_v0` helper can be removed in a subsequent release.
+
+```bash
+# Example: migrate a single meter via Stellar CLI
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --source <ADMIN_SECRET> \
+  --network testnet \
+  -- migrate_meter --meter_id METER1
+```
+
+> **Note:** `migrate_meter` is idempotent per entry — calling it on an already-migrated meter will overwrite with the same data. Always test migrations on testnet before mainnet.
+
 ## Network
 
 Deployed on Stellar Testnet. Switch to Mainnet for production.

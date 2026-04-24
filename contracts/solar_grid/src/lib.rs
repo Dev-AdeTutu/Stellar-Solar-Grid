@@ -63,7 +63,7 @@ pub struct LegacyMeter {
 }
 
 /// Migrate a v0 (legacy) meter entry to the current v1 schema.
-fn migrate_meter(old: LegacyMeter) -> Meter {
+fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
         version: 1,
         owner: old.owner,
@@ -466,6 +466,25 @@ impl SolarGridContract {
                 (),
             );
         }
+    }
+
+    /// Migrate a single meter entry from the v0 (LegacyMeter) schema to v1 (Meter).
+    /// Admin-only. Safe to call multiple times — skips entries already at v1.
+    ///
+    /// # Panics
+    /// - `ContractError::NotInitialized` — if contract is not initialized
+    /// - `"meter not found"` — if `meter_id` has no storage entry
+    pub fn migrate_meter(env: Env, meter_id: Symbol) {
+        Self::require_admin(&env);
+        let key = DataKey::Meter(meter_id.clone());
+        // Attempt to read as current Meter first; if it deserializes, already migrated.
+        let legacy: LegacyMeter = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("meter not found");
+        let migrated = migrate_meter_v0(legacy);
+        env.storage().persistent().set(&key, &migrated);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -1195,5 +1214,60 @@ mod tests {
 
         let result = client.try_batch_update_usage(&vec![&env, (meter_id.clone(), 1_u64, 100_i128)]);
         assert_eq!(result, Err(Ok(ContractError::OracleNotSet)));
+    }
+
+    // ── NotInitialized guard tests ────────────────────────────────────────────
+
+    /// Calling an admin function on an uninitialized contract returns NotInitialized.
+    #[test]
+    fn test_admin_fn_on_uninitialized_contract_returns_not_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let user = Address::generate(&env);
+        // Contract is not initialized — set_active should return NotInitialized
+        let result = client.try_set_active(&symbol_short!("UNINIT"), &true);
+        assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    // ── Migration tests ───────────────────────────────────────────────────────
+
+    /// Simulate a v0→v1 struct upgrade: write a LegacyMeter directly into storage,
+    /// call migrate_meter, then verify the entry reads back as a valid v1 Meter.
+    #[test]
+    fn test_migrate_meter_upgrades_legacy_entry() {
+        let (env, client, _admin) = setup();
+        let meter_id = symbol_short!("MIG_V0");
+        let owner = Address::generate(&env);
+
+        // Write a LegacyMeter (v0) directly into persistent storage, bypassing register_meter.
+        let legacy = LegacyMeter {
+            owner: owner.clone(),
+            active: true,
+            balance: 5_000_i128,
+            units_used: 42,
+            plan: PaymentPlan::UsageBased,
+            last_payment: 1_000,
+            expires_at: u64::MAX,
+        };
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Meter(meter_id.clone()), &legacy);
+        });
+
+        // Run the migration.
+        client.migrate_meter(&meter_id);
+
+        // The entry should now deserialize as a v1 Meter.
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.version, 1);
+        assert_eq!(meter.owner, owner);
+        assert!(meter.active);
+        assert_eq!(meter.units_used, 42);
+        assert_eq!(meter.plan, PaymentPlan::UsageBased);
+        assert_eq!(meter.last_payment, 1_000);
+        assert_eq!(meter.expires_at, u64::MAX);
     }
 }
