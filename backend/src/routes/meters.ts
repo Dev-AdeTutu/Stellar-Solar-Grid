@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke, contractQuery } from "../lib/stellar.js";
+import { activeMeters, paymentVolume } from "../lib/metrics.js";
 
 export const meterRouter = Router();
 
@@ -69,6 +70,8 @@ meterRouter.post("/:id/usage", async (req, res) => {
       StellarSdk.nativeToScVal(BigInt(units), { type: "u64" }),
       StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
     ]);
+    // Decrement active meters gauge when cost drains balance (best-effort)
+    activeMeters.dec();
     res.json({ hash });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

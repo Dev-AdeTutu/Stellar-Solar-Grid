@@ -5,6 +5,7 @@ import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
+import { register } from "./lib/metrics.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -33,6 +34,11 @@ app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
 
 app.get("/health", (_, res) => res.json({ status: "ok" }));
+
+app.get("/metrics", async (_req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
+});
 
 app.listen(PORT, () => {
   logger.info(`SolarGrid backend running on port ${PORT}`);

@@ -9,6 +9,7 @@
 import mqtt from "mqtt";
 import { adminInvoke } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
+import { mqttMessages } from "../lib/metrics.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
@@ -25,6 +26,7 @@ export function startIoTBridge() {
   });
 
   client.on("message", async (topic, payload) => {
+    mqttMessages.inc();
     try {
       const parts = topic.split("/");
       const meterId = parts[2];
