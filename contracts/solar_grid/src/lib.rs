@@ -872,6 +872,25 @@ mod tests {
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
     }
 
+    /// register 3 meters for the same owner — get_meters_by_owner returns all 3.
+    #[test]
+    fn test_get_meters_by_owner_returns_all() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let ids = [symbol_short!("OWN_A"), symbol_short!("OWN_B"), symbol_short!("OWN_C")];
+
+        client.allowlist_add(&user);
+        for id in &ids {
+            client.register_meter(id, &user);
+        }
+
+        let meters = client.get_meters_by_owner(&user);
+        assert_eq!(meters.len(), 3);
+        for id in &ids {
+            assert!(meters.contains(id));
+        }
+    }
+
     #[test]
     fn test_event_meter_activated_via_set_active() {
         let (env, client, _admin) = setup();
