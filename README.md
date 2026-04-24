@@ -38,6 +38,12 @@ cargo build --target wasm32-unknown-unknown --release
 stellar contract deploy --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm --network testnet
 ```
 
+### Initialization Security Note
+
+The contract `initialize(admin)` entrypoint is single-use. To prevent front-running,
+the deployer must call `initialize` in the same transaction flow as deployment.
+Do not deploy and delay initialization in separate user-triggered transactions.
+
 ### Frontend
 
 ```bash
@@ -58,13 +64,13 @@ npm run dev
 
 The `SolarGrid` contract manages:
 
-| Function | Description |
-|---|---|
-| `register_meter(meter_id, owner)` | Register a new smart meter |
-| `make_payment(meter_id, amount, plan)` | Pay for energy access |
-| `check_access(meter_id)` | Check if meter is currently active |
-| `get_usage(meter_id)` | Retrieve usage data |
-| `update_usage(meter_id, units)` | Called by IoT oracle to update consumption |
+| Function                               | Description                                |
+| -------------------------------------- | ------------------------------------------ |
+| `register_meter(meter_id, owner)`      | Register a new smart meter                 |
+| `make_payment(meter_id, amount, plan)` | Pay for energy access                      |
+| `check_access(meter_id)`               | Check if meter is currently active         |
+| `get_usage(meter_id)`                  | Retrieve usage data                        |
+| `update_usage(meter_id, units)`        | Called by IoT oracle to update consumption |
 
 ## Network
 

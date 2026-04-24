@@ -51,6 +51,11 @@ pub struct SolarGridContract;
 #[contractimpl]
 impl SolarGridContract {
     /// Initialize the contract with an admin address.
+    ///
+    /// SECURITY WARNING:
+    /// This function is permissionless on first call by design. Deployments must
+    /// invoke `initialize` in the same transaction as contract deployment to
+    /// prevent mempool front-running from a competing initializer.
     pub fn initialize(env: Env, admin: Address) {
         admin.require_auth();
         if env.storage().instance().has(&ADMIN) {
@@ -391,6 +396,14 @@ mod tests {
         let token_admin_client = token::StellarAssetClient::new(env, &token_address);
         let token_client = token::Client::new(env, &token_address);
         (token_address, token_admin_client, token_client)
+    }
+
+    #[test]
+    #[should_panic(expected = "already initialized")]
+    fn test_initialize_second_call_panics() {
+        let (env, client, _admin) = setup();
+        let another_admin = Address::generate(&env);
+        client.initialize(&another_admin);
     }
 
     #[test]
