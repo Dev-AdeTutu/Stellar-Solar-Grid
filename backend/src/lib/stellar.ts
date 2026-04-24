@@ -14,14 +14,14 @@ export const RPC_URL =
 export const CONTRACT_ID = process.env.CONTRACT_ID!;
 export const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
 
+// Load keypair once at module init. The raw secret string is never referenced again.
+const adminKeypair = StellarSdk.Keypair.fromSecret(process.env.ADMIN_SECRET_KEY!);
+
 /** Submit a signed contract invocation from the admin keypair. */
 export async function adminInvoke(
   method: string,
   args: StellarSdk.xdr.ScVal[]
 ): Promise<string> {
-  const adminKeypair = StellarSdk.Keypair.fromSecret(
-    process.env.ADMIN_SECRET_KEY!
-  );
   const account = await server.getAccount(adminKeypair.publicKey());
   const contract = new StellarSdk.Contract(CONTRACT_ID);
 
@@ -46,7 +46,6 @@ export async function adminInvoke(
     throw new Error(`Transaction submission failed: ${sendResult.errorResult}`);
   }
 
-  // Poll until SUCCESS or FAILED (fixes #30)
   const hash = sendResult.hash;
   const timeoutMs = Number(process.env.TX_TIMEOUT_MS ?? 30_000);
   const deadline = Date.now() + timeoutMs;
@@ -60,7 +59,6 @@ export async function adminInvoke(
     if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.FAILED) {
       throw new Error(`Transaction ${hash} failed on-chain`);
     }
-    // NOT_FOUND means still pending — keep polling
   }
 
   throw new Error(`Transaction ${hash} not confirmed within ${timeoutMs}ms`);
@@ -71,9 +69,6 @@ export async function contractQuery(
   method: string,
   args: StellarSdk.xdr.ScVal[]
 ): Promise<StellarSdk.xdr.ScVal> {
-  const adminKeypair = StellarSdk.Keypair.fromSecret(
-    process.env.ADMIN_SECRET_KEY!
-  );
   const account = await server.getAccount(adminKeypair.publicKey());
   const contract = new StellarSdk.Contract(CONTRACT_ID);
 

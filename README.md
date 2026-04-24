@@ -70,6 +70,13 @@ The `SolarGrid` contract manages:
 
 Deployed on Stellar Testnet. Switch to Mainnet for production.
 
+## Deployment Security
+
+- **Never commit `.env` files.** Copy `.env.example` to `.env` and populate locally.
+- `ADMIN_SECRET_KEY` is loaded once at backend startup into a `Keypair` object; the raw secret string is not referenced anywhere after module initialisation.
+- All error handlers log only `err.message` — raw error objects (which may contain XDR or serialised environment variables) are never logged.
+- Enable secret scanning in CI (e.g. `git-secrets`, GitHub secret scanning) to prevent accidental key commits.
+
 ## License
 
 MIT

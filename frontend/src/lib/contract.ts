@@ -83,3 +83,31 @@ export async function contractInvoke(
   }
   return result.hash;
 }
+
+/** Return all meter IDs registered under the given owner address. */
+export async function fetchMetersByOwner(ownerAddress: string): Promise<string[]> {
+  const contract = new StellarSdk.Contract(CONTRACT_ID);
+  const keypair = StellarSdk.Keypair.random();
+  const account = new StellarSdk.Account(keypair.publicKey(), "0");
+
+  const tx = new StellarSdk.TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        "get_meters_by_owner",
+        StellarSdk.nativeToScVal(ownerAddress, { type: "address" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {
+    throw new Error(sim.error);
+  }
+  const retval = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  if (!retval) return [];
+  return StellarSdk.scValToNative(retval) as string[];
+}
