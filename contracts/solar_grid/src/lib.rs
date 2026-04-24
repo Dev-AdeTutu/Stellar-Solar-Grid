@@ -316,6 +316,55 @@ impl SolarGridContract {
         }
     }
 
+    /// Batch update usage for multiple meters in a single transaction.
+    /// Invalid meter IDs are skipped and logged via a `batch_skip` event.
+    ///
+    /// Emits per processed meter:
+    /// - `usg_upd  { meter_id, units, cost }`
+    /// - `mtr_deact { meter_id }` (when balance hits zero)
+    ///
+    /// Emits per skipped meter:
+    /// - `batch_skip { meter_id }`
+    pub fn batch_update_usage(env: Env, updates: Vec<(Symbol, u64, i128)>) {
+        Self::require_admin(&env);
+        for (meter_id, units, cost) in updates.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            let meter_opt: Option<Meter> = env.storage().persistent().get(&key);
+            let mut meter = match meter_opt {
+                Some(m) => m,
+                None => {
+                    env.events().publish(
+                        (symbol_short!("btch_skip"), EVT_NS, meter_id.clone()),
+                        (),
+                    );
+                    continue;
+                }
+            };
+            let bal_key = DataKey::MeterBalance(meter_id.clone());
+            let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+            let new_balance = balance.checked_sub(cost).unwrap_or(0).max(0);
+            env.storage().persistent().set(&bal_key, &new_balance);
+            meter.units_used += units;
+            let deactivated = if new_balance == 0 {
+                meter.active = false;
+                true
+            } else {
+                false
+            };
+            env.storage().persistent().set(&key, &meter);
+            env.events().publish(
+                (symbol_short!("usg_upd"), EVT_NS, meter_id.clone()),
+                (units, cost),
+            );
+            if deactivated {
+                env.events().publish(
+                    (symbol_short!("mtr_deact"), EVT_NS, meter_id),
+                    (),
+                );
+            }
+        }
+    }
+
     /// Get the on-chain token balance held by this contract for a specific meter.
     pub fn get_meter_balance(env: Env, meter_id: Symbol) -> i128 {
         let bal_key = DataKey::MeterBalance(meter_id);
@@ -553,7 +602,6 @@ mod tests {
     }
 
     /// Daily plans should auto-expire after 24 hours even with remaining balance.
-    #[test]
     #[test]
     fn test_check_access_false_when_plan_expired() {
         let (env, client, _admin, token_address) = setup_with_token();
@@ -850,5 +898,131 @@ mod tests {
                 && topics.get(1).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
         });
         assert!(has_actv, "mtr_actv event not emitted by set_active(true)");
+    }
+
+    // ── batch_update_usage tests ──────────────────────────────────────────────
+
+    fn register_and_fund(
+        env: &Env,
+        client: &SolarGridContractClient,
+        token_address: &Address,
+        meter_id: &Symbol,
+        amount: i128,
+    ) {
+        let user = Address::generate(env);
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        allowlist_and_register(client, meter_id, &user);
+        token_admin_client.mint(&user, &amount);
+        client.make_payment(meter_id, &user, &amount, &PaymentPlan::UsageBased);
+    }
+
+    #[test]
+    fn test_batch_update_usage_single() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let m1 = symbol_short!("B1_M1");
+        register_and_fund(&env, &client, &token_address, &m1, 10_000_i128);
+
+        client.batch_update_usage(&vec![&env, (m1.clone(), 10_u64, 3_000_i128)]);
+
+        assert_eq!(client.get_meter_balance(&m1), 7_000);
+        assert_eq!(client.get_meter(&m1).units_used, 10);
+        assert!(client.get_meter(&m1).active);
+    }
+
+    #[test]
+    fn test_batch_update_usage_five_meters() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let ids = [
+            symbol_short!("B5_M1"),
+            symbol_short!("B5_M2"),
+            symbol_short!("B5_M3"),
+            symbol_short!("B5_M4"),
+            symbol_short!("B5_M5"),
+        ];
+        for id in ids.iter() {
+            register_and_fund(&env, &client, &token_address, id, 10_000_i128);
+        }
+
+        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        for id in ids.iter() {
+            updates.push_back((id.clone(), 5_u64, 1_000_i128));
+        }
+        client.batch_update_usage(&updates);
+
+        for id in ids.iter() {
+            assert_eq!(client.get_meter_balance(id), 9_000);
+            assert_eq!(client.get_meter(id).units_used, 5);
+        }
+    }
+
+    #[test]
+    fn test_batch_update_usage_twenty_meters() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let ids = [
+            symbol_short!("B20M1"),  symbol_short!("B20M2"),  symbol_short!("B20M3"),
+            symbol_short!("B20M4"),  symbol_short!("B20M5"),  symbol_short!("B20M6"),
+            symbol_short!("B20M7"),  symbol_short!("B20M8"),  symbol_short!("B20M9"),
+            symbol_short!("B20MA"),  symbol_short!("B20MB"),  symbol_short!("B20MC"),
+            symbol_short!("B20MD"),  symbol_short!("B20ME"),  symbol_short!("B20MF"),
+            symbol_short!("B20MG"),  symbol_short!("B20MH"),  symbol_short!("B20MI"),
+            symbol_short!("B20MJ"),  symbol_short!("B20MK"),
+        ];
+        for id in ids.iter() {
+            register_and_fund(&env, &client, &token_address, id, 5_000_i128);
+        }
+
+        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        for id in ids.iter() {
+            updates.push_back((id.clone(), 2_u64, 500_i128));
+        }
+        client.batch_update_usage(&updates);
+
+        for id in ids.iter() {
+            assert_eq!(client.get_meter_balance(id), 4_500);
+            assert_eq!(client.get_meter(id).units_used, 2);
+        }
+    }
+
+    #[test]
+    fn test_batch_update_usage_drains_and_deactivates() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let m1 = symbol_short!("BD_M1");
+        let m2 = symbol_short!("BD_M2");
+        register_and_fund(&env, &client, &token_address, &m1, 1_000_i128);
+        register_and_fund(&env, &client, &token_address, &m2, 5_000_i128);
+
+        client.batch_update_usage(&vec![
+            &env,
+            (m1.clone(), 1_u64, 1_000_i128),
+            (m2.clone(), 1_u64, 500_i128),
+        ]);
+
+        assert_eq!(client.get_meter_balance(&m1), 0);
+        assert!(!client.get_meter(&m1).active);
+        assert_eq!(client.get_meter_balance(&m2), 4_500);
+        assert!(client.get_meter(&m2).active);
+    }
+
+    #[test]
+    fn test_batch_update_usage_skips_invalid_meter() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let valid = symbol_short!("BS_V1");
+        let invalid = symbol_short!("BS_BAD");
+        register_and_fund(&env, &client, &token_address, &valid, 5_000_i128);
+
+        client.batch_update_usage(&vec![
+            &env,
+            (invalid.clone(), 1_u64, 100_i128),
+            (valid.clone(), 2_u64, 200_i128),
+        ]);
+
+        assert_eq!(client.get_meter_balance(&valid), 4_800);
+        assert_eq!(client.get_meter(&valid).units_used, 2);
+
+        let events = env.events().all();
+        let skipped = events.iter().any(|(_, topics, _)| {
+            topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("btch_skip"))).unwrap_or(false)
+        });
+        assert!(skipped, "batch_skip event not emitted for invalid meter");
     }
 }
