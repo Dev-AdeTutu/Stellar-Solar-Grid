@@ -24,6 +24,9 @@ pub enum PaymentPlan {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Meter {
+    /// Schema version — increment when fields are added/changed.
+    /// v1: initial layout (owner, active, balance, units_used, plan, last_payment, expires_at)
+    pub version: u32,
     pub owner: Address,
     pub active: bool,
     pub balance: i128,      // token's smallest unit (e.g., stroops for token with 7 decimals)
@@ -31,6 +34,34 @@ pub struct Meter {
     pub plan: PaymentPlan,
     pub last_payment: u64,   // ledger timestamp
     pub expires_at: u64,     // ledger timestamp when access expires
+}
+
+/// v0 layout — kept for migration purposes only.
+/// Remove once all persistent entries have been migrated to v1.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeter {
+    pub owner: Address,
+    pub active: bool,
+    pub balance: i128,
+    pub units_used: u64,
+    pub plan: PaymentPlan,
+    pub last_payment: u64,
+    pub expires_at: u64,
+}
+
+/// Migrate a v0 (legacy) meter entry to the current v1 schema.
+fn migrate_meter(old: LegacyMeter) -> Meter {
+    Meter {
+        version: 1,
+        owner: old.owner,
+        active: old.active,
+        balance: old.balance,
+        units_used: old.units_used,
+        plan: old.plan,
+        last_payment: old.last_payment,
+        expires_at: old.expires_at,
+    }
 }
 
 #[contracttype]
@@ -80,6 +111,7 @@ impl SolarGridContract {
             panic!("meter already registered");
         }
         let meter = Meter {
+            version: 1,
             owner: owner.clone(),
             active: false,
             balance: 0,
@@ -870,6 +902,17 @@ mod tests {
             topics.get(0) == Some(symbol_short!("mtr_deact").into())
         });
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
+    }
+
+    /// Newly registered meters carry version = 1.
+    #[test]
+    fn test_meter_version_is_one() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("V1_MTR");
+        allowlist_and_register(&client, &meter_id, &user);
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.version, 1, "Meter version should be 1");
     }
 
     #[test]
