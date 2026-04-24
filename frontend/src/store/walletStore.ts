@@ -36,6 +36,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         onWalletSelected: async (option) => {
           kit.setWallet(option.id);
           const { address } = await kit.getAddress();
+          if (!address || address.length < 10) throw new Error("No account found in Freighter");
           set({ address, kit });
         },
       });
