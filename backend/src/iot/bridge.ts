@@ -42,8 +42,8 @@ export function startIoTBridge() {
       ]);
 
       console.log(`✅ Usage recorded on-chain: ${hash}`);
-    } catch (err) {
-      console.error("IoT bridge error:", err);
+    } catch (err: unknown) {
+      console.error("IoT bridge error:", err instanceof Error ? err.message : String(err));
     }
   });
 
