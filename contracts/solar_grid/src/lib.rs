@@ -52,6 +52,7 @@ pub struct SolarGridContract;
 impl SolarGridContract {
     /// Initialize the contract with an admin address.
     pub fn initialize(env: Env, admin: Address) {
+        admin.require_auth();
         if env.storage().instance().has(&ADMIN) {
             panic!("already initialized");
         }
@@ -181,6 +182,10 @@ impl SolarGridContract {
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         let now = env.ledger().timestamp();
+        // Exhaustive match guard: compile error if a new variant is added without handling it.
+        match plan {
+            PaymentPlan::Daily | PaymentPlan::Weekly | PaymentPlan::UsageBased => {}
+        }
         let expires_at = match plan {
             PaymentPlan::Daily => now.saturating_add(SECONDS_PER_DAY),
             PaymentPlan::Weekly => now.saturating_add(SECONDS_PER_WEEK),
@@ -308,6 +313,9 @@ impl SolarGridContract {
         Self::require_admin(&env);
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
+        if active && meter.balance == 0 {
+            panic!("cannot activate meter with zero balance");
+        }
         meter.active = active;
         env.storage().persistent().set(&key, &meter);
 
@@ -686,6 +694,19 @@ mod tests {
 
     // ── Event emission tests ──────────────────────────────────────────────────
 
+    /// set_active(true) must panic when the meter has zero balance (#86).
+    #[test]
+    #[should_panic(expected = "cannot activate meter with zero balance")]
+    fn test_set_active_true_panics_when_balance_zero() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("ZERO_BAL");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        // Meter has balance=0 right after registration — activating must panic.
+        client.set_active(&meter_id, &true);
+    }
+
     #[test]
     fn test_event_meter_registered() {
         let (env, client, _admin) = setup();
@@ -769,5 +790,28 @@ mod tests {
             topics.get(0) == Some(symbol_short!("mtr_deact").into())
         });
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
+    }
+
+    #[test]
+    fn test_event_meter_activated_via_set_active() {
+        let (env, client, _admin) = setup();
+        let (token_address, token_admin_client, _) = setup_token(&env);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("EV_ON");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &token_address, &user, &1_000_i128, &PaymentPlan::Daily);
+        // Deactivate first so we can re-activate
+        client.set_active(&meter_id, &false);
+
+        client.set_active(&meter_id, &true);
+
+        let events = env.events().all();
+        let has_actv = events.iter().any(|(_, topics, _)| {
+            topics.get(0) == Some(symbol_short!("mtr_actv").into())
+                && topics.get(1) == Some(EVT_NS.into())
+        });
+        assert!(has_actv, "mtr_actv event not emitted by set_active(true)");
     }
 }
