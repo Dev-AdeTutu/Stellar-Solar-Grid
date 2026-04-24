@@ -91,13 +91,13 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         // Append meter_id to the owner's meter list
-        let owner_key = DataKey::OwnerMeters(owner);
+        let owner_key = DataKey::OwnerMeters(owner.clone());
         let mut list: Vec<Symbol> = env
             .storage()
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env]);
-        list.push_back(meter_id);
+        list.push_back(meter_id.clone());
         env.storage().persistent().set(&owner_key, &list);
 
         // meter_registered
@@ -162,8 +162,7 @@ impl SolarGridContract {
     /// `amount` is in the token's smallest unit. `plan` sets the billing cycle.
     ///
     /// Emits:
-    /// - `payment_received { meter_id, payer, amount, plan }`
-    /// - `meter_activated  { meter_id }` (always, since payment activates the meter)
+    /// - topic: (`payment`, meter_id), data: (payer, amount, timestamp)
     pub fn make_payment(
         env: Env,
         meter_id: Symbol,
@@ -206,15 +205,10 @@ impl SolarGridContract {
             .persistent()
             .set(&provider_key, &(provider_revenue + amount));
 
-        // payment_received
+        // Emit canonical payment event for off-chain indexers.
         env.events().publish(
-            (symbol_short!("pmt_rcvd"), EVT_NS, meter_id.clone()),
-            (payer, token_address, amount, plan),
-        );
-        // meter_activated — payment always activates the meter
-        env.events().publish(
-            (symbol_short!("mtr_actv"), EVT_NS, meter_id),
-            (),
+            (symbol_short!("payment"), meter_id),
+            (payer, amount, now),
         );
     }
 
@@ -280,34 +274,23 @@ impl SolarGridContract {
     /// Deducts cost from balance; deactivates meter if balance runs out.
     ///
     /// Emits:
-    /// - `usage_updated    { meter_id, units, cost }`
-    /// - `meter_deactivated { meter_id }` (only when balance hits zero)
+    /// - topic: (`usage`, meter_id), data: (units, cost, meter_balance)
     pub fn update_usage(env: Env, meter_id: Symbol, units: u64, cost: i128) {
         Self::require_admin(&env);
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
         meter.units_used += units;
         meter.balance = meter.balance.checked_sub(cost).unwrap_or(0).max(0);
-        let deactivated = if meter.balance == 0 {
+        if meter.balance == 0 {
             meter.active = false;
-            true
-        } else {
-            false
-        };
+        }
         env.storage().persistent().set(&key, &meter);
 
-        // usage_updated
+        // Emit canonical usage event for off-chain indexers.
         env.events().publish(
-            (symbol_short!("usg_upd"), EVT_NS, meter_id.clone()),
-            (units, cost),
+            (symbol_short!("usage"), meter_id),
+            (units, cost, meter.balance),
         );
-        // meter_deactivated — only when balance drained to zero
-        if deactivated {
-            env.events().publish(
-                (symbol_short!("mtr_deact"), EVT_NS, meter_id),
-                (),
-            );
-        }
     }
 
     /// Get meter details.
@@ -319,8 +302,7 @@ impl SolarGridContract {
     /// Admin can manually toggle meter access (e.g. maintenance).
     ///
     /// Emits:
-    /// - `meter_activated   { meter_id }` when toggled on
-    /// - `meter_deactivated { meter_id }` when toggled off
+    /// - topic: (`access`, meter_id), data: active
     pub fn set_active(env: Env, meter_id: Symbol, active: bool) {
         Self::require_admin(&env);
         let key = DataKey::Meter(meter_id.clone());
@@ -331,17 +313,8 @@ impl SolarGridContract {
         meter.active = active;
         env.storage().persistent().set(&key, &meter);
 
-        if active {
-            env.events().publish(
-                (symbol_short!("mtr_actv"), EVT_NS, meter_id),
-                (),
-            );
-        } else {
-            env.events().publish(
-                (symbol_short!("mtr_deact"), EVT_NS, meter_id),
-                (),
-            );
-        }
+        // Emit access state transition for off-chain indexers.
+        env.events().publish((symbol_short!("access"), meter_id), active);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -358,8 +331,9 @@ impl SolarGridContract {
 mod tests {
     use super::*;
     use soroban_sdk::{
+        TryFromVal,
         symbol_short,
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Events, Ledger},
         token, Address, Env,
     };
 
@@ -798,37 +772,53 @@ mod tests {
 
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, _)| {
-            topics.len() >= 2
-                && topics.get(0) == Some(symbol_short!("mtr_reg").into())
-                && topics.get(1) == Some(EVT_NS.into())
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0 = topics
+                .get(0)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let topic1 = topics
+                .get(1)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            topic0 == Some(symbol_short!("mtr_reg")) && topic1 == Some(EVT_NS)
         });
         assert!(found, "mtr_reg event not emitted");
     }
 
     #[test]
-    fn test_event_payment_received_and_meter_activated() {
+    fn test_event_payment_emits_expected_schema() {
         let (env, client, _admin) = setup();
         let (token_address, token_admin_client, _) = setup_token(&env);
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EV_PMT");
 
         allowlist_and_register(&client, &meter_id, &user);
+        let expected_ts = env.ledger().timestamp();
         token_admin_client.mint(&user, &1_000_000_i128);
         client.make_payment(&meter_id, &token_address, &user, &1_000_000_i128, &PaymentPlan::Daily);
 
         let events = env.events().all();
-        let has_pmt = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("pmt_rcvd").into())
+        let has_pmt = events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0 = topics
+                .get(0)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let topic1 = topics
+                .get(1)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let parsed_data = <(Address, i128, u64)>::try_from_val(&env, &data).ok();
+            topic0 == Some(symbol_short!("payment"))
+                && topic1 == Some(meter_id.clone())
+                && parsed_data == Some((user.clone(), 1_000_000_i128, expected_ts))
         });
-        let has_actv = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_actv").into())
-        });
-        assert!(has_pmt, "pmt_rcvd event not emitted");
-        assert!(has_actv, "mtr_actv event not emitted");
+        assert!(has_pmt, "payment event with expected schema not emitted");
     }
 
     #[test]
-    fn test_event_usage_updated_and_meter_deactivated() {
+    fn test_event_usage_emits_expected_schema() {
         let (env, client, _admin) = setup();
         let (token_address, token_admin_client, _) = setup_token(&env);
         let user = Address::generate(&env);
@@ -842,18 +832,26 @@ mod tests {
         client.update_usage(&meter_id, &10_u64, &500_i128);
 
         let events = env.events().all();
-        let has_usg = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("usg_upd").into())
+        let has_usg = events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0 = topics
+                .get(0)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let topic1 = topics
+                .get(1)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let parsed_data = <(u64, i128, i128)>::try_from_val(&env, &data).ok();
+            topic0 == Some(symbol_short!("usage"))
+                && topic1 == Some(meter_id.clone())
+                && parsed_data == Some((10_u64, 500_i128, 0_i128))
         });
-        let has_deact = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_deact").into())
-        });
-        assert!(has_usg, "usg_upd event not emitted");
-        assert!(has_deact, "mtr_deact event not emitted on balance drain");
+        assert!(has_usg, "usage event with expected schema not emitted");
     }
 
     #[test]
-    fn test_event_meter_deactivated_via_set_active() {
+    fn test_event_access_false_via_set_active() {
         let (env, client, _admin) = setup();
         let (token_address, token_admin_client, _) = setup_token(&env);
         let user = Address::generate(&env);
@@ -866,14 +864,26 @@ mod tests {
         client.set_active(&meter_id, &false);
 
         let events = env.events().all();
-        let has_deact = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_deact").into())
+        let has_access_false = events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0 = topics
+                .get(0)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let topic1 = topics
+                .get(1)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let parsed_data = bool::try_from_val(&env, &data).ok();
+            topic0 == Some(symbol_short!("access"))
+                && topic1 == Some(meter_id.clone())
+                && parsed_data == Some(false)
         });
-        assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
+        assert!(has_access_false, "access=false event not emitted by set_active(false)");
     }
 
     #[test]
-    fn test_event_meter_activated_via_set_active() {
+    fn test_event_access_true_via_set_active() {
         let (env, client, _admin) = setup();
         let (token_address, token_admin_client, _) = setup_token(&env);
         let user = Address::generate(&env);
@@ -888,10 +898,21 @@ mod tests {
         client.set_active(&meter_id, &true);
 
         let events = env.events().all();
-        let has_actv = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_actv").into())
-                && topics.get(1) == Some(EVT_NS.into())
+        let has_access_true = events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0 = topics
+                .get(0)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let topic1 = topics
+                .get(1)
+                .and_then(|v| Symbol::try_from_val(&env, &v).ok());
+            let parsed_data = bool::try_from_val(&env, &data).ok();
+            topic0 == Some(symbol_short!("access"))
+                && topic1 == Some(meter_id.clone())
+                && parsed_data == Some(true)
         });
-        assert!(has_actv, "mtr_actv event not emitted by set_active(true)");
+        assert!(has_access_true, "access=true event not emitted by set_active(true)");
     }
 }

@@ -28,7 +28,10 @@ export interface PaymentRecord {
 paymentsRouter.get("/:address", async (req, res) => {
   const { address } = req.params;
   const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
-  const limit = Math.min(50, Math.max(1, parseInt((req.query.limit as string) ?? "10", 10)));
+  const limit = Math.min(
+    50,
+    Math.max(1, parseInt((req.query.limit as string) ?? "10", 10)),
+  );
   const sort = req.query.sort === "asc" ? "asc" : "desc";
 
   try {
@@ -49,7 +52,9 @@ paymentsRouter.get("/:address", async (req, res) => {
     });
   } catch (err: any) {
     console.error("payments route error:", err);
-    return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
+    return res
+      .status(500)
+      .json({ error: err.message ?? "Failed to fetch payment history" });
   }
 });
 
@@ -57,7 +62,7 @@ paymentsRouter.get("/:address", async (req, res) => {
 
 async function fetchPaymentEvents(
   address: string,
-  sort: "asc" | "desc"
+  sort: "asc" | "desc",
 ): Promise<PaymentRecord[]> {
   // Query Soroban RPC for contract events
   const now = Math.floor(Date.now() / 1000);
@@ -97,24 +102,17 @@ async function fetchPaymentEvents(
   return events;
 }
 
-function parsePaymentEvent(event: any, filterAddress: string): PaymentRecord | null {
+function parsePaymentEvent(
+  event: any,
+  filterAddress: string,
+): PaymentRecord | null {
   // Contract events emitted by make_payment have topics:
-  // ("payment", meter_id, payer) and data: (amount, plan)
+  // ("payment", meter_id) and data: (payer, amount, ledger_timestamp)
   const topics: StellarSdk.xdr.ScVal[] = (event.topic ?? []).map((t: string) =>
-    StellarSdk.xdr.ScVal.fromXDR(t, "base64")
+    StellarSdk.xdr.ScVal.fromXDR(t, "base64"),
   );
 
-  if (topics.length < 3) return null;
-
-  const payerVal = topics[2];
-  const payer =
-    payerVal.switch().name === "scvAddress"
-      ? StellarSdk.StrKey.encodeEd25519PublicKey(
-          payerVal.address().accountId().ed25519()
-        )
-      : null;
-
-  if (!payer || payer !== filterAddress) return null;
+  if (topics.length < 2) return null;
 
   const meterVal = topics[1];
   const meterId =
@@ -122,28 +120,38 @@ function parsePaymentEvent(event: any, filterAddress: string): PaymentRecord | n
       ? meterVal.sym().toString()
       : "unknown";
 
-  // data is [amount_i128, plan_map]
+  // data is [payer_address, amount_i128, ledger_timestamp]
   const dataXdr = event.value ?? event.data;
   let amountXlm = 0;
-  let plan = "Unknown";
+  let plan = "N/A";
+  let payer: string | null = null;
+  let eventTs: string | null = null;
 
   if (dataXdr) {
     try {
       const dataVal = StellarSdk.xdr.ScVal.fromXDR(dataXdr, "base64");
       const native = StellarSdk.scValToNative(dataVal);
-      if (Array.isArray(native) && native.length >= 2) {
-        amountXlm = Number(native[0]) / 10_000_000;
-        plan = Object.keys(native[1])[0] ?? "Unknown";
+      if (Array.isArray(native) && native.length >= 3) {
+        payer = String(native[0]);
+        amountXlm = Number(native[1]) / 10_000_000;
+        const ts = Number(native[2]);
+        eventTs = Number.isFinite(ts)
+          ? new Date(ts * 1000).toISOString()
+          : null;
       }
     } catch {
       // leave defaults
     }
   }
 
+  if (!payer || payer !== filterAddress) return null;
+
   // Ledger close time from event
-  const date = event.ledgerClosedAt
-    ? new Date(event.ledgerClosedAt).toISOString()
-    : new Date().toISOString();
+  const date =
+    eventTs ??
+    (event.ledgerClosedAt
+      ? new Date(event.ledgerClosedAt).toISOString()
+      : new Date().toISOString());
 
   return {
     txHash: event.txHash ?? event.id ?? "",

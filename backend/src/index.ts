@@ -4,6 +4,7 @@ import { meterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { startIoTBridge } from "./iot/bridge.js";
+import { startEventIndexer } from "./lib/eventIndexer.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -14,7 +15,7 @@ app.use(
     verify: (req: any, _res, buf) => {
       req.rawBody = buf;
     },
-  })
+  }),
 );
 app.use((_, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -31,4 +32,5 @@ app.get("/health", (_, res) => res.json({ status: "ok" }));
 app.listen(PORT, () => {
   console.log(`🌞 SolarGrid backend running on port ${PORT}`);
   startIoTBridge();
+  startEventIndexer();
 });
