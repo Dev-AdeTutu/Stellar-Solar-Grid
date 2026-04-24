@@ -8,6 +8,8 @@ use soroban_sdk::{
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
+const TREASURY: Symbol = symbol_short!("TREASURY");
+const TR_SHARE: Symbol = symbol_short!("TR_SHARE");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
 
@@ -37,7 +39,6 @@ pub struct Meter {
 pub enum DataKey {
     Meter(Symbol),
     OwnerMeters(Address),
-    ProviderRevenue(Address),
 }
 
 // ── Event topics (contract namespace) ────────────────────────────────────────
@@ -51,11 +52,15 @@ pub struct SolarGridContract;
 #[contractimpl]
 impl SolarGridContract {
     /// Initialize the contract with an admin address.
-    pub fn initialize(env: Env, admin: Address) {
+    pub fn initialize(env: Env, admin: Address, treasury_share: u32) {
         if env.storage().instance().has(&ADMIN) {
             panic!("already initialized");
         }
+        if treasury_share > 100 {
+            panic!("invalid share");
+        }
         env.storage().instance().set(&ADMIN, &admin);
+        env.storage().instance().set(&TR_SHARE, &treasury_share);
     }
 
     /// Register a new smart meter for an owner.
@@ -90,13 +95,13 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         // Append meter_id to the owner's meter list
-        let owner_key = DataKey::OwnerMeters(owner);
+        let owner_key = DataKey::OwnerMeters(owner.clone());
         let mut list: Vec<Symbol> = env
             .storage()
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env]);
-        list.push_back(meter_id);
+        list.push_back(meter_id.clone());
         env.storage().persistent().set(&owner_key, &list);
 
         // meter_registered
@@ -193,13 +198,12 @@ impl SolarGridContract {
         meter.expires_at = expires_at;
         env.storage().persistent().set(&key, &meter);
 
-        // Track provider (admin) accrued revenue in contract storage.
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
-        let provider_key = DataKey::ProviderRevenue(admin);
-        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&provider_key, &(provider_revenue + amount));
+        // Track treasury accrued revenue in contract instance storage.
+        let treasury_share: u32 = env.storage().instance().get(&TR_SHARE).unwrap_or(100);
+        let treasury_amount = (amount * (treasury_share as i128)) / 100;
+        
+        let treasury: i128 = env.storage().instance().get(&TREASURY).unwrap_or(0);
+        env.storage().instance().set(&TREASURY, &(treasury + treasury_amount));
 
         // payment_received
         env.events().publish(
@@ -219,21 +223,15 @@ impl SolarGridContract {
         if amount <= 0 {
             panic!("amount must be positive");
         }
-        let admin: Address = env.storage().instance().get(&ADMIN).expect("not initialized");
-        if provider != admin {
-            panic!("provider is not admin");
-        }
+        Self::require_admin(&env);
         provider.require_auth();
 
-        let provider_key = DataKey::ProviderRevenue(provider.clone());
-        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
-        if provider_revenue < amount {
-            panic!("insufficient provider revenue");
+        let treasury: i128 = env.storage().instance().get(&TREASURY).unwrap_or(0);
+        if amount > treasury {
+            panic!("insufficient treasury balance");
         }
 
-        env.storage()
-            .persistent()
-            .set(&provider_key, &(provider_revenue - amount));
+        env.storage().instance().set(&TREASURY, &(treasury - amount));
 
         let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &provider, &amount);
@@ -244,10 +242,9 @@ impl SolarGridContract {
         );
     }
 
-    /// Get currently tracked provider revenue balance.
-    pub fn get_provider_revenue(env: Env, provider: Address) -> i128 {
-        let provider_key = DataKey::ProviderRevenue(provider);
-        env.storage().persistent().get(&provider_key).unwrap_or(0)
+    /// Get currently tracked treasury balance.
+    pub fn get_treasury(env: Env) -> i128 {
+        env.storage().instance().get(&TREASURY).unwrap_or(0)
     }
 
     /// Check whether a meter currently has active energy access.
@@ -339,8 +336,8 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         symbol_short,
-        testutils::{Address as _, Ledger},
-        token, Address, Env,
+        testutils::{Address as _, Events, Ledger},
+        token, Address, Env, FromVal, Val,
     };
 
     fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
@@ -349,7 +346,7 @@ mod tests {
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        client.initialize(&admin, &95_u32);
         (env, client, admin)
     }
 
@@ -618,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn test_withdraw_revenue_tracks_and_withdraws_provider_balance() {
+    fn test_withdraw_revenue_tracks_and_withdraws_treasury_balance() {
         let (env, client, admin) = setup();
         let (token_address, token_admin_client, token_client) = setup_token(&env);
 
@@ -635,17 +632,17 @@ mod tests {
             &PaymentPlan::Daily,
         );
 
-        assert_eq!(client.get_provider_revenue(&admin), 5_000_000_i128);
+        assert_eq!(client.get_treasury(), 4_750_000_i128);
         assert_eq!(token_client.balance(&client.address), 5_000_000_i128);
 
         client.withdraw_revenue(&token_address, &admin, &2_000_000_i128);
-        assert_eq!(client.get_provider_revenue(&admin), 3_000_000_i128);
+        assert_eq!(client.get_treasury(), 2_750_000_i128);
         assert_eq!(token_client.balance(&client.address), 3_000_000_i128);
         assert_eq!(token_client.balance(&admin), 2_000_000_i128);
     }
 
     #[test]
-    #[should_panic(expected = "insufficient provider revenue")]
+    #[should_panic(expected = "insufficient treasury balance")]
     fn test_withdraw_revenue_panics_when_amount_exceeds_tracked_balance() {
         let (env, client, admin) = setup();
         let (token_address, _token_admin_client, _token_client) = setup_token(&env);
@@ -698,8 +695,8 @@ mod tests {
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, _)| {
             topics.len() >= 2
-                && topics.get(0) == Some(symbol_short!("mtr_reg").into())
-                && topics.get(1) == Some(EVT_NS.into())
+                && topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_reg")).get_payload())
+                && topics.get(1).map(|v| v.get_payload()) == Some(Val::from_val(&env, &EVT_NS).get_payload())
         });
         assert!(found, "mtr_reg event not emitted");
     }
@@ -717,10 +714,10 @@ mod tests {
 
         let events = env.events().all();
         let has_pmt = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("pmt_rcvd").into())
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("pmt_rcvd")).get_payload())
         });
         let has_actv = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_actv").into())
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_actv")).get_payload())
         });
         assert!(has_pmt, "pmt_rcvd event not emitted");
         assert!(has_actv, "mtr_actv event not emitted");
@@ -742,10 +739,10 @@ mod tests {
 
         let events = env.events().all();
         let has_usg = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("usg_upd").into())
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("usg_upd")).get_payload())
         });
         let has_deact = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_deact").into())
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_deact")).get_payload())
         });
         assert!(has_usg, "usg_upd event not emitted");
         assert!(has_deact, "mtr_deact event not emitted on balance drain");
@@ -766,7 +763,7 @@ mod tests {
 
         let events = env.events().all();
         let has_deact = events.iter().any(|(_, topics, _)| {
-            topics.get(0) == Some(symbol_short!("mtr_deact").into())
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_deact")).get_payload())
         });
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
     }
