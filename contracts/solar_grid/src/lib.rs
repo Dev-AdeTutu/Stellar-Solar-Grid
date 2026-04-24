@@ -218,8 +218,22 @@ impl SolarGridContract {
         );
     }
 
-    /// Withdraw collected token revenue from the contract vault.
-    /// Provider is the contract admin set at initialization.
+    /// Withdraw accumulated revenue from the contract vault to the provider address.
+    ///
+    /// Revenue is credited to the admin's `ProviderRevenue` balance on every
+    /// `make_payment` call. This function debits that balance and transfers
+    /// tokens via the SEP-41 token interface.
+    ///
+    /// # Access control
+    /// Only the contract admin may call this (`provider` must equal the stored
+    /// admin and must co-sign the transaction).
+    ///
+    /// # Panics
+    /// - `"amount must be positive"` — if `amount <= 0`
+    /// - `"provider is not admin"` — if caller is not the contract admin
+    /// - `"insufficient provider revenue"` — if tracked balance < `amount`
+    ///
+    /// Emits: `rev_wdrl { provider, token_address, amount }`
     pub fn withdraw_revenue(env: Env, token_address: Address, provider: Address, amount: i128) {
         if amount <= 0 {
             panic!("amount must be positive");
