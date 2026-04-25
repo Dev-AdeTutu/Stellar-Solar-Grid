@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { SkeletonCard } from "@/components/SkeletonCard";
+import { useToast } from "@/components/ToastProvider";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
@@ -94,6 +95,7 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
 
 export default function UserDashboardPage() {
   const { address, connect } = useWalletStore();
+  const { showToast } = useToast();
 
   const [meterIds, setMeterIds] = useState<string[]>([]);
   const [meters, setMeters] = useState<Record<string, MeterData>>({});
@@ -112,11 +114,17 @@ export default function UserDashboardPage() {
       setMeters(Object.fromEntries(entries));
       setLastRefresh(new Date());
     } catch (err: unknown) {
-      setError(parseWalletError(err));
+      const friendly = parseWalletError(err);
+      setError(friendly);
+      showToast({
+        variant: "error",
+        title: "Failed to load meters",
+        description: friendly,
+      });
     } finally {
       setLoading(false);
     }
-  }, [address]);
+  }, [address, showToast]);
 
   useEffect(() => {
     if (!address) {

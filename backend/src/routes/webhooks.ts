@@ -4,6 +4,7 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "../lib/stellar.js";
 import { activeMeters, paymentVolume } from "../lib/metrics.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { SmsPaymentWebhookSchema, validateRequest } from "../lib/validation.js";
 
 export const webhookRouter = Router();
 
@@ -30,6 +31,7 @@ function verifySignature(rawBody: Buffer, signature: string): boolean {
  */
 webhookRouter.post(
   "/sms-payment",
+  validateRequest({ body: SmsPaymentWebhookSchema }),
   asyncHandler(async (req, res) => {
     const signature = req.headers["x-webhook-signature"] as string | undefined;
     if (
@@ -42,28 +44,7 @@ webhookRouter.post(
       return res.status(401).json({ error: "Invalid webhook signature" });
     }
 
-    if (!req.body || typeof req.body !== "object") {
-      return res
-        .status(400)
-        .json({ error: "Request body must be a JSON object" });
-    }
-
-    const { meter_id, amount_xlm } = req.body as {
-      meter_id?: unknown;
-      amount_xlm?: unknown;
-    };
-
-    if (
-      typeof meter_id !== "string" ||
-      meter_id.trim().length === 0 ||
-      typeof amount_xlm !== "number" ||
-      !Number.isFinite(amount_xlm) ||
-      amount_xlm <= 0
-    ) {
-      return res
-        .status(400)
-        .json({ error: "meter_id and positive amount_xlm are required" });
-    }
+    const { meter_id, amount_xlm } = req.body;
 
     const stroops = BigInt(Math.round(amount_xlm * 10_000_000));
     const hash = await adminInvoke("make_payment", [

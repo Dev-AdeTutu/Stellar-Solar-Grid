@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
+import { useToast } from "@/components/ToastProvider";
 import { useWalletStore } from "@/store/walletStore";
 import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
@@ -11,7 +11,7 @@ import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 
 type Plan = "Daily" | "Weekly" | "Usage";
-type Status = "idle" | "loading" | "success" | "error" | "cancelled";
+type Status = "idle" | "loading";
 
 const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Daily",  label: "Daily",       desc: "Billed every 24 hours" },
@@ -22,12 +22,11 @@ const PLANS: { value: Plan; label: string; desc: string }[] = [
 export default function PayPage() {
   const { address, connect } = useWalletStore();
   const { meterId, plan, setMeterId, setPlan } = usePaymentStore();
+  const { showToast } = useToast();
   const isOffline = useOffline();
 
   const [amount, setAmount]       = useState("");
   const [status, setStatus]       = useState<Status>("idle");
-  const [message, setMessage]     = useState("");
-  const [txHash, setTxHash]       = useState("");
   const [showSmsModal, setShowSmsModal] = useState(false);
 
   const EXPLORER_BASE = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE?.includes("Test")
@@ -42,25 +41,30 @@ export default function PayPage() {
     if (!meterId.trim() || isNaN(amountNum) || amountNum <= 0) return;
 
     setStatus("loading");
-    setMessage("");
-    setTxHash("");
 
     try {
       const hash = await makePayment(address, meterId.trim(), amountNum, plan);
-      setTxHash(hash);
-      setStatus("success");
-      setMessage("Payment successful!");
+      showToast({
+        variant: "success",
+        title: "Payment successful",
+        description: `${meterId.trim()} was topped up with ${amountNum.toFixed(2)} XLM.`,
+        actionHref: `${EXPLORER_BASE}/${hash}`,
+        actionLabel: "View transaction",
+      });
+      setAmount("");
     } catch (err: unknown) {
       const friendly = parseWalletError(err);
-      setStatus(friendly === "Transaction cancelled by user." ? "cancelled" : "error");
-      setMessage(friendly);
+      showToast({
+        variant: "error",
+        title:
+          friendly === "Transaction cancelled by user."
+            ? "Payment cancelled"
+            : "Payment failed",
+        description: friendly,
+      });
+    } finally {
+      setStatus("idle");
     }
-  }
-
-  function reset() {
-    setStatus("idle");
-    setMessage("");
-    setTxHash("");
   }
 
   return (
@@ -172,7 +176,7 @@ export default function PayPage() {
                 <input
                   type="number"
                   value={amount}
-                  onChange={(e) => { setAmount(e.target.value); reset(); }}
+                  onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
                   min="0.0000001"
                   step="any"
@@ -204,41 +208,6 @@ export default function PayPage() {
                   ))}
                 </div>
               </div>
-
-              {/* Feedback */}
-              {status === "cancelled" && (
-                <div className="flex items-center gap-2 rounded-lg border border-yellow-500/40 bg-yellow-900/20 px-4 py-3 text-sm text-yellow-300">
-                  <span>⚠️</span>
-                  <span>{message}</span>
-                </div>
-              )}
-              {status === "error" && (
-                <div className="flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-900/20 px-4 py-3 text-sm text-red-400">
-                  <span>✕</span>
-                  <span>{message}</span>
-                </div>
-              )}
-              {status === "success" && (
-                <div className="rounded-lg border border-green-500/40 bg-green-900/20 px-4 py-3 text-sm text-green-400">
-                  <div className="font-semibold mb-1">✓ {message}</div>
-                  {txHash && (
-                    <a
-                      href={`${EXPLORER_BASE}/${txHash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block text-blue-400 underline underline-offset-2 font-mono text-xs hover:text-blue-300 transition mb-2"
-                    >
-                      {txHash.slice(0, 10)}…{txHash.slice(-8)} ↗
-                    </a>
-                  )}
-                  <Link
-                    href="/dashboard/user"
-                    className="inline-block mt-1 text-xs text-green-300 underline underline-offset-2 hover:text-green-200 transition"
-                  >
-                    ← Back to My Meter
-                  </Link>
-                </div>
-              )}
 
               {/* Submit */}
               <button

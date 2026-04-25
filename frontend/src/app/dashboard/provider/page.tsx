@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Navbar from "@/components/Navbar";
+import { useToast } from "@/components/ToastProvider";
 
 const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
 
@@ -10,14 +11,13 @@ function isValidStellarAddress(addr: string): boolean {
   return /^G[A-Z2-7]{55}$/.test(addr);
 }
 
-type Status = "idle" | "loading" | "success" | "error";
+type Status = "idle" | "loading";
 
 export default function ProviderDashboardPage() {
+  const { showToast } = useToast();
   const [meterId, setMeterId] = useState("");
   const [ownerAddress, setOwnerAddress] = useState("");
   const [status, setStatus] = useState<Status>("idle");
-  const [message, setMessage] = useState("");
-  const [txHash, setTxHash] = useState("");
 
   const addressInvalid = ownerAddress.length > 0 && !isValidStellarAddress(ownerAddress);
 
@@ -28,14 +28,15 @@ export default function ProviderDashboardPage() {
   async function handleRegister(e: React.FormEvent) {
     e.preventDefault();
     if (!isValidStellarAddress(ownerAddress.trim())) {
-      setStatus("error");
-      setMessage("Invalid Stellar address. Must start with G and be 56 characters.");
+      showToast({
+        variant: "error",
+        title: "Registration failed",
+        description: "Invalid Stellar address. Must start with G and be 56 characters.",
+      });
       return;
     }
 
     setStatus("loading");
-    setMessage("");
-    setTxHash("");
 
     try {
       const res = await fetch(`${API}/api/meters`, {
@@ -49,21 +50,28 @@ export default function ProviderDashboardPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Registration failed");
 
-      setTxHash(data.hash);
-      setStatus("success");
-      setMessage("Meter registered successfully.");
+      showToast({
+        variant: "success",
+        title: "Meter registered",
+        description: `${meterId.trim()} was registered successfully.`,
+        actionHref: `${EXPLORER_BASE}/${data.hash}`,
+        actionLabel: "View transaction",
+      });
       setMeterId("");
       setOwnerAddress("");
     } catch (err: unknown) {
-      setStatus("error");
-      setMessage(err instanceof Error ? err.message : "Registration failed");
+      showToast({
+        variant: "error",
+        title: "Registration failed",
+        description: err instanceof Error ? err.message : "Registration failed",
+      });
+    } finally {
+      setStatus("idle");
     }
   }
 
   function reset() {
     setStatus("idle");
-    setMessage("");
-    setTxHash("");
   }
 
   return (
@@ -123,29 +131,6 @@ export default function ProviderDashboardPage() {
                 </p>
               )}
             </div>
-
-            {/* Feedback */}
-            {status === "error" && (
-              <div className="flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-900/20 px-4 py-3 text-sm text-red-400">
-                <span>✕</span>
-                <span>{message}</span>
-              </div>
-            )}
-            {status === "success" && (
-              <div className="rounded-lg border border-green-500/40 bg-green-900/20 px-4 py-3 text-sm text-green-400">
-                <div className="font-semibold mb-1">✓ {message}</div>
-                {txHash && (
-                  <a
-                    href={`${EXPLORER_BASE}/${txHash}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-400 underline underline-offset-2 font-mono text-xs hover:text-blue-300 transition"
-                  >
-                    {txHash.slice(0, 10)}…{txHash.slice(-8)} ↗
-                  </a>
-                )}
-              </div>
-            )}
 
             <button
               type="submit"

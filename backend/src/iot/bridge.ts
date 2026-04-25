@@ -13,11 +13,12 @@ import { adminInvoke } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
 import { mqttMessages } from "../lib/metrics.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { adminInvoke, CONTRACT_ID, server } from "../lib/stellar.js";
+import { CONTRACT_ID, server } from "../lib/stellar.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
 const FLUSH_INTERVAL_MS = Number(process.env.BATCH_FLUSH_MS ?? 5_000);
+const EVENT_POLL_INTERVAL_MS = Number(process.env.EVENT_POLL_INTERVAL_MS ?? 5_000);
 
 interface Reading {
   meterId: string;
@@ -133,13 +134,10 @@ async function pollContractEvents() {
 }
 
 async function handleContractEvent(
-  event: StellarSdk.SorobanRpc.Api.RawEventResponse,
+  event: StellarSdk.SorobanRpc.Api.EventResponse,
 ) {
   try {
-    // Topics are XDR-encoded ScVals — first topic is the event name tuple
-    const topics = event.topic.map((t) =>
-      StellarSdk.xdr.ScVal.fromXDR(t, "base64"),
-    );
+    const topics = event.topic;
 
     if (topics.length < 2) return;
 
@@ -152,7 +150,7 @@ async function handleContractEvent(
 
     switch (eventKey) {
       case "payment:received": {
-        const data = StellarSdk.xdr.ScVal.fromXDR(event.value, "base64");
+        const data = event.value;
         const native = StellarSdk.scValToNative(data) as [string, bigint, unknown];
         const [meterId, amount] = native;
         console.log(
@@ -163,7 +161,7 @@ async function handleContractEvent(
       }
 
       case "meter:activated": {
-        const data = StellarSdk.xdr.ScVal.fromXDR(event.value, "base64");
+        const data = event.value;
         const meterId = String(StellarSdk.scValToNative(data));
         console.log(`✅ meter_activated — meter: ${meterId}`);
         await onMeterActivated(meterId);
@@ -171,7 +169,7 @@ async function handleContractEvent(
       }
 
       case "meter:deactivated": {
-        const data = StellarSdk.xdr.ScVal.fromXDR(event.value, "base64");
+        const data = event.value;
         const meterId = String(StellarSdk.scValToNative(data));
         console.log(`🔴 meter_deactivated — meter: ${meterId}`);
         await onMeterDeactivated(meterId);

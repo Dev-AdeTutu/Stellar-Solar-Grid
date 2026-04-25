@@ -3,7 +3,13 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke, contractQuery } from "../lib/stellar.js";
 import { activeMeters, paymentVolume } from "../lib/metrics.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { RegisterMeterSchema, UsageUpdateSchema, MakePaymentSchema } from "../lib/validation.js";
+import {
+  MakePaymentSchema,
+  MeterRouteParamsSchema,
+  RegisterMeterSchema,
+  UsageUpdateSchema,
+  validateRequest,
+} from "../lib/validation.js";
 
 export const meterRouter = Router();
 
@@ -43,16 +49,9 @@ meterRouter.get(
 /** POST /api/meters — register a new meter (admin only) */
 meterRouter.post(
   "/",
+  validateRequest({ body: RegisterMeterSchema }),
   asyncHandler(async (req, res) => {
-    const validation = RegisterMeterSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({
-        error: "Validation failed",
-        details: validation.error.flatten().fieldErrors,
-      });
-    }
-
-    const { meter_id, owner } = validation.data;
+    const { meter_id, owner } = req.body;
 
     const hash = await adminInvoke("register_meter", [
       StellarSdk.nativeToScVal(meter_id, { type: "symbol" }),
@@ -65,16 +64,9 @@ meterRouter.post(
 /** POST /api/meters/:id/usage — IoT oracle reports usage */
 meterRouter.post(
   "/:id/usage",
+  validateRequest({ params: MeterRouteParamsSchema, body: UsageUpdateSchema }),
   asyncHandler(async (req, res) => {
-    const validation = UsageUpdateSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({
-        error: "Validation failed",
-        details: validation.error.flatten().fieldErrors,
-      });
-    }
-
-    const { units, cost } = validation.data;
+    const { units, cost } = req.body;
 
     const hash = await adminInvoke("update_usage", [
       StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
@@ -96,25 +88,17 @@ const idempotencyCache = new Map<string, { hash: string; timestamp: number }>();
  * Body: { token_address, payer, amount_stroops, plan }
  * Header: Idempotency-Key: <uuid>  (optional — duplicate within 24 h returns cached txHash)
  */
-meterRouter.post("/:id/pay", asyncHandler(async (req, res) => {
-  const validation = MakePaymentSchema.safeParse(req.body);
-  if (!validation.success) {
-    return res.status(400).json({
-      error: "Validation failed",
-      details: validation.error.flatten().fieldErrors,
-    });
-  }
-
+meterRouter.post("/:id/pay", validateRequest({ params: MeterRouteParamsSchema, body: MakePaymentSchema }), asyncHandler(async (req, res) => {
   const ikey = req.headers["idempotency-key"] as string | undefined;
 
-    if (ikey) {
-      const cached = idempotencyCache.get(ikey);
-      if (cached && Date.now() - cached.timestamp < TTL_MS) {
-        return res.json({ hash: cached.hash });
-      }
+  if (ikey) {
+    const cached = idempotencyCache.get(ikey);
+    if (cached && Date.now() - cached.timestamp < TTL_MS) {
+      return res.json({ hash: cached.hash });
     }
+  }
 
-  const { token_address, payer, amount_stroops, plan } = validation.data;
+  const { token_address, payer, amount_stroops, plan } = req.body;
 
   const hash = await adminInvoke("make_payment", [
     StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
