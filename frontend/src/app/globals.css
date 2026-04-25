@@ -40,3 +40,103 @@ input, select, textarea {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/* ── Shared card / badge ─────────────────────────────────────────────────── */
+.card {
+  background: #16213e;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.12);
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+/* ── CollaboratorTable ───────────────────────────────────────────────────── */
+.collab-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+}
+
+.collab-table th {
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9ca3af;
+  padding: 0.4rem 0.5rem 0.75rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.collab-table td {
+  padding: 0.65rem 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: middle;
+}
+
+.collab-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Address cell: truncated text + copy button side by side */
+.address-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.address-truncated {
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  cursor: default;
+}
+
+/* Copy button */
+.copy-btn-sm {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0.3rem;
+  color: #9ca3af;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.35rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.copy-btn-sm:hover {
+  color: #f5a623;
+  border-color: #f5a623;
+}
+
+/* Share bar */
+.share-label {
+  display: block;
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-bottom: 0.25rem;
+}
+
+.share-bar {
+  display: inline-block;
+  height: 6px;
+  min-width: 2px;
+  max-width: 100%;
+  background: #f5a623;
+  border-radius: 999px;
+  vertical-align: middle;
+}
