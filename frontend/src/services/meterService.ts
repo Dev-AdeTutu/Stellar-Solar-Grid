@@ -1,10 +1,14 @@
-import { fetchMeter, contractInvoke, type MeterData } from "@/lib/contract";
+import { fetchMeter, fetchMetersByOwner, contractInvoke, type MeterData } from "@/lib/contract";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData };
 
 export async function getMeter(meterId: string): Promise<MeterData> {
   return fetchMeter(meterId);
+}
+
+export async function getMetersByOwner(ownerAddress: string): Promise<string[]> {
+  return fetchMetersByOwner(ownerAddress);
 }
 
 export async function makePayment(

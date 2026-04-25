@@ -7,8 +7,36 @@
   --background: #1a1a2e;
 }
 
+html {
+  /* Prevent font scaling on orientation change on iOS */
+  -webkit-text-size-adjust: 100%;
+  /* Smooth scrolling */
+  scroll-behavior: smooth;
+}
+
 body {
   color: var(--foreground);
   background: var(--background);
   font-family: system-ui, -apple-system, sans-serif;
+  /* Prevent horizontal overflow on small screens */
+  overflow-x: hidden;
+  /* Minimum usable width */
+  min-width: 320px;
+}
+
+/* Larger tap targets for low-end touch devices */
+button, a {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* Ensure inputs don't zoom on focus on iOS (font-size >= 16px) */
+input, select, textarea {
+  font-size: 16px;
+}
+
+/* Scrollable table wrapper utility */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
