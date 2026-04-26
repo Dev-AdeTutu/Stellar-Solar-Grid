@@ -58,11 +58,6 @@ paymentsRouter.get(
       payments: paginated,
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     });
-  } catch (err: any) {
-    logger.error("payments route error", { err });
-    return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
-  }
-});
   }),
 );
 

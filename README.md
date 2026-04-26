@@ -1,5 +1,7 @@
 # Stellar SolarGrid
 
+[![CI](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/ci.yml/badge.svg)](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/ci.yml)
+
 > Powering Africa with affordable, pay-as-you-go solar energy on blockchain.
 
 Stellar SolarGrid is a decentralized PAYG solar energy platform built on [Soroban](https://soroban.stellar.org), within the Stellar ecosystem. Households and small businesses in underserved regions access solar electricity through flexible micro-payments — no large upfront costs required.

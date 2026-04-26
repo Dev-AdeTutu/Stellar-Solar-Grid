@@ -7,12 +7,19 @@ use soroban_sdk::{
 // ── Error types ───────────────────────────────────────────────────────────────
 
 #[contracterror]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContractError {
-    NotInitialized    = 1,
-    MeterAlreadyExists = 2,
-    OracleNotSet      = 3,
-    UnauthorizedOracle = 4,
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    MeterNotFound = 3,
+    MeterAlreadyExists = 4,
+    Unauthorized = 5,
+    InvalidAmount = 6,
+    OwnerNotAllowlisted = 7,
+    OracleNotSet = 8,
+    InsufficientProviderRevenue = 9,
+    BatchTooLarge = 10,
+    CannotActivateWithoutBalance = 11,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -21,6 +28,7 @@ const ADMIN: Symbol = symbol_short!("ADMIN");
 const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
 const TOKEN: Symbol = symbol_short!("TOKEN");
 const ORACLE: Symbol = symbol_short!("ORACLE");
+const METER_LIST: Symbol = symbol_short!("MLIST");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
 
@@ -92,16 +100,17 @@ pub struct SolarGridContract;
 #[contractimpl]
 impl SolarGridContract {
     /// Initialize the contract with an admin address and the SAC token address.
-    pub fn initialize(env: Env, admin: Address, token_address: Address) {
-        env.deployer().require_auth();
+    pub fn initialize(env: Env, admin: Address, token_address: Address) -> Result<(), ContractError> {
+        admin.require_auth();
         if env.storage().instance().has(&ADMIN) {
-            panic!("already initialized");
+            return Err(ContractError::AlreadyInitialized);
         }
         if treasury_share > 100 {
             panic!("invalid share");
         }
         env.storage().instance().set(&ADMIN, &admin);
-        env.storage().instance().set(&TR_SHARE, &treasury_share);
+        env.storage().instance().set(&TOKEN, &token_address);
+        Ok(())
     }
 
     /// Register a new smart meter for an owner.
@@ -114,15 +123,15 @@ impl SolarGridContract {
     ///   could cause downstream auth issues.
     /// - `owner` must co-sign the registration (require_auth), confirming they
     ///   consent to being the meter owner.
-    pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
-        Self::require_admin(&env);
-        let allowlist = Self::get_allowlist(env.clone());
+    pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let allowlist = Self::get_allowlist(env.clone())?;
         if !allowlist.contains(&owner) {
-            panic!("owner not in allowlist");
+            return Err(ContractError::OwnerNotAllowlisted);
         }
         let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
-            env.panic_with_error(ContractError::MeterAlreadyExists);
+            return Err(ContractError::MeterAlreadyExists);
         }
         let meter = Meter {
             version: 1,
@@ -145,27 +154,57 @@ impl SolarGridContract {
         list.push_back(meter_id.clone());
         env.storage().persistent().set(&owner_key, &list);
 
+        // Append meter_id to global meter registry
+        let mut global_list: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+        global_list.push_back(meter_id.clone());
+        env.storage().instance().set(&METER_LIST, &global_list);
+
         // meter_registered
         env.events().publish(
             (symbol_short!("mtr_reg"), EVT_NS, meter_id),
             owner,
         );
+        Ok(())
     }
 
     /// Get all meter IDs registered under a given owner address.
-    pub fn get_meters_by_owner(env: Env, owner: Address) -> Vec<Symbol> {
+    pub fn get_meters_by_owner(env: Env, owner: Address) -> Result<Vec<Symbol>, ContractError> {
         let owner_key = DataKey::OwnerMeters(owner);
-        env.storage()
+        Ok(env.storage()
             .persistent()
             .get(&owner_key)
-            .unwrap_or_else(|| vec![&env])
+            .unwrap_or_else(|| vec![&env]))
+    }
+
+    /// Get all registered meters (admin only).
+    /// Returns all Meter structs across the entire contract.
+    /// Used by provider dashboard to display all active meters.
+    pub fn get_all_meters(env: Env) -> Vec<Meter> {
+        Self::require_admin(&env);
+        let meter_ids: Vec<Symbol> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+        let mut meters: Vec<Meter> = vec![&env];
+        for meter_id in meter_ids.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            if let Some(meter) = env.storage().persistent().get(&key) {
+                meters.push_back(meter);
+            }
+        }
+        meters
     }
 
     /// Add an address to the meter-owner allowlist.
     /// Only the admin may call this. Use this to pre-approve user accounts
     /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
-        Self::require_admin(&env);
+    pub fn allowlist_add(env: Env, owner: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let mut list: Vec<Address> = env
             .storage()
             .instance()
@@ -175,12 +214,13 @@ impl SolarGridContract {
             list.push_back(owner);
             env.storage().instance().set(&ALLOWLIST, &list);
         }
+        Ok(())
     }
 
     /// Remove an address from the meter-owner allowlist.
     /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
+    pub fn allowlist_remove(env: Env, owner: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let list: Vec<Address> = env
             .storage()
             .instance()
@@ -193,25 +233,28 @@ impl SolarGridContract {
             }
         }
         env.storage().instance().set(&ALLOWLIST, &new_list);
+        Ok(())
     }
 
     /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
+    pub fn get_allowlist(env: Env) -> Result<Vec<Address>, ContractError> {
+        Ok(env.storage()
             .instance()
             .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env))
+            .unwrap_or(Vec::new(&env)))
     }
 
     /// Register the IoT oracle address. Only admin may call this.
-    pub fn set_oracle(env: Env, oracle: Address) {
-        Self::require_admin(&env);
+    pub fn set_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         env.storage().instance().set(&ORACLE, &oracle);
+        Ok(())
     }
 
     /// Return the registered oracle address, if any.
-    pub fn get_oracle(env: Env) -> Option<Address> {
-        env.storage().instance().get(&ORACLE)
+    pub fn get_oracle(env: Env) -> Result<Option<Address>, ContractError> {
+        Self::require_initialized(&env)?;
+        Ok(env.storage().instance().get(&ORACLE))
     }
 
     /// Make a payment to top up a meter's balance and activate it.
@@ -226,21 +269,19 @@ impl SolarGridContract {
         payer: Address,
         amount: i128,
         plan: PaymentPlan,
-    ) {
+    ) -> Result<(), ContractError> {
+        Self::require_initialized(&env)?;
         payer.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(ContractError::InvalidAmount);
         }
-        let token_address: Address = env.storage().instance().get(&TOKEN).expect("not initialized");
+        let token_address = Self::get_token_address(&env)?;
         let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
         let key = DataKey::Meter(meter_id.clone());
-        let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
+        let mut meter = Self::get_meter_by_id(&env, &meter_id)?;
         let now = env.ledger().timestamp();
-        match plan {
-            PaymentPlan::Daily | PaymentPlan::Weekly | PaymentPlan::UsageBased => {}
-        }
         let expires_at = match plan {
             PaymentPlan::Daily => now.saturating_add(SECONDS_PER_DAY),
             PaymentPlan::Weekly => now.saturating_add(SECONDS_PER_WEEK),
@@ -258,12 +299,13 @@ impl SolarGridContract {
         meter.expires_at = expires_at;
         env.storage().persistent().set(&key, &meter);
 
-        // Track treasury accrued revenue in contract instance storage.
-        let treasury_share: u32 = env.storage().instance().get(&TR_SHARE).unwrap_or(100);
-        let treasury_amount = (amount * (treasury_share as i128)) / 100;
-        
-        let treasury: i128 = env.storage().instance().get(&TREASURY).unwrap_or(0);
-        env.storage().instance().set(&TREASURY, &(treasury + treasury_amount));
+        // Track provider (admin) accrued revenue
+        let admin = Self::get_admin(&env)?;
+        let provider_key = DataKey::ProviderRevenue(admin);
+        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&provider_key, &(provider_revenue + amount));
 
         // payment_received
         env.events().publish(
@@ -275,6 +317,7 @@ impl SolarGridContract {
             (symbol_short!("mtr_actv"), EVT_NS, meter_id),
             (),
         );
+        Ok(())
     }
 
     /// Withdraw accumulated revenue from the contract vault to the provider address.
@@ -288,21 +331,26 @@ impl SolarGridContract {
     /// - `"insufficient provider revenue"` — if tracked balance < `amount`
     ///
     /// Emits: `rev_wdrl { provider, token_address, amount }`
-    pub fn withdraw_revenue(env: Env, provider: Address, amount: i128) {
+    pub fn withdraw_revenue(env: Env, provider: Address, amount: i128) -> Result<(), ContractError> {
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(ContractError::InvalidAmount);
         }
-        Self::require_admin(&env);
+        Self::require_initialized(&env)?;
+        let admin = Self::get_admin(&env)?;
+        if provider != admin {
+            return Err(ContractError::Unauthorized);
+        }
         provider.require_auth();
 
-        let treasury: i128 = env.storage().instance().get(&TREASURY).unwrap_or(0);
-        if amount > treasury {
-            panic!("insufficient treasury balance");
+        let provider_key = DataKey::ProviderRevenue(provider.clone());
+        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
+        if provider_revenue < amount {
+            return Err(ContractError::InsufficientProviderRevenue);
         }
 
         env.storage().instance().set(&TREASURY, &(treasury - amount));
 
-        let token_address: Address = env.storage().instance().get(&TOKEN).expect("not initialized");
+        let token_address = Self::get_token_address(&env)?;
         let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &provider, &amount);
 
@@ -310,20 +358,22 @@ impl SolarGridContract {
             (symbol_short!("rev_wdrl"), EVT_NS, provider),
             (token_address, amount),
         );
+        Ok(())
     }
 
-    /// Get currently tracked treasury balance.
-    pub fn get_treasury(env: Env) -> i128 {
-        env.storage().instance().get(&TREASURY).unwrap_or(0)
+    /// Get currently tracked provider revenue balance.
+    pub fn get_provider_revenue(env: Env, provider: Address) -> Result<i128, ContractError> {
+        Self::require_initialized(&env)?;
+        let provider_key = DataKey::ProviderRevenue(provider);
+        Ok(env.storage().persistent().get(&provider_key).unwrap_or(0))
     }
 
     /// Check whether a meter currently has active energy access.
-    pub fn check_access(env: Env, meter_id: Symbol) -> bool {
-        let key = DataKey::Meter(meter_id.clone());
-        let meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
+    pub fn check_access(env: Env, meter_id: Symbol) -> Result<bool, ContractError> {
+        let meter = Self::get_meter_by_id(&env, &meter_id)?;
         let bal_key = DataKey::MeterBalance(meter_id);
         let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
-        meter.active && balance > 0 && env.ledger().timestamp() < meter.expires_at
+        Ok(meter.active && balance > 0 && env.ledger().timestamp() < meter.expires_at)
     }
 
     /// Called by the IoT oracle to record energy consumption (milli-kWh).
@@ -332,10 +382,13 @@ impl SolarGridContract {
     /// Emits:
     /// - `usage_updated    { meter_id, units, cost }`
     /// - `meter_deactivated { meter_id }` (only when balance hits zero)
-    pub fn update_usage(env: Env, meter_id: Symbol, units: u64, cost: i128) {
-        Self::require_oracle(&env);
+    pub fn update_usage(env: Env, meter_id: Symbol, units: u64, cost: i128) -> Result<(), ContractError> {
+        Self::require_oracle(&env)?;
+        if cost < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
         let key = DataKey::Meter(meter_id.clone());
-        let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
+        let mut meter = Self::get_meter_by_id(&env, &meter_id)?;
         let bal_key = DataKey::MeterBalance(meter_id.clone());
         let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
         let new_balance = balance.checked_sub(cost).unwrap_or(0).max(0);
@@ -361,6 +414,7 @@ impl SolarGridContract {
                 (),
             );
         }
+        Ok(())
     }
 
     /// Batch update usage for multiple meters in a single transaction.
@@ -372,12 +426,15 @@ impl SolarGridContract {
     ///
     /// Emits per skipped meter:
     /// - `batch_skip { meter_id }`
-    pub fn batch_update_usage(env: Env, updates: Vec<(Symbol, u64, i128)>) {
-        Self::require_oracle(&env);
+    pub fn batch_update_usage(env: Env, updates: Vec<(Symbol, u64, i128)>) -> Result<(), ContractError> {
+        Self::require_oracle(&env)?;
         if updates.len() > 50 {
-            panic!("batch too large");
+            return Err(ContractError::BatchTooLarge);
         }
         for (meter_id, units, cost) in updates.iter() {
+            if cost < 0 {
+                return Err(ContractError::InvalidAmount);
+            }
             let key = DataKey::Meter(meter_id.clone());
             let meter_opt: Option<Meter> = env.storage().persistent().get(&key);
             let mut meter = match meter_opt {
@@ -413,18 +470,25 @@ impl SolarGridContract {
                 );
             }
         }
+        Ok(())
     }
 
     /// Get the on-chain token balance held by this contract for a specific meter.
-    pub fn get_meter_balance(env: Env, meter_id: Symbol) -> i128 {
+    pub fn get_meter_balance(env: Env, meter_id: Symbol) -> Result<i128, ContractError> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Meter(meter_id.clone()))
+        {
+            return Err(ContractError::MeterNotFound);
+        }
         let bal_key = DataKey::MeterBalance(meter_id);
-        env.storage().persistent().get(&bal_key).unwrap_or(0)
+        Ok(env.storage().persistent().get(&bal_key).unwrap_or(0))
     }
 
     /// Get meter details.
-    pub fn get_meter(env: Env, meter_id: Symbol) -> Meter {
-        let key = DataKey::Meter(meter_id);
-        env.storage().persistent().get(&key).expect("meter not found")
+    pub fn get_meter(env: Env, meter_id: Symbol) -> Result<Meter, ContractError> {
+        Self::get_meter_by_id(&env, &meter_id)
     }
 
     /// Admin can manually toggle meter access (e.g. maintenance).
@@ -436,15 +500,15 @@ impl SolarGridContract {
     /// Emits:
     /// - `meter_activated   { meter_id }` when toggled on
     /// - `meter_deactivated { meter_id }` when toggled off
-    pub fn set_active(env: Env, meter_id: Symbol, active: bool) {
-        Self::require_admin(&env);
+    pub fn set_active(env: Env, meter_id: Symbol, active: bool) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id.clone());
-        let mut meter: Meter = env.storage().persistent().get(&key).expect("meter not found");
+        let mut meter = Self::get_meter_by_id(&env, &meter_id)?;
         if active {
             let bal_key = DataKey::MeterBalance(meter_id.clone());
             let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
             if balance == 0 {
-                panic!("cannot activate meter with zero balance");
+                return Err(ContractError::CannotActivateWithoutBalance);
             }
         }
         meter.active = active;
@@ -461,6 +525,7 @@ impl SolarGridContract {
                 (),
             );
         }
+        Ok(())
     }
 
     /// Migrate a single meter entry from the v0 (LegacyMeter) schema to v1 (Meter).
@@ -469,41 +534,66 @@ impl SolarGridContract {
     /// # Panics
     /// - `ContractError::NotInitialized` — if contract is not initialized
     /// - `"meter not found"` — if `meter_id` has no storage entry
-    pub fn migrate_meter(env: Env, meter_id: Symbol) {
-        Self::require_admin(&env);
+    pub fn migrate_meter(env: Env, meter_id: Symbol) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id.clone());
-        // Attempt to read as current Meter first; if it deserializes, already migrated.
         let legacy: LegacyMeter = env
             .storage()
             .persistent()
             .get(&key)
-            .expect("meter not found");
+            .ok_or(ContractError::MeterNotFound)?;
         let migrated = migrate_meter_v0(legacy);
         env.storage().persistent().set(&key, &migrated);
+        Ok(())
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
-    fn require_initialized(env: &Env) {
+    fn require_initialized(env: &Env) -> Result<(), ContractError> {
         if !env.storage().instance().has(&ADMIN) {
-            env.panic_with_error(ContractError::NotInitialized);
+            return Err(ContractError::NotInitialized);
         }
+        Ok(())
     }
 
-    fn require_admin(env: &Env) {
-        Self::require_initialized(env);
-        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+    fn require_admin(env: &Env) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env)?;
         admin.require_auth();
+        Ok(())
     }
 
-    fn require_oracle(env: &Env) {
-        Self::require_initialized(env);
+    fn require_oracle(env: &Env) -> Result<(), ContractError> {
+        Self::require_initialized(env)?;
         let oracle: Address = env
             .storage()
             .instance()
             .get(&ORACLE)
-            .unwrap_or_else(|| env.panic_with_error(ContractError::OracleNotSet));
+            .ok_or(ContractError::OracleNotSet)?;
         oracle.require_auth();
+        Ok(())
+    }
+
+    fn get_admin(env: &Env) -> Result<Address, ContractError> {
+        Self::require_initialized(env)?;
+        env.storage()
+            .instance()
+            .get(&ADMIN)
+            .ok_or(ContractError::NotInitialized)
+    }
+
+    fn get_token_address(env: &Env) -> Result<Address, ContractError> {
+        Self::require_initialized(env)?;
+        env.storage()
+            .instance()
+            .get(&TOKEN)
+            .ok_or(ContractError::NotInitialized)
+    }
+
+    fn get_meter_by_id(env: &Env, meter_id: &Symbol) -> Result<Meter, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Meter(meter_id.clone()))
+            .ok_or(ContractError::MeterNotFound)
     }
 }
 
@@ -540,16 +630,6 @@ mod tests {
     ) {
         client.allowlist_add(user);
         client.register_meter(meter_id, user);
-    }
-
-    fn setup_token(env: &Env) -> (Address, token::StellarAssetClient<'_>, token::Client<'_>) {
-        let token_admin = Address::generate(env);
-        let token_address = env
-            .register_stellar_asset_contract_v2(token_admin.clone())
-            .address();
-        let token_admin_client = token::StellarAssetClient::new(env, &token_address);
-        let token_client = token::Client::new(env, &token_address);
-        (token_address, token_admin_client, token_client)
     }
 
     /// Setup with a specific token registered in initialize.
@@ -612,25 +692,25 @@ mod tests {
         );
     }
 
-    /// make_payment with amount = 0 should panic.
+    /// make_payment with amount = 0 should return InvalidAmount.
     #[test]
-    #[should_panic(expected = "amount must be positive")]
-    fn test_make_payment_zero_amount_panics() {
+    fn test_make_payment_zero_amount_returns_invalid_amount() {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER3");
         allowlist_and_register(&client, &meter_id, &user);
-        client.make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily);
+        let result = client.try_make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
     #[test]
-    #[should_panic(expected = "amount must be positive")]
-    fn test_make_payment_negative_amount_panics() {
+    fn test_make_payment_negative_amount_returns_invalid_amount() {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER4");
         allowlist_and_register(&client, &meter_id, &user);
-        client.make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily);
+        let result = client.try_make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 
     #[test]
@@ -782,15 +862,14 @@ mod tests {
         assert!(renewed.expires_at > meter.expires_at);
     }
 
-    /// Registering an owner not on the allowlist must panic.
+    /// Registering an owner not on the allowlist must return OwnerNotAllowlisted.
     #[test]
-    #[should_panic(expected = "owner not in allowlist")]
-    fn test_register_meter_owner_not_allowlisted_panics() {
+    fn test_register_meter_owner_not_allowlisted_returns_typed_error() {
         let (env, client, _admin) = setup();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER8");
-        // Deliberately skip allowlist_add
-        client.register_meter(&meter_id, &user);
+        let result = client.try_register_meter(&meter_id, &user);
+        assert_eq!(result, Err(Ok(ContractError::OwnerNotAllowlisted)));
     }
 
     /// allowlist_add / allowlist_remove round-trip.
@@ -854,13 +933,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "insufficient treasury balance")]
-    fn test_withdraw_revenue_panics_when_amount_exceeds_tracked_balance() {
+    fn test_withdraw_revenue_returns_insufficient_provider_revenue() {
         let (env, client, admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METR10");
         allowlist_and_register(&client, &meter_id, &user);
-        client.withdraw_revenue(&admin, &1_i128);
+        let result = client.try_withdraw_revenue(&admin, &1_i128);
+        assert_eq!(result, Err(Ok(ContractError::InsufficientProviderRevenue)));
     }
 
     #[test]
@@ -883,15 +962,31 @@ mod tests {
 
     // ── Event emission tests ──────────────────────────────────────────────────
 
-    /// set_active(true) must panic when the meter has zero balance (#86).
+    /// set_active(true) must return CannotActivateWithoutBalance when the meter has zero balance.
     #[test]
-    #[should_panic(expected = "cannot activate meter with zero balance")]
-    fn test_set_active_true_panics_when_balance_zero() {
+    fn test_set_active_true_returns_cannot_activate_without_balance() {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("ZERO_BAL");
         allowlist_and_register(&client, &meter_id, &user);
+        let result = client.try_set_active(&meter_id, &true);
+        assert_eq!(result, Err(Ok(ContractError::CannotActivateWithoutBalance)));
+    }
+
+    /// set_active(true) succeeds when meter has positive balance.
+    #[test]
+    fn test_set_active_true_succeeds_with_positive_balance() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("POS_BAL");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.set_active(&meter_id, &false);
+        assert!(!client.get_meter(&meter_id).active);
         client.set_active(&meter_id, &true);
+        assert!(client.get_meter(&meter_id).active);
     }
 
     #[test]
@@ -996,6 +1091,52 @@ mod tests {
         for id in &ids {
             assert!(meters.contains(id));
         }
+    }
+
+    /// get_all_meters returns all registered meters across all owners.
+    #[test]
+    fn test_get_all_meters_returns_all_registered() {
+        let (env, client, _admin) = setup();
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let ids = [
+            symbol_short!("ALL_1"), symbol_short!("ALL_2"), symbol_short!("ALL_3"),
+            symbol_short!("ALL_4"), symbol_short!("ALL_5"), symbol_short!("ALL_6"),
+            symbol_short!("ALL_7"), symbol_short!("ALL_8"), symbol_short!("ALL_9"),
+            symbol_short!("ALL_A"), symbol_short!("ALL_B"),
+        ];
+
+        client.allowlist_add(&user1);
+        client.allowlist_add(&user2);
+        for (i, id) in ids.iter().enumerate() {
+            let owner = if i < 6 { &user1 } else { &user2 };
+            client.register_meter(id, owner);
+        }
+
+        let all_meters = client.get_all_meters();
+        assert_eq!(all_meters.len(), 11);
+        for meter in all_meters.iter() {
+            assert!(!meter.active);
+            assert_eq!(meter.units_used, 0);
+        }
+    }
+
+    /// get_all_meters requires admin auth.
+    #[test]
+    #[should_panic(expected = "not authorized")]
+    fn test_get_all_meters_requires_admin() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        client.initialize(&admin, &token_address);
+        // Don't mock auth for this call
+        env.mock_all_auths_allowing_non_root_auth();
+        client.get_all_meters();
     }
 
     #[test]
@@ -1151,6 +1292,22 @@ mod tests {
         assert!(skipped, "batch_skip event not emitted for invalid meter");
     }
 
+    #[test]
+    #[should_panic(expected = "batch too large")]
+    fn test_batch_update_usage_rejects_oversized_batch() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let meter_id = symbol_short!("OVER");
+        register_and_fund(&env, &client, &token_address, &meter_id, 1_000_000_i128);
+
+        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        for i in 0..51 {
+            let id = Symbol::new(&env, &format!("M{}", i));
+            updates.push_back((id, 1_u64, 100_i128));
+        }
+        client.batch_update_usage(&updates);
+    }
+
     // ── Oracle whitelist tests ────────────────────────────────────────────────
 
     /// set_oracle stores the address; get_oracle returns it.
@@ -1215,10 +1372,42 @@ mod tests {
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
-        let user = Address::generate(&env);
         // Contract is not initialized — set_active should return NotInitialized
         let result = client.try_set_active(&symbol_short!("UNINIT"), &true);
         assert_eq!(result, Err(Ok(ContractError::NotInitialized)));
+    }
+
+    #[test]
+    fn test_initialize_returns_already_initialized_on_second_call() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+
+        client.initialize(&admin, &token_address);
+
+        let result = client.try_initialize(&admin, &token_address);
+        assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
+    }
+
+    #[test]
+    fn test_get_meter_returns_meter_not_found_for_unknown_meter() {
+        let (_env, client, _admin) = setup();
+        let result = client.try_get_meter(&symbol_short!("MISS_MTR"));
+        assert!(matches!(result, Err(Ok(ContractError::MeterNotFound))));
+    }
+
+    #[test]
+    fn test_withdraw_revenue_returns_unauthorized_for_non_admin() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let provider = Address::generate(&env);
+        let result = client.try_withdraw_revenue(&provider, &1_i128);
+        assert_eq!(result, Err(Ok(ContractError::Unauthorized)));
     }
 
     // ── Migration tests ───────────────────────────────────────────────────────

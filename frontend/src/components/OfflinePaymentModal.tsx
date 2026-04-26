@@ -137,7 +137,7 @@ export default function OfflinePaymentModal({ meterId, onClose }: Props) {
           {/* What happens next */}
           <section className="rounded-lg border border-white/10 bg-solar-dark px-4 py-3 text-xs text-gray-400 space-y-1">
             <p className="font-semibold text-gray-300 mb-1">What happens next?</p>
-            <p>✓ You'll receive a confirmation SMS within 60 seconds.</p>
+            <p>✓ You&apos;ll receive a confirmation SMS within 60 seconds.</p>
             <p>✓ Your meter will be topped up automatically.</p>
             <p>✓ Transaction is recorded on the Stellar blockchain.</p>
           </section>

@@ -20,6 +20,7 @@ function buildKit(): StellarWalletsKit {
         ? WalletNetwork.TESTNET
         : WalletNetwork.PUBLIC,
     selectedWalletId: FREIGHTER_ID,
+    modules: [],
   });
 }
 
