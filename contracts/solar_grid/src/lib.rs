@@ -1180,6 +1180,22 @@ mod tests {
         assert!(skipped, "batch_skip event not emitted for invalid meter");
     }
 
+    #[test]
+    #[should_panic(expected = "batch too large")]
+    fn test_batch_update_usage_rejects_oversized_batch() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let meter_id = symbol_short!("OVER");
+        register_and_fund(&env, &client, &token_address, &meter_id, 1_000_000_i128);
+
+        let mut updates: soroban_sdk::Vec<(Symbol, u64, i128)> = soroban_sdk::Vec::new(&env);
+        for i in 0..51 {
+            let id = Symbol::new(&env, &format!("M{}", i));
+            updates.push_back((id, 1_u64, 100_i128));
+        }
+        client.batch_update_usage(&updates);
+    }
+
     // ── Oracle whitelist tests ────────────────────────────────────────────────
 
     /// set_oracle stores the address; get_oracle returns it.
