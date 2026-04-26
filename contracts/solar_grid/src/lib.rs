@@ -105,7 +105,7 @@ impl SolarGridContract {
     pub fn initialize(env: Env, admin: Address, token_address: Address) {
         env.deployer().require_auth();
         if env.storage().instance().has(&ADMIN) {
-            panic!("already initialized");
+            env.panic_with_error(ContractError::AlreadyInitialized);
         }
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token_address);
@@ -125,7 +125,7 @@ impl SolarGridContract {
         Self::require_admin(&env);
         let allowlist = Self::get_allowlist(env.clone());
         if !allowlist.contains(&owner) {
-            panic!("owner not in allowlist");
+            env.panic_with_error(ContractError::OwnerNotAllowlisted);
         }
         let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
@@ -236,7 +236,7 @@ impl SolarGridContract {
     ) {
         payer.require_auth();
         if amount <= 0 {
-            panic!("amount must be positive");
+            env.panic_with_error(ContractError::InvalidAmount);
         }
         let token_address: Address = env.storage().instance().get(&TOKEN).expect("not initialized");
         let token_client = token::Client::new(&env, &token_address);
