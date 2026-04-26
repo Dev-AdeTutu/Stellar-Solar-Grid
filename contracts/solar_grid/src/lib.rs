@@ -298,19 +298,19 @@ impl SolarGridContract {
     /// Emits: `rev_wdrl { provider, token_address, amount }`
     pub fn withdraw_revenue(env: Env, provider: Address, amount: i128) {
         if amount <= 0 {
-            panic!("amount must be positive");
+            env.panic_with_error(ContractError::InvalidAmount);
         }
         Self::require_initialized(&env);
         let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         if provider != admin {
-            panic!("provider is not admin");
+            env.panic_with_error(ContractError::Unauthorized);
         }
         provider.require_auth();
 
         let provider_key = DataKey::ProviderRevenue(provider.clone());
         let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
         if provider_revenue < amount {
-            panic!("insufficient provider revenue");
+            env.panic_with_error(ContractError::InsufficientBalance);
         }
 
         env.storage()
