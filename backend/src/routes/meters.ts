@@ -1,15 +1,10 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke, contractQuery } from "../lib/stellar.js";
-import { activeMeters, paymentVolume } from "../lib/metrics.js";
-import { asyncHandler } from "../lib/asyncHandler.js";
 import {
-  MakePaymentSchema,
-  MeterRouteParamsSchema,
-  RegisterMeterSchema,
-  UsageUpdateSchema,
-  validateRequest,
-} from "../lib/validation.js";
+  getUsageHistory,
+  persistAndSubmitUsageEvent,
+} from "../lib/usageEvents.js";
 
 export const meterRouter = Router();
 
@@ -34,6 +29,19 @@ meterRouter.get(
     res.json({ active: StellarSdk.scValToNative(result) });
   }),
 );
+
+/** GET /api/meters/:id/history — paginated local usage history */
+meterRouter.get("/:id/history", (req, res) => {
+  const page = Math.max(1, Number(req.query.page ?? 1) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
+
+  try {
+    const history = getUsageHistory(req.params.id, page, pageSize);
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /** GET /api/meters/owner/:address — list all meters for an owner (#32) */
 meterRouter.get(
@@ -62,58 +70,26 @@ meterRouter.post(
 );
 
 /** POST /api/meters/:id/usage — IoT oracle reports usage */
-meterRouter.post(
-  "/:id/usage",
-  validateRequest({ params: MeterRouteParamsSchema, body: UsageUpdateSchema }),
-  asyncHandler(async (req, res) => {
-    const { units, cost } = req.body;
-
-    const hash = await adminInvoke("update_usage", [
-      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
-      StellarSdk.nativeToScVal(BigInt(units), { type: "u64" }),
-      StellarSdk.nativeToScVal(BigInt(cost), { type: "i128" }),
-    ]);
-    // Decrement active meters gauge when cost drains balance (best-effort)
-    activeMeters.dec();
-    res.json({ hash });
-  }),
-);
-
-const TTL_MS = 24 * 60 * 60 * 1_000; // 24 hours
-const idempotencyCache = new Map<string, { hash: string; timestamp: number }>();
-
-/**
- * POST /api/meters/:id/pay
- *
- * Body: { token_address, payer, amount_stroops, plan }
- * Header: Idempotency-Key: <uuid>  (optional — duplicate within 24 h returns cached txHash)
- */
-meterRouter.post("/:id/pay", validateRequest({ params: MeterRouteParamsSchema, body: MakePaymentSchema }), asyncHandler(async (req, res) => {
-  const ikey = req.headers["idempotency-key"] as string | undefined;
-
-  if (ikey) {
-    const cached = idempotencyCache.get(ikey);
-    if (cached && Date.now() - cached.timestamp < TTL_MS) {
-      return res.json({ hash: cached.hash });
-    }
+meterRouter.post("/:id/usage", async (req, res) => {
+  const { units, cost } = req.body as { units: number; cost: number };
+  if (units == null || cost == null) {
+    return res.status(400).json({ error: "units and cost are required" });
   }
+  try {
+    const event = await persistAndSubmitUsageEvent({
+      meterId: req.params.id,
+      units,
+      cost,
+      sourceTopic: null,
+    });
 
-  const { token_address, payer, amount_stroops, plan } = req.body;
-
-  const hash = await adminInvoke("make_payment", [
-    StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
-    StellarSdk.nativeToScVal(token_address, { type: "address" }),
-    StellarSdk.nativeToScVal(payer, { type: "address" }),
-    StellarSdk.nativeToScVal(BigInt(amount_stroops), { type: "i128" }),
-    StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol(plan)]),
-  ]);
-
-  if (ikey) {
-    // Evict expired entries lazily before inserting
-    for (const [k, v] of idempotencyCache) {
-      if (Date.now() - v.timestamp >= TTL_MS) idempotencyCache.delete(k);
-    }
-    idempotencyCache.set(ikey, { hash, timestamp: Date.now() });
+    res.json({
+      event,
+      hash: event.on_chain_tx_hash,
+      queued: !event.on_chain_tx_hash,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 
   paymentVolume.inc(amount_stroops / 10_000_000);

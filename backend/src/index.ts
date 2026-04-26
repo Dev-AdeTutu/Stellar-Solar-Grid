@@ -5,8 +5,10 @@ import { meterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { startIoTBridge } from "./iot/bridge.js";
-import { logger } from "./lib/logger.js";
-import { register } from "./lib/metrics.js";
+import {
+  initUsageEventStore,
+  startUsageEventRetryWorker,
+} from "./lib/usageEvents.js";
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -63,6 +65,8 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 app.listen(PORT, () => {
-  logger.info(`SolarGrid backend running on port ${PORT}`);
+  initUsageEventStore();
+  startUsageEventRetryWorker();
+  console.log(`🌞 SolarGrid backend running on port ${PORT}`);
   startIoTBridge();
 });

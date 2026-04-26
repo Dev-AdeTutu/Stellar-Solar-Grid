@@ -9,11 +9,7 @@
  */
 
 import mqtt from "mqtt";
-import { adminInvoke } from "../lib/stellar.js";
-import { logger } from "../lib/logger.js";
-import { mqttMessages } from "../lib/metrics.js";
-import * as StellarSdk from "@stellar/stellar-sdk";
-import { CONTRACT_ID, server } from "../lib/stellar.js";
+import { persistAndSubmitUsageEvent } from "../lib/usageEvents.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -77,8 +73,20 @@ function startMqttBridge() {
         cost: number;
       };
 
-      logger.info("Usage update", { meterId, units, cost });
-      pending.push({ meterId, units, cost });
+      console.log(`⚡ Usage update — meter: ${meterId}, units: ${units}, cost: ${cost}`);
+
+      const event = await persistAndSubmitUsageEvent({
+        meterId,
+        units,
+        cost,
+        sourceTopic: topic,
+      });
+
+      if (event.on_chain_tx_hash) {
+        console.log(`✅ Usage recorded on-chain: ${event.on_chain_tx_hash}`);
+      } else {
+        console.warn(`⏳ Usage event ${event.id} queued for retry`);
+      }
     } catch (err) {
       logger.error("IoT bridge parse error", { err });
     }

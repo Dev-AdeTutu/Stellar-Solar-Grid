@@ -40,6 +40,10 @@ cargo build --target wasm32-unknown-unknown --release
 stellar contract deploy --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm --network testnet
 ```
 
+Deployment guidance:
+- Prefer setting `admin` and `token_address` through the contract constructor at deploy time so initialization is atomic.
+- If you must call `initialize`, do it in the same transaction flow as deployment. Leaving the contract uninitialized after deploy creates a front-running risk where another caller can initialize first.
+
 ### Frontend
 
 ```bash
@@ -55,6 +59,8 @@ cd backend
 npm install
 npm run dev
 ```
+
+The backend stores IoT usage events in a local SQLite database at `backend/data/usage-events.sqlite` by default. Set `USAGE_EVENTS_DB_PATH` to override the file location.
 
 ## Smart Contract Overview
 
