@@ -90,3 +90,31 @@ All event emissions are covered by unit tests:
 - `test_event_meter_deactivated_via_set_active`
 - `test_event_meter_activated_via_set_active`
 - `test_batch_update_usage_skips_invalid_meter` (includes batch_skip event)
+
+## Contract Upgrades & Storage Migration
+
+The `Meter` struct carries a `version: u32` field (currently `1`). When the struct layout changes in a future release, existing persistent storage entries must be migrated before they can be read by the new code.
+
+### Migration flow
+
+1. Deploy the new contract WASM (old entries remain in persistent storage).
+2. For each registered meter, call the admin-only `migrate_meter(meter_id)` function.  
+   It reads the entry as the previous schema (`LegacyMeter`) and writes it back as the current `Meter` v1.
+3. Once all entries are migrated, the `LegacyMeter` type and `migrate_meter_v0` helper can be removed in a subsequent release.
+
+```bash
+# Migrate a single meter via Stellar CLI
+stellar contract invoke \
+  --id <CONTRACT_ID> \
+  --source <ADMIN_SECRET> \
+  --network testnet \
+  -- migrate_meter --meter_id METER1
+```
+
+> `migrate_meter` is idempotent — calling it on an already-migrated meter overwrites with the same data. Always test on testnet before mainnet.
+
+### Struct version history
+
+| Version | Fields added / changed |
+|---------|------------------------|
+| 1 | Initial layout: `owner`, `active`, `units_used`, `plan`, `last_payment`, `expires_at` |

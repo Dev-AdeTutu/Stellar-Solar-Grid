@@ -1401,6 +1401,23 @@ mod tests {
         assert_eq!(result, Err(Ok(ContractError::AlreadyInitialized)));
     }
 
+    /// initialize must be signed by the admin being set — any other caller is rejected.
+    #[test]
+    #[should_panic(expected = "not authorized")]
+    fn test_initialize_requires_admin_auth() {
+        let env = Env::default();
+        // Do NOT mock auths — the admin must actually sign
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        // No auth provided → should panic
+        client.initialize(&admin, &token_address);
+    }
+
     #[test]
     fn test_get_meter_returns_meter_not_found_for_unknown_meter() {
         let (_env, client, _admin) = setup();
