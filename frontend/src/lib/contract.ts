@@ -8,12 +8,14 @@ const NETWORK_PASSPHRASE = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE!;
 const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
 
 export interface MeterData {
+  version: number;
   owner: string;
   active: boolean;
-  balance: bigint;
   units_used: bigint;
   plan: string;
   last_payment: bigint;
+  expires_at: bigint;
+  balance: bigint; // Fetched separately via get_meter_balance
 }
 
 export async function fetchMeter(meterId: string): Promise<MeterData> {
@@ -22,7 +24,8 @@ export async function fetchMeter(meterId: string): Promise<MeterData> {
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
 
-  const tx = new StellarSdk.TransactionBuilder(account, {
+  // Fetch meter details
+  const meterTx = new StellarSdk.TransactionBuilder(account, {
     fee: "100",
     networkPassphrase: NETWORK_PASSPHRASE,
   })
@@ -35,13 +38,40 @@ export async function fetchMeter(meterId: string): Promise<MeterData> {
     .setTimeout(30)
     .build();
 
-  const sim = await server.simulateTransaction(tx);
-  if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {
-    throw new Error(sim.error);
+  const meterSim = await server.simulateTransaction(meterTx);
+  if (StellarSdk.SorobanRpc.Api.isSimulationError(meterSim)) {
+    throw new Error(meterSim.error);
   }
-  const retval = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
-  if (!retval) throw new Error("No result from contract");
-  return StellarSdk.scValToNative(retval) as MeterData;
+  const meterRetval = (meterSim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  if (!meterRetval) throw new Error("No result from get_meter");
+  const meterData = StellarSdk.scValToNative(meterRetval);
+
+  // Fetch meter balance separately
+  const balanceTx = new StellarSdk.TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        "get_meter_balance",
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  const balanceSim = await server.simulateTransaction(balanceTx);
+  if (StellarSdk.SorobanRpc.Api.isSimulationError(balanceSim)) {
+    throw new Error(balanceSim.error);
+  }
+  const balanceRetval = (balanceSim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  if (!balanceRetval) throw new Error("No result from get_meter_balance");
+  const balance = StellarSdk.scValToNative(balanceRetval);
+
+  return {
+    ...meterData,
+    balance: BigInt(balance),
+  } as MeterData;
 }
 
 /**
@@ -110,4 +140,32 @@ export async function fetchMetersByOwner(ownerAddress: string): Promise<string[]
   const retval = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
   if (!retval) return [];
   return StellarSdk.scValToNative(retval) as string[];
+}
+
+/** Check if a meter currently has active energy access. */
+export async function checkMeterAccess(meterId: string): Promise<boolean> {
+  const contract = new StellarSdk.Contract(CONTRACT_ID);
+  const keypair = StellarSdk.Keypair.random();
+  const account = new StellarSdk.Account(keypair.publicKey(), "0");
+
+  const tx = new StellarSdk.TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(
+      contract.call(
+        "check_access",
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" })
+      )
+    )
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {
+    throw new Error(sim.error);
+  }
+  const retval = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  if (!retval) return false;
+  return StellarSdk.scValToNative(retval) as boolean;
 }

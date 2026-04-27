@@ -1,0 +1,7 @@
+feat: implement real-time data fetching for user dashboard
+
+- Fix MeterData interface to match contract v1 schema
+- Add separate balance fetching via get_meter_balance()
+- Enhance dashboard UI with expiry tracking and warnings
+- Add comprehensive error handling and loading states
+- Include extensive documentation and testing guides

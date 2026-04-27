@@ -1,5 +1,17 @@
 "use client";
 
+/**
+ * User Dashboard - Displays real-time meter data from Soroban smart contract
+ * 
+ * Features:
+ * - Fetches live meter data using contractQuery('get_meter', [...])
+ * - Fetches meter balance separately using contractQuery('get_meter_balance', [...])
+ * - Displays: balance, active status, units used, plan, last payment, expiry
+ * - Auto-refreshes on wallet change
+ * - Manual refresh button
+ * - Loading and error states
+ */
+
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
@@ -48,13 +60,29 @@ function PlanBadge({ plan }: { plan: string }) {
 }
 
 function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
+  const now = Date.now() / 1000; // Current time in seconds
+  const expiresAt = Number(meter.expires_at);
+  const isExpired = expiresAt !== Number.MAX_SAFE_INTEGER && expiresAt > 0 && now >= expiresAt;
+  const hasAccess = meter.active && meter.balance > 0n && !isExpired;
+
+  // Format expiry date
+  const formatExpiry = () => {
+    if (meter.plan === "UsageBased" || expiresAt === Number.MAX_SAFE_INTEGER) {
+      return "Never (Usage-based)";
+    }
+    if (expiresAt === 0) return "—";
+    const date = new Date(expiresAt * 1000);
+    if (isExpired) return `Expired ${date.toLocaleDateString()}`;
+    return date.toLocaleDateString();
+  };
+
   return (
     <div className="rounded-xl border border-white/10 bg-solar-accent p-5 space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-mono text-sm text-solar-yellow font-semibold">{meterId}</span>
         <div className="flex items-center gap-2">
-          <StatusBadge active={meter.active} />
+          <StatusBadge active={hasAccess} />
           <PlanBadge plan={meter.plan} />
         </div>
       </div>
@@ -63,16 +91,30 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
           { label: "Balance", value: `${stroopsToXlm(meter.balance)} XLM` },
-          { label: "Units Used", value: `${meter.units_used} kWh` },
+          { label: "Units Used", value: `${Number(meter.units_used) / 1000} kWh` },
           { label: "Last Payment", value: meter.last_payment > 0n ? new Date(Number(meter.last_payment) * 1000).toLocaleDateString() : "—" },
-          { label: "Owner", value: `${meter.owner.slice(0, 6)}…${meter.owner.slice(-4)}` },
+          { label: "Expires", value: formatExpiry() },
         ].map(({ label, value }) => (
           <div key={label} className="flex flex-col gap-0.5">
             <span className="text-xs uppercase tracking-wider text-gray-500">{label}</span>
-            <span className="text-sm font-semibold text-white truncate">{value}</span>
+            <span className={`text-sm font-semibold truncate ${label === "Expires" && isExpired ? "text-red-400" : "text-white"}`}>
+              {value}
+            </span>
           </div>
         ))}
       </div>
+
+      {/* Warning for expired or low balance */}
+      {(isExpired || meter.balance === 0n) && (
+        <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 p-3 text-yellow-300 text-xs flex items-start gap-2">
+          <span className="mt-0.5">⚠</span>
+          <p>
+            {isExpired && "Your plan has expired. "}
+            {meter.balance === 0n && "Your balance is zero. "}
+            Top up to restore access.
+          </p>
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex gap-2 pt-1">
