@@ -22,6 +22,7 @@ pub enum ContractError {
     BatchTooLarge = 10,
     CannotActivateWithoutBalance = 11,
     InsufficientBalance = 12,
+    CollaboratorAlreadyExists = 13,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -512,7 +513,7 @@ impl SolarGridContract {
     pub fn add_collaborator(env: Env, collaborator: Address, basis_points: u32) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         if basis_points == 0 || basis_points > 10_000 {
-            panic!("basis_points must be between 1 and 10000");
+            return Err(ContractError::InvalidAmount);
         }
 
         let mut collabs: Vec<Address> = env
@@ -527,13 +528,13 @@ impl SolarGridContract {
             .unwrap_or(Map::new(&env));
 
         if shares.contains_key(collaborator.clone()) {
-            panic!("collaborator already added");
+            return Err(ContractError::CollaboratorAlreadyExists);
         }
 
         // Guard against total exceeding 100%
         let total: u32 = shares.values().iter().sum();
         if total + basis_points > 10_000 {
-            panic!("total shares would exceed 100%");
+            return Err(ContractError::InvalidAmount);
         }
 
         collabs.push_back(collaborator.clone());
@@ -566,7 +567,7 @@ impl SolarGridContract {
     pub fn distribute(env: Env, amount: i128) -> Result<Map<Address, i128>, ContractError> {
         Self::require_admin(&env)?;
         if amount <= 0 {
-            panic!("amount must be positive");
+            return Err(ContractError::InvalidAmount);
         }
 
         let collabs: Vec<Address> = env
@@ -651,7 +652,7 @@ impl SolarGridContract {
             return Err(ContractError::OracleNotSet);
         }
         if updates.len() > 50 {
-            panic!("batch too large");
+            return Err(ContractError::BatchTooLarge);
         }
         for (meter_id, units, cost) in updates.iter() {
             let key = DataKey::Meter(meter_id.clone());
@@ -1404,7 +1405,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "batch too large")]
     fn test_batch_update_usage_rejects_oversized_batch() {
         let (env, client, _admin, token_address) = setup_with_token();
         setup_oracle(&env, &client);
@@ -1431,7 +1431,8 @@ mod tests {
         for id in ids.iter() {
             updates.push_back((id.clone(), 1_u64, 100_i128));
         }
-        client.batch_update_usage(&updates);
+        let result = client.try_batch_update_usage(&updates);
+        assert_eq!(result, Err(Ok(ContractError::BatchTooLarge)));
     }
 
     // ── Oracle whitelist tests ────────────────────────────────────────────────
@@ -1630,24 +1631,56 @@ mod tests {
         assert_eq!(payouts.get(bob).unwrap(), 2_500_000);
     }
 
-    /// Adding a duplicate collaborator should panic.
+    /// Adding a duplicate collaborator should return CollaboratorAlreadyExists error.
     #[test]
-    #[should_panic(expected = "collaborator already added")]
-    fn test_add_collaborator_duplicate_panics() {
+    fn test_add_collaborator_duplicate_returns_typed_error() {
         let (env, client, _admin) = setup();
         let alice = Address::generate(&env);
         client.add_collaborator(&alice, &5_000_u32);
-        client.add_collaborator(&alice, &5_000_u32);
+        let result = client.try_add_collaborator(&alice, &5_000_u32);
+        assert_eq!(result, Err(Ok(ContractError::CollaboratorAlreadyExists)));
     }
 
-    /// Total shares exceeding 100% should panic.
+    /// Total shares exceeding 100% should return InvalidAmount error.
     #[test]
-    #[should_panic(expected = "total shares would exceed 100%")]
-    fn test_add_collaborator_overflow_panics() {
+    fn test_add_collaborator_overflow_returns_typed_error() {
         let (env, client, _admin) = setup();
         let alice = Address::generate(&env);
         let bob = Address::generate(&env);
         client.add_collaborator(&alice, &6_000_u32);
-        client.add_collaborator(&bob, &5_000_u32); // 60 + 50 > 100%
+        let result = client.try_add_collaborator(&bob, &5_000_u32); // 60 + 50 > 100%
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+    }
+
+    /// Invalid basis_points (0 or > 10000) should return InvalidAmount error.
+    #[test]
+    fn test_add_collaborator_invalid_basis_points_returns_typed_error() {
+        let (env, client, _admin) = setup();
+        let alice = Address::generate(&env);
+        
+        // Test zero basis points
+        let result = client.try_add_collaborator(&alice, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+        
+        // Test basis points > 10000
+        let bob = Address::generate(&env);
+        let result = client.try_add_collaborator(&bob, &10_001_u32);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+    }
+
+    /// distribute with zero or negative amount should return InvalidAmount error.
+    #[test]
+    fn test_distribute_invalid_amount_returns_typed_error() {
+        let (env, client, _admin) = setup();
+        let alice = Address::generate(&env);
+        client.add_collaborator(&alice, &5_000_u32);
+        
+        // Test zero amount
+        let result = client.try_distribute(&0_i128);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+        
+        // Test negative amount
+        let result = client.try_distribute(&-1_i128);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
     }
 }
