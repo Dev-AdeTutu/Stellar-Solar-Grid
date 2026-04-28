@@ -71,15 +71,36 @@ meterRouter.post(
 
 /** POST /api/meters/:id/usage — IoT oracle reports usage */
 meterRouter.post("/:id/usage", async (req, res) => {
-  const { units, cost } = req.body as { units: number; cost: number };
+  const { units, cost } = req.body as { units: unknown; cost: unknown };
+
+  // Presence check
   if (units == null || cost == null) {
     return res.status(400).json({ error: "units and cost are required" });
   }
+
+  const unitsNum = Number(units);
+  const costNum  = Number(cost);
+
+  // Must be finite numbers
+  if (!Number.isFinite(unitsNum) || !Number.isFinite(costNum)) {
+    return res.status(400).json({ error: "units and cost must be valid numbers" });
+  }
+
+  // Must be integers
+  if (!Number.isInteger(unitsNum) || !Number.isInteger(costNum)) {
+    return res.status(400).json({ error: "units and cost must be integers" });
+  }
+
+  // Must be strictly positive — rejects zero and negative values
+  if (unitsNum <= 0 || costNum <= 0) {
+    return res.status(400).json({ error: "units and cost must be positive" });
+  }
+
   try {
     const event = await persistAndSubmitUsageEvent({
       meterId: req.params.id,
-      units,
-      cost,
+      units: unitsNum,
+      cost: costNum,
       sourceTopic: null,
     });
 
@@ -91,8 +112,4 @@ meterRouter.post("/:id/usage", async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-
-  paymentVolume.inc(amount_stroops / 10_000_000);
-  activeMeters.inc();
-  res.json({ hash });
-}));
+});
