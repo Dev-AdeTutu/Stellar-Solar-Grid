@@ -92,8 +92,6 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
 pub enum DataKey {
     Meter(Symbol),
     OwnerMeters(Address),
-    ProviderRevenue(Address),
-    MeterBalance(Symbol),
 }
 
 // ── Event topics (contract namespace) ────────────────────────────────────────
@@ -722,7 +720,7 @@ mod tests {
     use soroban_sdk::{
         symbol_short,
         testutils::{Address as _, Events, Ledger},
-        token, Address, Env, Symbol, TryFromVal,
+        token, Address, Env, FromVal, Val,
     };
 
     fn sym_eq(env: &Env, val: &soroban_sdk::Val, expected: Symbol) -> bool {
@@ -735,11 +733,7 @@ mod tests {
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        let token_admin = Address::generate(&env);
-        let token_address = env
-            .register_stellar_asset_contract_v2(token_admin)
-            .address();
-        client.initialize(&admin, &token_address);
+        client.initialize(&admin, &95_u32);
         (env, client, admin)
     }
 
@@ -1044,10 +1038,9 @@ mod tests {
     }
 
     #[test]
-    fn test_withdraw_revenue_tracks_and_withdraws_provider_balance() {
-        let (env, client, admin, token_address) = setup_with_token();
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        let token_client = token::Client::new(&env, &token_address);
+    fn test_withdraw_revenue_tracks_and_withdraws_treasury_balance() {
+        let (env, client, admin) = setup();
+        let (token_address, token_admin_client, token_client) = setup_token(&env);
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER9");
@@ -1056,11 +1049,11 @@ mod tests {
         token_admin_client.mint(&user, &5_000_000_i128);
         client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily);
 
-        assert_eq!(client.get_provider_revenue(&admin), 5_000_000_i128);
+        assert_eq!(client.get_treasury(), 4_750_000_i128);
         assert_eq!(token_client.balance(&client.address), 5_000_000_i128);
 
-        client.withdraw_revenue(&admin, &2_000_000_i128);
-        assert_eq!(client.get_provider_revenue(&admin), 3_000_000_i128);
+        client.withdraw_revenue(&token_address, &admin, &2_000_000_i128);
+        assert_eq!(client.get_treasury(), 2_750_000_i128);
         assert_eq!(token_client.balance(&client.address), 3_000_000_i128);
         assert_eq!(token_client.balance(&admin), 2_000_000_i128);
     }
@@ -1121,8 +1114,8 @@ mod tests {
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, _)| {
             topics.len() >= 2
-                && topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_reg"))).unwrap_or(false)
-                && topics.get(1).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
+                && topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_reg")).get_payload())
+                && topics.get(1).map(|v| v.get_payload()) == Some(Val::from_val(&env, &EVT_NS).get_payload())
         });
         assert!(found, "mtr_reg event not emitted");
     }
@@ -1143,7 +1136,7 @@ mod tests {
             topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("payment"))).unwrap_or(false)
         });
         let has_actv = events.iter().any(|(_, topics, _)| {
-            topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_actv"))).unwrap_or(false)
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_actv")).get_payload())
         });
         assert!(has_pmt, "payment event not emitted");
         assert!(has_actv, "mtr_actv event not emitted");
@@ -1168,7 +1161,7 @@ mod tests {
             topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("usage"))).unwrap_or(false)
         });
         let has_deact = events.iter().any(|(_, topics, _)| {
-            topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_deact"))).unwrap_or(false)
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_deact")).get_payload())
         });
         assert!(has_usg, "usage event not emitted");
         assert!(has_deact, "mtr_deact event not emitted on balance drain");
@@ -1189,7 +1182,7 @@ mod tests {
 
         let events = env.events().all();
         let has_deact = events.iter().any(|(_, topics, _)| {
-            topics.get(0).map(|v| sym_eq(&env, &v, symbol_short!("mtr_deact"))).unwrap_or(false)
+            topics.get(0).map(|v| v.get_payload()) == Some(Val::from_val(&env, &symbol_short!("mtr_deact")).get_payload())
         });
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
     }

@@ -1145,6 +1145,17 @@
           "v0": {
             "topics": [
               {
+                "symbol": "set_admin"
+              },
+              {
+                "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF"
+              },
+              {
+                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAJXFF"
+              }
+            ],
+            "data": {
+              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 "symbol": "fn_call"
               },
               {
@@ -1172,6 +1183,7 @@
     {
       "event": {
         "ext": "v0",
+        "contract_id": "8011bbf4cdf04e5bc6ac886935b99aa4b2c0cabde133f9d7fb3e656799f0a896",
         "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
         "type_": "diagnostic",
         "body": {
@@ -1181,6 +1193,7 @@
                 "symbol": "fn_return"
               },
               {
+                "symbol": "set_admin"
                 "symbol": "initialize"
               }
             ],
@@ -1428,6 +1441,9 @@
               "vec": [
                 {
                   "symbol": "METER9"
+                },
+                {
+                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -1720,6 +1736,17 @@
                   },
                   "val": {
                     "bool": true
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "balance"
+                  },
+                  "val": {
+                    "i128": {
+                      "hi": 0,
+                      "lo": 2000000
+                    }
                   }
                 },
                 {
