@@ -1718,10 +1718,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "EV_USG"
@@ -1733,20 +1730,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 500
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
@@ -1848,10 +1835,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "usg_upd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "usage"
               },
               {
                 "symbol": "EV_USG"

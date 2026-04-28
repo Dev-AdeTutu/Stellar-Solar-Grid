@@ -1550,10 +1550,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "EV_PMT"
@@ -1565,20 +1562,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 1000000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Daily"
-                    }
-                  ]
                 }
               ]
             }

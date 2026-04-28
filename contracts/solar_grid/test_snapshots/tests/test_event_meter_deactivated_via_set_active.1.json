@@ -1605,10 +1605,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "EV_SET"
@@ -1620,20 +1617,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 1000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Daily"
-                    }
-                  ]
                 }
               ]
             }
@@ -1714,6 +1701,29 @@
                   "bool": false
                 }
               ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000001",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "access"
+              },
+              {
+                "symbol": "EV_SET"
+              }
+            ],
+            "data": {
+              "bool": false
             }
           }
         }

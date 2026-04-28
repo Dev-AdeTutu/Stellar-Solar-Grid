@@ -3956,10 +3956,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "B5_M1"
@@ -3971,20 +3968,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 10000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
@@ -4401,10 +4388,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "B5_M2"
@@ -4416,20 +4400,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 10000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
@@ -4846,10 +4820,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "B5_M3"
@@ -4861,20 +4832,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 10000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
@@ -5291,10 +5252,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "B5_M4"
@@ -5306,20 +5264,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 10000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
@@ -5736,10 +5684,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "B5_M5"
@@ -5751,20 +5696,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 10000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }

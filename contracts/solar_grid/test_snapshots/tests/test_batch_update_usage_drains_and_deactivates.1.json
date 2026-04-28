@@ -2285,10 +2285,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "BD_M1"
@@ -2300,20 +2297,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 1000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
@@ -2730,10 +2717,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "BD_M2"
@@ -2745,20 +2729,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 5000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
                 }
               ]
             }
