@@ -169,3 +169,31 @@ export async function checkMeterAccess(meterId: string): Promise<boolean> {
   if (!retval) return false;
   return StellarSdk.scValToNative(retval) as boolean;
 }
+
+/** Fetch all registered meters (admin only). */
+export async function fetchAllMeters(): Promise<MeterData[]> {
+  const contract = new StellarSdk.Contract(CONTRACT_ID);
+  const keypair = StellarSdk.Keypair.random();
+  const account = new StellarSdk.Account(keypair.publicKey(), "0");
+
+  const tx = new StellarSdk.TransactionBuilder(account, {
+    fee: "100",
+    networkPassphrase: NETWORK_PASSPHRASE,
+  })
+    .addOperation(contract.call("get_all_meters"))
+    .setTimeout(30)
+    .build();
+
+  const sim = await server.simulateTransaction(tx);
+  if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {
+    throw new Error(sim.error);
+  }
+  const retval = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
+  if (!retval) return [];
+  
+  const rawMeters = StellarSdk.scValToNative(retval) as any[];
+  return rawMeters.map((m) => ({
+    ...m,
+    balance: 0n, // Balance isn't stored in the Meter struct anymore, but kept for UI compatibility
+  })) as MeterData[];
+}

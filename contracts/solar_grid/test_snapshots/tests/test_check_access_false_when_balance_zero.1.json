@@ -1772,10 +1772,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "pmt_rcvd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "payment"
               },
               {
                 "symbol": "METER7"
@@ -1787,20 +1784,10 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
-                },
-                {
                   "i128": {
                     "hi": 0,
                     "lo": 2000000
                   }
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "Weekly"
-                    }
-                  ]
                 }
               ]
             }
@@ -1951,10 +1938,7 @@
           "v0": {
             "topics": [
               {
-                "symbol": "usg_upd"
-              },
-              {
-                "symbol": "solargrid"
+                "symbol": "usage"
               },
               {
                 "symbol": "METER7"
