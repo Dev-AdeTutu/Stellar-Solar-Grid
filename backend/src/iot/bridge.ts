@@ -9,7 +9,9 @@
  */
 
 import mqtt from "mqtt";
+import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent } from "../lib/usageEvents.js";
+import { UsageUpdateSchema } from "../lib/validation.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -68,10 +70,24 @@ function startMqttBridge() {
     mqttMessages.inc();
     try {
       const meterId = topic.split("/")[2];
-      const { units, cost } = JSON.parse(payload.toString()) as {
-        units: number;
-        cost: number;
-      };
+
+      let raw: unknown;
+      try {
+        raw = JSON.parse(payload.toString());
+      } catch (err) {
+        logger.error("Invalid MQTT payload (not JSON)", { topic, err });
+        return;
+      }
+
+      const parsed = UsageUpdateSchema.safeParse(raw);
+      if (!parsed.success) {
+        logger.error("Invalid MQTT payload (schema validation failed)", {
+          topic,
+          errors: parsed.error.flatten().fieldErrors,
+        });
+        return;
+      }
+      const { units, cost } = parsed.data;
 
       console.log(`⚡ Usage update — meter: ${meterId}, units: ${units}, cost: ${cost}`);
 
