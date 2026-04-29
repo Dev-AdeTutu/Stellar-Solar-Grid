@@ -9,6 +9,7 @@
  */
 
 import mqtt from "mqtt";
+import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent } from "../lib/usageEvents.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
@@ -73,7 +74,11 @@ function startMqttBridge() {
         cost: number;
       };
 
-      console.log(`⚡ Usage update — meter: ${meterId}, units: ${units}, cost: ${cost}`);
+      logger.info("Usage update received from IoT bridge", {
+        meterId,
+        units,
+        cost,
+      });
 
       const event = await persistAndSubmitUsageEvent({
         meterId,
@@ -83,9 +88,16 @@ function startMqttBridge() {
       });
 
       if (event.on_chain_tx_hash) {
-        console.log(`✅ Usage recorded on-chain: ${event.on_chain_tx_hash}`);
+        logger.info("Usage recorded on-chain", {
+          meterId,
+          eventId: event.id,
+          txHash: event.on_chain_tx_hash,
+        });
       } else {
-        console.warn(`⏳ Usage event ${event.id} queued for retry`);
+        logger.warn("Usage event queued for retry", {
+          meterId,
+          eventId: event.id,
+        });
       }
     } catch (err) {
       logger.error("IoT bridge parse error", { err });
@@ -103,7 +115,7 @@ function startMqttBridge() {
 let lastProcessedLedger = 0;
 
 function startContractEventListener() {
-  console.log("🔔 Contract event listener started");
+  logger.info("Contract event listener started");
   setInterval(pollContractEvents, EVENT_POLL_INTERVAL_MS);
 }
 
@@ -137,7 +149,7 @@ async function pollContractEvents() {
 
     lastProcessedLedger = currentLedger;
   } catch (err) {
-    console.error("Contract event poll error:", err);
+    logger.error("Contract event poll error", { err });
   }
 }
 
@@ -161,9 +173,10 @@ async function handleContractEvent(
         const data = event.value;
         const native = StellarSdk.scValToNative(data) as [string, bigint, unknown];
         const [meterId, amount] = native;
-        console.log(
-          `💰 payment_received — meter: ${meterId}, amount: ${Number(amount) / 10_000_000} XLM`,
-        );
+        logger.info("payment_received contract event", {
+          meterId: String(meterId),
+          amountXlm: Number(amount) / 10_000_000,
+        });
         await onPaymentReceived(String(meterId), Number(amount));
         break;
       }
@@ -171,7 +184,7 @@ async function handleContractEvent(
       case "meter:activated": {
         const data = event.value;
         const meterId = String(StellarSdk.scValToNative(data));
-        console.log(`✅ meter_activated — meter: ${meterId}`);
+        logger.info("meter_activated contract event", { meterId });
         await onMeterActivated(meterId);
         break;
       }
@@ -179,7 +192,7 @@ async function handleContractEvent(
       case "meter:deactivated": {
         const data = event.value;
         const meterId = String(StellarSdk.scValToNative(data));
-        console.log(`🔴 meter_deactivated — meter: ${meterId}`);
+        logger.info("meter_deactivated contract event", { meterId });
         await onMeterDeactivated(meterId);
         break;
       }
@@ -188,7 +201,7 @@ async function handleContractEvent(
         break;
     }
   } catch (err) {
-    console.error("Error handling contract event:", err);
+    logger.error("Error handling contract event", { err });
   }
 }
 
@@ -197,19 +210,20 @@ async function handleContractEvent(
 async function onPaymentReceived(meterId: string, amountStroops: number) {
   // Placeholder: notify downstream services, update a cache, send a push
   // notification, etc.
-  console.log(
-    `[handler] Payment received for meter ${meterId}: ${amountStroops / 10_000_000} XLM`,
-  );
+  logger.info("Payment received handler", {
+    meterId,
+    amountXlm: amountStroops / 10_000_000,
+  });
 }
 
 async function onMeterActivated(meterId: string) {
   // Send ON signal to the physical smart meter via MQTT or HTTP
-  console.log(`[handler] Sending ON signal to meter ${meterId}`);
+  logger.info("Sending ON signal to meter", { meterId });
   // e.g. mqttClient.publish(`solargrid/meters/${meterId}/control`, JSON.stringify({ cmd: "ON" }));
 }
 
 async function onMeterDeactivated(meterId: string) {
   // Send OFF signal to the physical smart meter via MQTT or HTTP
-  console.log(`[handler] Sending OFF signal to meter ${meterId}`);
+  logger.info("Sending OFF signal to meter", { meterId });
   // e.g. mqttClient.publish(`solargrid/meters/${meterId}/control`, JSON.stringify({ cmd: "OFF" }));
 }
