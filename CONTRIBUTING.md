@@ -1,160 +1,170 @@
 # Contributing to Stellar SolarGrid
 
-Thanks for your interest in contributing! This guide covers everything you need to get up and running.
+Thanks for helping improve Stellar SolarGrid. This guide explains how to set up the backend, frontend, and Soroban contract locally, plus the conventions maintainers expect in pull requests.
 
-## Table of Contents
+## Prerequisites
 
-- [Getting Started](#getting-started)
-- [Project Structure](#project-structure)
-- [Development Setup](#development-setup)
-- [Coding Standards](#coding-standards)
-- [Submitting a Pull Request](#submitting-a-pull-request)
+- Node.js 20.x
+- npm 10.x or the npm version bundled with Node 20
+- Rust stable via [rustup](https://rustup.rs/)
+- `wasm32-unknown-unknown` Rust target
+- [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli)
+- A local MQTT broker such as Mosquitto
+- Freighter Wallet for browser-based testnet flows
 
----
+Install the Rust WASM target once:
 
-## Getting Started
-
-1. Fork the repository and clone your fork:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/Stellar-Solar-Grid.git
-   cd Stellar-Solar-Grid
-   ```
-
-2. Add the upstream remote:
-   ```bash
-   git remote add upstream https://github.com/ORIGINAL_OWNER/Stellar-Solar-Grid.git
-   ```
-
-3. Create a feature branch off `main`:
-   ```bash
-   git checkout -b feat/your-feature-name
-   ```
-
----
-
-## Project Structure
-
-```
-Stellar-Solar-Grid/
-├── contracts/     # Soroban smart contracts (Rust)
-├── frontend/      # React + TypeScript dashboards (Vite)
-└── backend/       # Node.js API + IoT MQTT bridge (Express + tsx)
-```
-
----
-
-## Development Setup
-
-### Prerequisites
-
-| Tool | Version |
-|------|---------|
-| Node.js | >= 18 |
-| Rust | stable (via [rustup](https://rustup.rs/)) |
-| Stellar CLI | latest |
-| Freighter Wallet | browser extension |
-
-Add the WASM target once after installing Rust:
 ```bash
 rustup target add wasm32-unknown-unknown
 ```
 
-### Smart Contracts
+If you use Mosquitto with the included config, run it from the repo root:
+
+```bash
+mosquitto -c mosquitto.conf
+```
+
+## Local Setup
+
+Fork the repository, clone your fork, and add the upstream remote:
+
+```bash
+git clone https://github.com/YOUR_USERNAME/Stellar-Solar-Grid.git
+cd Stellar-Solar-Grid
+git remote add upstream https://github.com/Dev-AdeTutu/Stellar-Solar-Grid.git
+```
+
+Create a branch from `main` before making changes:
+
+```bash
+git fetch upstream
+git checkout main
+git rebase upstream/main
+git checkout -b docs/update-contributing-guide
+```
+
+## Backend
+
+The backend is a Node.js TypeScript API with an IoT MQTT bridge.
+
+```bash
+cd backend
+npm install
+npm run dev
+```
+
+Useful backend commands:
+
+```bash
+npm run build
+npm run test:e2e
+```
+
+The backend stores local usage events in `backend/data/usage-events.sqlite` by default. Set `USAGE_EVENTS_DB_PATH` to use another SQLite file.
+
+## Frontend
+
+The frontend is a Next.js TypeScript app.
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Useful frontend commands:
+
+```bash
+npm run build
+npm run lint
+npm run test
+```
+
+## Smart Contract
+
+The Soroban contract lives under `contracts/`.
+
+```bash
+cd contracts
+cargo build --target wasm32-unknown-unknown --release
+cargo test
+```
+
+Format and lint Rust changes before opening a PR:
+
+```bash
+cargo fmt
+cargo clippy -- -D warnings
+```
+
+## Testnet Deployment
+
+Build the contract WASM first:
 
 ```bash
 cd contracts
 cargo build --target wasm32-unknown-unknown --release
 ```
 
-Deploy to testnet:
+Deploy to testnet with Stellar CLI:
+
 ```bash
 stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm \
   --network testnet
 ```
 
-### Frontend
+Prefer passing the admin and token address through the constructor or the same deployment flow. Do not leave a new deployment uninitialized.
 
-```bash
-cd frontend
-cp .env.example .env        # fill in your contract ID and network
-npm install
-npm run dev
+## Branch Naming
+
+Use short, descriptive branch names with one of these prefixes:
+
+- `feat/` for new features
+- `fix/` for bug fixes
+- `refactor/` for internal restructuring
+- `docs/` for documentation-only changes
+
+Examples:
+
+```text
+feat/provider-dashboard-filter
+fix/meter-access-expiry
+refactor/payment-service-errors
+docs/contributing-guide
 ```
 
-### Backend
+## Commit Messages
 
-```bash
-cd backend
-cp .env.example .env        # fill in your Stellar keys and MQTT config
-npm install
-npm run dev
+Use Conventional Commits:
+
+```text
+feat: add weekly payment plan support
+fix: handle expired meter access
+refactor: split payment validation helpers
+docs: update contract deployment steps
+test: add payment flow coverage
 ```
 
----
+Keep commits focused. If a change mixes docs, frontend, backend, and contract behavior, split it into separate commits or PRs when practical.
 
-## Coding Standards
+## Pull Request Checklist
 
-### TypeScript (frontend & backend)
+Before opening a PR:
 
-- Use TypeScript strict mode — no `any` unless absolutely necessary.
-- Prefer `const` over `let`; avoid `var`.
-- Name files in `kebab-case`, components in `PascalCase`.
-- Keep functions small and single-purpose.
-- Run `tsc --noEmit` before committing to catch type errors.
+- [ ] Branch is rebased on the latest `upstream/main`
+- [ ] Backend build passes when backend code changes
+- [ ] Frontend build, lint, and tests pass when frontend code changes
+- [ ] `cargo test` passes when contract code changes
+- [ ] New behavior has tests or a clear reason tests were not added
+- [ ] README or docs are updated when setup, APIs, or workflows change
+- [ ] No secrets, `.env` files, private keys, or testnet seed phrases are committed
+- [ ] PR description explains the reason for the change and links the issue
 
-### Rust (contracts)
+## Review Process
 
-- Follow standard Rust formatting: `cargo fmt` before every commit.
-- Run `cargo clippy -- -D warnings` and fix all warnings.
-- Document public functions with `///` doc comments.
-- Avoid `unwrap()` in contract code — handle errors explicitly.
+Open your PR against `main` and link the relevant issue with `Closes #123` or `Fixes #123`. Keep the PR focused on the issue scope and respond to maintainer feedback promptly.
 
-### General
+## Code of Conduct
 
-- No commented-out dead code in PRs.
-- Keep commits atomic and write meaningful commit messages using [Conventional Commits](https://www.conventionalcommits.org/):
-  ```
-  feat: add weekly payment plan support
-  fix: correct meter access check logic
-  docs: update contract deployment steps
-  ```
-
----
-
-## Submitting a Pull Request
-
-1. Sync with upstream before opening a PR:
-   ```bash
-   git fetch upstream
-   git rebase upstream/main
-   ```
-
-2. Make sure the project builds cleanly:
-   ```bash
-   # Contracts
-   cargo build --target wasm32-unknown-unknown --release
-
-   # Frontend
-   cd frontend && npm run build
-
-   # Backend
-   cd backend && npm run build
-   ```
-
-3. Push your branch and open a PR against `main`.
-
-4. Fill out the pull request template completely.
-
-5. A maintainer will review your PR. Please respond to feedback promptly and keep the branch up to date.
-
-### PR Checklist
-
-- [ ] Code builds without errors or warnings
-- [ ] Existing functionality is not broken
-- [ ] New logic is reasonably self-documenting or commented
-- [ ] PR description explains the *why*, not just the *what*
-
----
-
-For questions, open a [Discussion](../../discussions) or drop a comment on the relevant issue.
+All contributors are expected to follow the project [Code of Conduct](CODE_OF_CONDUCT.md). Keep discussions respectful, technical, and focused on improving the project.

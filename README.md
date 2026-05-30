@@ -25,6 +25,8 @@ stellar-solar-grid/
 
 ## Getting Started
 
+New contributors should read [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, branch naming, commit conventions, testing commands, and the pull request checklist.
+
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` target
