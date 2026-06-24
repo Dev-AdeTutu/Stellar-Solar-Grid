@@ -30,6 +30,7 @@ paymentsRouter.get("/:address", async (req, res) => {
   const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
   const limit = Math.min(50, Math.max(1, parseInt((req.query.limit as string) ?? "10", 10)));
   const sort = req.query.sort === "asc" ? "asc" : "desc";
+  const days = Math.min(90, Math.max(1, parseInt((req.query.days as string) ?? "30", 10)));
 
   try {
     StellarSdk.StrKey.decodeEd25519PublicKey(address);
@@ -38,7 +39,7 @@ paymentsRouter.get("/:address", async (req, res) => {
   }
 
   try {
-    const records = await fetchPaymentEvents(address, sort);
+    const records = await fetchPaymentEvents(address, sort, days);
     const total = records.length;
     const start = (page - 1) * limit;
     const paginated = records.slice(start, start + limit);
@@ -49,6 +50,9 @@ paymentsRouter.get("/:address", async (req, res) => {
     });
   } catch (err: any) {
     console.error("payments route error:", err);
+    if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
+      return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+    }
     return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
   }
 });
@@ -57,11 +61,11 @@ paymentsRouter.get("/:address", async (req, res) => {
 
 async function fetchPaymentEvents(
   address: string,
-  sort: "asc" | "desc"
+  sort: "asc" | "desc",
+  days = 30
 ): Promise<PaymentRecord[]> {
-  // Query Soroban RPC for contract events
-  const now = Math.floor(Date.now() / 1000);
-  // Soroban events are keyed by ledger sequence; use a wide window (last ~30 days)
+  // Query Soroban RPC for contract events within the requested day window
+  try {
   const response = await (server as any).getEvents({
     startLedger: 1,
     filters: [
@@ -77,12 +81,13 @@ async function fetchPaymentEvents(
     limit: 1000,
   });
 
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const events: PaymentRecord[] = [];
 
   for (const event of response?.events ?? []) {
     try {
       const record = parsePaymentEvent(event, address);
-      if (record) events.push(record);
+      if (record && new Date(record.date).getTime() >= cutoff) events.push(record);
     } catch {
       // skip malformed events
     }
@@ -95,6 +100,11 @@ async function fetchPaymentEvents(
   });
 
   return events;
+  } catch (err: any) {
+    const rpcErr: any = new Error(err.message ?? "RPC request failed");
+    rpcErr.isRpcError = true;
+    throw rpcErr;
+  }
 }
 
 function parsePaymentEvent(event: any, filterAddress: string): PaymentRecord | null {

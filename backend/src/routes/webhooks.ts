@@ -26,6 +26,20 @@ function verifySignature(rawBody: Buffer, signature: string): boolean {
  *
  * Triggers make_payment on-chain using the admin keypair as payer.
  */
+let lowBalanceWebhookUrl: string | null = null;
+
+/**
+ * DELETE /api/webhooks/low-balance
+ * Clears the registered low-balance webhook URL.
+ */
+webhookRouter.delete("/low-balance", (_req, res) => {
+  if (!lowBalanceWebhookUrl) {
+    return res.status(404).json({ error: "No low-balance webhook registered" });
+  }
+  lowBalanceWebhookUrl = null;
+  return res.status(200).json({ message: "Low-balance webhook cleared" });
+});
+
 webhookRouter.post("/sms-payment", async (req, res) => {
   const signature = req.headers["x-webhook-signature"] as string | undefined;
   if (
