@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { SkeletonCard } from "@/components/SkeletonCard";
@@ -10,12 +10,18 @@ import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { useInterval } from "@/hooks/useInterval";
 
 const STROOPS_PER_XLM = 10_000_000n;
 
 const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
-const BALANCE_POLL_INTERVAL_MS = 30_000; // 30 seconds
+
+// Honour NEXT_PUBLIC_POLL_INTERVAL_MS env override, fall back to 30 s
+const BALANCE_POLL_INTERVAL_MS: number = (() => {
+  const env = process.env.NEXT_PUBLIC_POLL_INTERVAL_MS;
+  const parsed = env ? parseInt(env, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
+})();
 
 function stroopsToXlm(stroops: bigint): string {
   const whole = stroops / STROOPS_PER_XLM;
@@ -277,6 +283,7 @@ export default function UserDashboardPage() {
     }
   }, [address, showToast]);
 
+  // Initial fetch when wallet connects / address changes
   useEffect(() => {
     if (!address) {
       setMeterIds([]);
@@ -289,46 +296,38 @@ export default function UserDashboardPage() {
     fetchAll();
   }, [address, fetchAll]);
 
-  // Poll individual meter balances every 30s for live updates
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (!address || meterIds.length === 0) {
-      if (pollRef.current) clearInterval(pollRef.current);
-      return;
-    }
-
-    async function pollBalances() {
-      for (const id of meterIds) {
-        try {
-          const res = await fetch(`${API}/api/meters/${id}/balance`);
-          if (!res.ok) continue;
-          const data = await res.json();
-          setMeters((prev) => {
-            const existing = prev[id];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [id]: {
-                ...existing,
-                balance: BigInt(data.balance ?? existing.balance),
-                units_used: data.units_used ?? existing.units_used,
-                active: data.active ?? existing.active,
-              },
-            };
-          });
-        } catch {
-          // Silently skip — full refresh will recover
-        }
+  // Poll individual meter balances for live updates.
+  // useInterval does NOT fire on mount, so fetchAll() above handles the
+  // first load — no double-fetch on first render.
+  const pollBalances = useCallback(async () => {
+    if (!address || meterIds.length === 0) return;
+    for (const id of meterIds) {
+      try {
+        const res = await fetch(`${API}/api/meters/${id}/balance`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        setMeters((prev) => {
+          const existing = prev[id];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [id]: {
+              ...existing,
+              balance: BigInt(data.balance ?? existing.balance),
+              units_used: data.units_used ?? existing.units_used,
+              active: data.active ?? existing.active,
+            },
+          };
+        });
+      } catch {
+        // Silently skip — full refresh will recover on next interval
       }
-      setLastRefresh(new Date());
     }
-
-    pollRef.current = setInterval(pollBalances, BALANCE_POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    setLastRefresh(new Date());
   }, [address, meterIds]);
+
+  // Pause polling when address is gone or no meters loaded yet
+  useInterval(pollBalances, address && meterIds.length > 0 ? BALANCE_POLL_INTERVAL_MS : null);
 
   return (
     <ErrorBoundary>
