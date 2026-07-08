@@ -9,7 +9,7 @@ vi.mock("../src/lib/stellar", () => ({
     timestampToLedger: vi.fn(),
   },
   CONTRACT_ID: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-  NETWORK_PASSPHRASE: StellarSdk.Networks.TESTNET,
+  NETWORK_PASSPHRASE: "Test SDF Network ; September 2015",
   server: {
     getEvents: vi.fn(),
   },

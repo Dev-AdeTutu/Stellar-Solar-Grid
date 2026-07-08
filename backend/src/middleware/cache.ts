@@ -26,3 +26,12 @@ export function invalidateCache(prefix: string) {
     if (key.startsWith(prefix)) store.delete(key);
   }
 }
+
+import crypto from "crypto";
+
+export function etagFor(data: unknown): string {
+  const str = typeof data === "string" ? data : JSON.stringify(data);
+  const hash = crypto.createHash("sha1").update(str).digest("base64");
+  return `W/"${hash}"`;
+}
+

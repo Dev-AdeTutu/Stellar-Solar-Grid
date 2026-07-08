@@ -10,7 +10,6 @@ import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
-import { cacheFor, invalidateCache } from "../middleware/cache.js";
 
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
@@ -457,6 +456,58 @@ export function createMeterRouter(stellar: StellarService) {
     }),
   );
 
+  /** POST /api/meters/batch — batch register meters (admin only) */
+  meterRouter.post(
+    "/batch",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const { meters } = req.body;
+      if (!meters || !Array.isArray(meters)) {
+        return res.status(400).json({ error: "meters array is required", code: "VALIDATION_ERROR" });
+      }
+      if (meters.length > 50) {
+        return res.status(400).json({ error: "At most 50 meters can be registered in a batch", code: "VALIDATION_ERROR" });
+      }
+
+      const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
+      const results: Array<{ meter_id: string; hash?: string; error?: string }> = [];
+
+      for (const item of meters) {
+        const meterId = item?.meter_id;
+        const owner = item?.owner;
+
+        if (!meterId || typeof meterId !== "string" || meterId.trim().length === 0) {
+          results.push({ meter_id: String(meterId ?? ""), error: "meter_id is required" });
+          continue;
+        }
+
+        const trimmedId = meterId.trim();
+        if (trimmedId.length > 12) {
+          results.push({ meter_id: trimmedId, error: "meter_id must be at most 12 characters" });
+          continue;
+        }
+
+        if (!owner || typeof owner !== "string" || !STELLAR_ACCOUNT_REGEX.test(owner)) {
+          results.push({ meter_id: trimmedId, error: "Invalid Stellar account address format" });
+          continue;
+        }
+
+        try {
+          const hash = await stellar.invoke("register_meter", [
+            StellarSdk.nativeToScVal(trimmedId, { type: "symbol" }),
+            StellarSdk.nativeToScVal(owner, { type: "address" }),
+          ]);
+          results.push({ meter_id: trimmedId, hash });
+        } catch (err: any) {
+          results.push({ meter_id: trimmedId, error: err.message ?? "Registration failed" });
+        }
+      }
+
+      res.json({ results });
+    }),
+  );
+
+
   /** POST /api/meters/:id/usage — IoT oracle reports usage */
   meterRouter.post("/:id/usage", requireAdminKey, async (req, res) => {
     const { units, cost } = req.body as { units: unknown; cost: unknown };
@@ -561,8 +612,6 @@ export function createMeterRouter(stellar: StellarService) {
     }),
   );
 
-  return meterRouter;
-}
   /** DELETE /api/meters/:id — admin deregisters a meter */
   meterRouter.delete(
     "/:id",
