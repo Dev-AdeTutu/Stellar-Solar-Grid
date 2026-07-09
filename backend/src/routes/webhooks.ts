@@ -2,7 +2,7 @@ import { Router } from "express";
 import * as crypto from "crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { stellarService } from "../lib/stellar.js";
-import { registerWebhook } from "../lib/webhookRegistry.js";
+import { registerWebhook, getWebhookUrls } from "../lib/webhookRegistry.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest } from "../lib/validation.js";
 import { logger } from "../lib/logger.js";
@@ -91,6 +91,22 @@ webhookRouter.post(
     return res.status(200).json({
       message: "Webhook registered successfully",
       webhook_url,
+    });
+  }),
+);
+
+/**
+ * GET /api/webhooks
+ *
+ * List all registered low-balance webhook URLs.
+ */
+webhookRouter.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    const urls = Array.from(getWebhookUrls());
+    return res.status(200).json({
+      webhooks: urls,
+      count: urls.length,
     });
   }),
 );

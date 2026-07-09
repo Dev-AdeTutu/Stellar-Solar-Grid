@@ -4,12 +4,14 @@ import { StellarService, stellarService } from "../lib/stellar.js";
 import {
   getUsageHistory,
   persistAndSubmitUsageEvent,
+  initUsageEventStore,
 } from "../lib/usageEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
+import { getMqttClient } from "../iot/mqttClient.js";
 
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
@@ -101,6 +103,32 @@ export function createMeterRouter(stellar: StellarService) {
       });
 
       res.json({ expiring, count: expiring.length });
+    })
+  );
+
+  /** GET /api/meters/inactive — return meters where active=false with last_used timestamp */
+  meterRouter.get(
+    "/inactive",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const result = await stellar.query("get_all_meters", []);
+      const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+
+      const inactiveMeters = allMeters.filter((m: any) => !m.active);
+
+      const dbInstance = initUsageEventStore();
+      const inactiveWithLastUsed = inactiveMeters.map((m: any) => {
+        const row = dbInstance
+          .prepare("SELECT MAX(received_at) as last_used FROM usage_events WHERE meter_id = ?")
+          .get(m.id) as { last_used: string | null } | undefined;
+        
+        return {
+          ...m,
+          last_used: row?.last_used ?? null,
+        };
+      });
+
+      res.json({ inactive: inactiveWithLastUsed, count: inactiveWithLastUsed.length });
     })
   );
 
@@ -266,6 +294,18 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
         StellarSdk.nativeToScVal(false, { type: "bool" }),
       ]);
+      
+      try {
+        const mqttClient = getMqttClient();
+        mqttClient.publish(
+          `solargrid/meters/${meterId}/control`,
+          JSON.stringify({ cmd: 'OFF', timestamp: new Date().toISOString() }),
+          { qos: 1 }
+        );
+      } catch (err) {
+        logger.error("Failed to publish MQTT deactivation message", { meterId, err });
+      }
+
       res.json({ hash, meter_id: meterId, active: false });
     }),
   );
