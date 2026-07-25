@@ -2,11 +2,10 @@
 
 import { useState } from "react";
 import { useOffline } from "@/hooks/useOffline";
+import { env } from "@/lib/env";
 
-const SMS_SHORTCODE = process.env.NEXT_PUBLIC_SMS_SHORTCODE ?? "20880";
-const SMS_WEBHOOK_DOCS =
-  process.env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS ??
-  "https://github.com/damiedee96/Stellar-Solar-Grid/blob/main/backend/README.md";
+const SMS_SHORTCODE = env.NEXT_PUBLIC_SMS_SHORTCODE;
+const SMS_WEBHOOK_DOCS = env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS;
 
 interface Props {
   meterId?: string;

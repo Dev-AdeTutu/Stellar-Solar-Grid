@@ -1,4 +1,6 @@
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+import { env } from "@/lib/env";
+
+const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 
 function adminHeaders(): Record<string, string> {
   const token = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("admin_token") : null;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { env } from "@/lib/env";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ interface IrradianceZone {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+const API_BASE = env.NEXT_PUBLIC_API_URL;
 
 const PERIOD_ICONS: Record<string, string> = {
   daily: "☀️",

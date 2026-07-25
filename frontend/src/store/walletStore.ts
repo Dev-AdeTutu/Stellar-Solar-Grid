@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { env } from "@/lib/env";
 import {
   StellarWalletsKit,
   WalletNetwork,
@@ -21,10 +22,9 @@ interface WalletState {
 
 function buildKit(): StellarWalletsKit {
   return new StellarWalletsKit({
-    network:
-      import.meta.env.VITE_NETWORK_PASSPHRASE?.includes("Test")
-        ? WalletNetwork.TESTNET
-        : WalletNetwork.PUBLIC,
+    network: env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
+      ? WalletNetwork.TESTNET
+      : WalletNetwork.PUBLIC,
     selectedWalletId: FREIGHTER_ID,
     modules: [new FreighterModule(), new xBullModule()],
   });
@@ -76,7 +76,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     if (!kit || !address) throw new Error("Wallet not connected");
     const { signedTxXdr } = await kit.signTransaction(xdr, {
       address,
-      networkPassphrase: import.meta.env.VITE_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
+      networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
   },
