@@ -93,6 +93,33 @@ collaboratorRouter.post("/", requireAdminKey, async (req, res) => {
   }
 
   try {
+    StellarSdk.StrKey.decodeEd25519PublicKey(address);
+  } catch {
+    return res.status(400).json({ error: "Invalid Stellar address" });
+  }
+
+  if (!Number.isInteger(basis_points) || basis_points < 0 || basis_points > 10000) {
+    return res.status(400).json({ error: "basis_points must be an integer between 0 and 10000" });
+  }
+
+  try {
+    const raw = await contractQuery("get_all_shares", []);
+    const shareMap = StellarSdk.scValToNative(raw) as Record<string, number>;
+    const total_basis_points = Object.values(shareMap).reduce((s, n) => s + n, 0);
+
+    if (total_basis_points + basis_points > 10000) {
+      return res.status(400).json({
+        error: "Adding this collaborator would exceed the 10000 basis-point limit",
+        current_total: total_basis_points,
+        requested: basis_points,
+        remaining: 10000 - total_basis_points,
+      });
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: "Failed to validate total basis points" });
+  }
+
+  try {
     const hash = await adminInvoke("add_collaborator", [
       StellarSdk.nativeToScVal(address, { type: "address" }),
       StellarSdk.nativeToScVal(basis_points, { type: "u32" }),

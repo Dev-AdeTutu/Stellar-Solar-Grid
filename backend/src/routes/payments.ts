@@ -89,7 +89,7 @@ paymentsRouter.get(
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
       });
     } catch (err: any) {
-      console.error("payments route error:", err);
+      logger.error("payments route error:", err);
       if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
         return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
       }
@@ -152,7 +152,7 @@ paymentsRouter.get(
         pages: Math.ceil(total / limit),
       });
     } catch (err: any) {
-      console.error("payments history route error:", err);
+      logger.error("payments history route error:", err);
       if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
         return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
       }
