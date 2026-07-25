@@ -256,6 +256,7 @@ app.listen(PORT, () => {
   initUsageEventStore();
   startUsageEventRetryWorker();
   logger.info("SolarGrid backend listening", { port: PORT });
+  startIoTBridge();
   startLimitWatcher(stellarService);
   try {
     startIoTBridge();

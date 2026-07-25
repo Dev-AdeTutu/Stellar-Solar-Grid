@@ -6,9 +6,6 @@ import { logger } from '../lib/logger.js';
 const THRESHOLD = 0.8;
 const warnedToday = new Set<string>();
 
-// Limit watcher initialization guard to prevent duplicate startup
-let watcherStarted = false;
-
 function scheduleWarnedReset() {
   const now = new Date();
   const midnight = new Date(now);
@@ -43,11 +40,6 @@ export async function checkDailyLimits(stellar: StellarService) {
 }
 
 export function startLimitWatcher(stellar: StellarService) {
-  if (watcherStarted) {
-    logger.warn("Limit watcher already started, skipping duplicate initialization");
-    return;
-  }
-  watcherStarted = true;
   scheduleWarnedReset();
   const intervalMs = Number(process.env.LIMIT_WATCH_INTERVAL_MS ?? 5 * 60 * 1000);
   setInterval(() => checkDailyLimits(stellar), intervalMs);

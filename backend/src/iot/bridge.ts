@@ -33,9 +33,6 @@ const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
 );
 
-// Bridge initialization guards to prevent duplicate startup
-let bridgeStarted = false;
-
 const LOW_BALANCE_THRESHOLD = parseInt(
   process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
 ); // 0.1 XLM in stroops
@@ -149,11 +146,6 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
 }
 
 export function startIoTBridge() {
-  if (bridgeStarted) {
-    logger.warn("IoT bridge already started, skipping duplicate initialization");
-    return;
-  }
-  bridgeStarted = true;
   startMqttBridge();
   startContractEventListener();
 }
