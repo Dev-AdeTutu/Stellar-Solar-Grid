@@ -93,7 +93,15 @@ Set the following environment variables:
 
 **`POST /api/webhooks/low-balance`**
 
-Register or update the webhook URL for low-balance notifications.
+Register or update the webhook URL for low-balance notifications. Requires
+admin authentication via the `X-Admin-Key` header (same admin key used by
+`/api/collaborators`).
+
+**Headers**
+
+| Header        | Required | Description                          |
+| ------------- | -------- | ------------------------------------ |
+| `X-Admin-Key` | Yes      | Must match the server's `ADMIN_API_KEY` |
 
 **Body**
 
@@ -111,6 +119,8 @@ Register or update the webhook URL for low-balance notifications.
   "webhook_url": "https://your-service.com/webhooks/low-balance"
 }
 ```
+
+A request without a valid `X-Admin-Key` header returns `401 Unauthorized`.
 
 ### Webhook Payload
 

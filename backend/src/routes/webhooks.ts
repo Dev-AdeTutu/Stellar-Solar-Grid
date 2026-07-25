@@ -5,6 +5,7 @@ import { stellarService } from "../lib/stellar.js";
 import { registerWebhook, getWebhookUrls } from "../lib/webhookRegistry.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest } from "../lib/validation.js";
+import { requireAdminKey } from "../middleware/adminAuth.js";
 import { logger } from "../lib/logger.js";
 import { activeMeters, paymentVolume } from "../lib/metrics.js";
 import { z } from "zod";
@@ -70,12 +71,14 @@ webhookRouter.post(
  * Register webhook URL for low-balance notifications.
  * Providers can configure their webhook endpoint to receive alerts
  * when a customer's meter balance drops below the threshold.
+ * Requires X-Admin-Key header.
  *
  * Payload:
  *   { "webhook_url": "https://example.com/webhook" }
  */
 webhookRouter.post(
   "/low-balance",
+  requireAdminKey,
   validateRequest({
     body: z.object({
       webhook_url: z.string().url("Invalid webhook URL format"),

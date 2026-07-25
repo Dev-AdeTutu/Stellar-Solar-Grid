@@ -764,6 +764,8 @@ paths:
     post:
       operationId: registerLowBalanceWebhook
       summary: Register a webhook URL for low-balance notifications
+      security:
+        - AdminKey: []
       tags: [Webhooks]
       requestBody:
         required: true
@@ -790,6 +792,8 @@ paths:
                     type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   # ── Allowlist ────────────────────────────────────────────────────────────────
   /api/allowlist:
