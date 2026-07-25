@@ -57,6 +57,16 @@ export const MakePaymentSchema = z
   })
   .strict();
 
+export const ClientErrorReportSchema = z
+  .object({
+    message: z.string().trim().min(1, "message is required").max(2000),
+    stack: z.string().max(10000).optional(),
+    componentStack: z.string().max(10000).optional(),
+    url: z.string().max(2000).optional(),
+    userAgent: z.string().max(500).optional(),
+  })
+  .strict();
+
 export const SmsPaymentWebhookSchema = z
   .object({
     meter_id: MeterIdSchema,

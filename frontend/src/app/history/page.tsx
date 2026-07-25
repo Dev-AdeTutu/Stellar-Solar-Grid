@@ -193,6 +193,32 @@ export default function HistoryPage() {
 
         {address && !error && (
           <>
+            {/* ── Mobile sort control (desktop uses the table's column headers) ── */}
+            <div className="sm:hidden flex items-center gap-2 mb-3">
+              <label htmlFor="mobile-sort-field" className="text-xs text-gray-400">
+                Sort by
+              </label>
+              <select
+                id="mobile-sort-field"
+                value={sortField}
+                onChange={(e) => handleSort(e.target.value as SortField)}
+                className="rounded-lg border border-white/10 bg-solar-accent px-2 py-1.5 text-xs text-gray-200 focus:border-solar-yellow focus:outline-none transition"
+              >
+                <option value="date">Date</option>
+                <option value="amountXlm">Amount</option>
+                <option value="plan">Plan</option>
+                <option value="meterId">Meter ID</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                aria-label={`Sort direction: ${sortDir === "asc" ? "ascending" : "descending"}. Tap to toggle.`}
+                className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+              >
+                {sortDir === "asc" ? "↑ Asc" : "↓ Desc"}
+              </button>
+            </div>
+
             {/* ── Mobile card list (hidden on sm+) ── */}
             <div className="sm:hidden space-y-3">
               {loading && [0, 1, 2, 3].map((i) => (
