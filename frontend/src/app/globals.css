@@ -3,15 +3,15 @@
 @tailwind utilities;
 
 :root[data-theme='dark'] {
-  --bg-primary: #0d1b2a;
-  --bg-card: #1c2b3a;
-  --text-primary: #e0e6ed;
+  --color-bg-primary: #0d1b2a;
+  --color-bg-card: #1c2b3a;
+  --color-text-primary: #e0e6ed;
 }
 
 :root[data-theme='light'] {
-  --bg-primary: #f0f4f8;
-  --bg-card: #ffffff;
-  --text-primary: #1a202c;
+  --color-bg-primary: #f0f4f8;
+  --color-bg-card: #ffffff;
+  --color-text-primary: #1a202c;
 }
 
 html {
@@ -22,8 +22,8 @@ html {
 }
 
 body {
-  color: var(--text-primary);
-  background: var(--bg-primary);
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
   font-family: system-ui, -apple-system, sans-serif;
   /* Prevent horizontal overflow on small screens */
   overflow-x: hidden;
@@ -56,7 +56,7 @@ input, select, textarea {
 
 /* ── Shared card / badge ─────────────────────────────────────────────────── */
 .card {
-  background: var(--bg-card);
+  background: var(--color-bg-card);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 0.75rem;
   padding: 1.25rem 1.5rem;
@@ -74,6 +74,10 @@ input, select, textarea {
   padding: 0.2rem 0.65rem;
   margin-bottom: 0.75rem;
 }
+
+.badge--active   { background: #22c55e; color: #fff; }
+.badge--inactive { background: #ef4444; color: #fff; }
+.badge--expired  { background: #f59e0b; color: #fff; }
 
 /* ── CollaboratorTable ───────────────────────────────────────────────────── */
 .collab-table {

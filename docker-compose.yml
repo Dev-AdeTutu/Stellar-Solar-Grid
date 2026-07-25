@@ -32,6 +32,12 @@ services:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
     networks:
       - app-network
+    healthcheck:
+      test: [CMD, mosquitto_sub, -t, $$SYS/#, -C, 1, -i, hc, -W, 3]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   backend:
     build: ./backend
@@ -46,9 +52,54 @@ services:
       - ./backend/.env
     depends_on:
       mqtt:
-        condition: service_started
+        condition: service_healthy
       env-check:
         condition: service_completed_successfully
+    networks:
+      - app-network
+    healthcheck:
+      test: [CMD, wget, -qO-, http://localhost:3001/api/health]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:latest
+    profiles:
+      - observability
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - app-network
+
+  grafana:
+    image: grafana/grafana:latest
+    profiles:
+      - observability
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - VITE_CONTRACT_ID=${VITE_CONTRACT_ID}
+        - VITE_BACKEND_URL=${VITE_BACKEND_URL}
+        - VITE_RPC_URL=${VITE_RPC_URL}
+        - VITE_NETWORK_PASSPHRASE=${VITE_NETWORK_PASSPHRASE}
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
     networks:
       - app-network
 

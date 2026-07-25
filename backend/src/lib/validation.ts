@@ -1,3 +1,4 @@
+
 import type { RequestHandler } from "express";
 import { z, type ZodTypeAny } from "zod";
 
@@ -56,6 +57,16 @@ export const MakePaymentSchema = z
   })
   .strict();
 
+export const ClientErrorReportSchema = z
+  .object({
+    message: z.string().trim().min(1, "message is required").max(2000),
+    stack: z.string().max(10000).optional(),
+    componentStack: z.string().max(10000).optional(),
+    url: z.string().max(2000).optional(),
+    userAgent: z.string().max(500).optional(),
+  })
+  .strict();
+
 export const SmsPaymentWebhookSchema = z
   .object({
     meter_id: MeterIdSchema,
@@ -63,6 +74,7 @@ export const SmsPaymentWebhookSchema = z
       .number()
       .positive("amount_xlm must be positive")
       .finite("amount_xlm must be a finite number"),
+    plan: PaymentPlanSchema.optional().default("Daily"),
   })
   .strict();
 
@@ -106,6 +118,7 @@ export function validateRequest(schemas: RequestSchemaSet): RequestHandler {
     if (Object.keys(details).length > 0) {
       return res.status(400).json({
         error: "Validation failed",
+        code: "VALIDATION_ERROR",
         details,
       });
     }

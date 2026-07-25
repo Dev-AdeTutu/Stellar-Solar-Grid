@@ -10,7 +10,19 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="dark">
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                const saved = localStorage.getItem('theme') || 'dark';
+                document.documentElement.setAttribute('data-theme', saved);
+              } catch (e) {}
+            `,
+          }}
+        />
+      </head>
       <body>
         <ErrorBoundary>
           <ToastProvider>{children}</ToastProvider>

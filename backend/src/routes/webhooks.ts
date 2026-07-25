@@ -1,7 +1,8 @@
 import { Router } from "express";
 import * as crypto from "crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { adminInvoke, contractQuery } from "../lib/stellar.js";
+import { stellarService } from "../lib/stellar.js";
+import { registerWebhook, getWebhookUrls } from "../lib/webhookRegistry.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest } from "../lib/validation.js";
 import { logger } from "../lib/logger.js";
@@ -47,19 +48,18 @@ webhookRouter.post(
       return res.status(401).json({ error: "Invalid webhook signature" });
     }
 
-    const { meter_id, amount_xlm } = req.body;
+    const { meter_id, amount_xlm, plan } = req.body;
 
     const stroops = BigInt(Math.round(amount_xlm * 10_000_000));
-    const hash = await adminInvoke("make_payment", [
+    const hash = await stellarService.invoke("make_payment", [
       StellarSdk.nativeToScVal(meter_id, { type: "symbol" }),
       StellarSdk.nativeToScVal(process.env.ADMIN_PUBLIC_KEY!, {
         type: "address",
       }),
       StellarSdk.nativeToScVal(stroops, { type: "i128" }),
-      StellarSdk.xdr.ScVal.scvVec([StellarSdk.xdr.ScVal.scvSymbol("Daily")]),
+      StellarSdk.nativeToScVal({ [plan]: null }),
     ]);
     paymentVolume.inc(amount_xlm);
-    activeMeters.inc();
     return res.status(200).json({ hash });
   }),
 );
@@ -84,14 +84,29 @@ webhookRouter.post(
   asyncHandler(async (req, res) => {
     const { webhook_url } = req.body;
 
-    // For now, store in environment variable (in production, use a database)
-    process.env.PROVIDER_WEBHOOK_URL = webhook_url;
+    registerWebhook(webhook_url);
 
     logger.info("Low-balance webhook registered", { webhook_url });
 
     return res.status(200).json({
       message: "Webhook registered successfully",
       webhook_url,
+    });
+  }),
+);
+
+/**
+ * GET /api/webhooks
+ *
+ * List all registered low-balance webhook URLs.
+ */
+webhookRouter.get(
+  "/",
+  asyncHandler(async (req, res) => {
+    const urls = Array.from(getWebhookUrls());
+    return res.status(200).json({
+      webhooks: urls,
+      count: urls.length,
     });
   }),
 );

@@ -238,25 +238,27 @@ npm run test:watch    # Run tests in watch mode
 
 ## Troubleshooting
 
-### Common Issues
+For a full list of common issues with symptoms, root causes, and step-by-step fixes, see the dedicated **[Troubleshooting Guide](TROUBLESHOOTING.md)**.
+
+### Quick reference
 
 **Contract deployment fails:**
-- Ensure you have testnet XLM in your account
-- Check that the WASM file was built successfully
+- Ensure you have testnet XLM in your account (`curl "https://friendbot.stellar.org?addr=YOUR_PUBLIC_KEY"`)
+- Check that the WASM file was built successfully (`make build`)
 - Verify network configuration in Stellar CLI
 
 **Backend fails to start:**
-- Check that all required environment variables are set
-- Ensure MQTT broker is running (via Docker Compose)
-- Verify Stellar RPC endpoint is accessible
+- Check that all required environment variables are set in `backend/.env`
+- Ensure MQTT broker is running (`docker compose up mqtt`)
+- Verify Stellar RPC endpoint is accessible (`curl https://soroban-testnet.stellar.org/`)
 
 **Frontend build errors:**
 - Clear node_modules and reinstall: `rm -rf node_modules package-lock.json && npm install`
-- Check that environment variables match the deployed contract
-- Ensure Freighter wallet is installed and connected to testnet
+- Check that `VITE_CONTRACT_ID` matches the deployed contract
+- Ensure Freighter wallet is installed and set to Testnet
 
 **Tests failing:**
-- For contract tests: ensure `wasm32-unknown-unknown` target is installed
+- For contract tests: ensure `wasm32-unknown-unknown` target is installed (`rustup target add wasm32-unknown-unknown`)
 - For frontend tests: check that test environment variables are set
 - For integration tests: ensure all services are running
 

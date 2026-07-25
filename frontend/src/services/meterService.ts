@@ -28,7 +28,8 @@ export async function makePayment(
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
   return contractInvoke(sourceAddress, "make_payment", [
     StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(sourceAddress, { type: "address" }),
     StellarSdk.nativeToScVal(amountStroops, { type: "i128" }),
-    StellarSdk.nativeToScVal({ [plan]: null }, { type: "map" }),
+    StellarSdk.nativeToScVal(plan, { type: "symbol" }),
   ]);
 }

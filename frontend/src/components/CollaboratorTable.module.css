@@ -10,3 +10,28 @@
   font-weight: 500;
   color: var(--text-primary, #ffffff);
 }
+
+.totalRow {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.totalLabel {
+  padding-top: 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary, #9ca3af);
+}
+
+.totalValue {
+  padding-top: 0.5rem;
+  text-align: right;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text-primary, #ffffff);
+}
+
+.totalExceeded {
+  color: #f87171;
+}

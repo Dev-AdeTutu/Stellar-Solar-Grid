@@ -3,12 +3,16 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
+import { logger } from "./logger.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
   path.resolve(process.cwd(), "data", "usage-events.sqlite");
-const RETRY_INTERVAL_MS = Number(process.env.USAGE_RETRY_INTERVAL_MS ?? 10_000);
-const MAX_RETRIES = 3;
+const RETRY_INTERVAL_MS = Number(
+  process.env.RETRY_INTERVAL_MS ?? process.env.USAGE_RETRY_INTERVAL_MS ?? 30_000,
+);
+const MAX_RETRY_ATTEMPTS = Number(process.env.MAX_RETRY_ATTEMPTS ?? 5);
+const MAX_RETRIES = MAX_RETRY_ATTEMPTS;
 
 type UsageEventStatus = "pending" | "submitted" | "failed";
 
@@ -34,7 +38,10 @@ type CreateUsageEventInput = {
   sourceTopic?: string | null;
 };
 
-const db = openDatabase();
+// Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
+// such that the instance type loses its namespace-declared methods at this call site.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = openDatabase() as any;
 let retryTimer: NodeJS.Timeout | undefined;
 let retryInFlight = false;
 const activeSubmissionIds = new Set<number>();
@@ -44,6 +51,11 @@ function openDatabase() {
   const database = new Database(DB_PATH);
   database.pragma("journal_mode = WAL");
   database.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS usage_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       meter_id TEXT NOT NULL,
@@ -70,6 +82,15 @@ function openDatabase() {
 
 export function initUsageEventStore() {
   return db;
+}
+
+export function getKV(key: string): string | null {
+  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
+  return row?.value ?? null;
+}
+
+export function setKV(key: string, value: string) {
+  db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
@@ -102,34 +123,31 @@ export function getUsageHistory(
   page: number,
   pageSize: number
 ): {
-  data: UsageEventRecord[];
-  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  events: UsageEventRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
 } {
-  const totalRow = db
-    .prepare("SELECT COUNT(*) as total FROM usage_events WHERE meter_id = ?")
-    .get(meterId) as { total: number };
-  const total = totalRow.total;
   const offset = (page - 1) * pageSize;
-  const data = db
+
+  const events = db
     .prepare(
-      `
-        SELECT *
-        FROM usage_events
-        WHERE meter_id = ?
-        ORDER BY received_at DESC, id DESC
-        LIMIT ? OFFSET ?
-      `
+      "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
+      "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
     )
     .all(meterId, pageSize, offset) as UsageEventRecord[];
 
+  const { count } = db
+    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
+    .get(meterId) as { count: number };
+
   return {
-    data,
-    pagination: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / pageSize)),
-    },
+    events,
+    page,
+    pageSize,
+    total: count,
+    hasMore: offset + pageSize < count,
   };
 }
 
@@ -193,10 +211,19 @@ export function startUsageEventRetryWorker() {
     return;
   }
 
+  logger.info('Usage event retry worker started', { intervalMs: RETRY_INTERVAL_MS, maxRetryAttempts: MAX_RETRY_ATTEMPTS });
   retryTimer = setInterval(() => {
     void retryQueuedUsageEvents();
   }, RETRY_INTERVAL_MS);
   retryTimer.unref?.();
+
+  process.on('SIGTERM', () => {
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = undefined;
+      logger.info('Usage event retry worker stopped on SIGTERM');
+    }
+  });
 }
 
 export async function retryQueuedUsageEvents() {
@@ -271,6 +298,10 @@ async function submitUsageEvent(id: number) {
     const nextAttemptCount = event.attempt_count + 1;
     const finalStatus: UsageEventStatus =
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
+
+    if (finalStatus === "failed") {
+      logger.warn({ eventId: id, meterId: event.meter_id, attempts: nextAttemptCount }, 'Usage event dead-lettered after max retries');
+    }
 
     db.prepare(
       `
