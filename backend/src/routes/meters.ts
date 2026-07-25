@@ -323,6 +323,92 @@ export function createMeterRouter(stellar: StellarService) {
     }),
   );
 
+  /**
+   * GET /api/meters/balances?ids=A,B,C — batch balance query for multiple meters
+   * 
+   * Returns balances for multiple meters in a single request, reusing the existing
+   * per-meter cache where fresh. Optimizes dashboard polling for multi-meter scenarios.
+   * 
+   * Query params:
+   *   ids: comma-separated list of meter IDs (max 50)
+   * 
+   * Response:
+   *   { balances: [...], errors: { id: error_msg } }
+   */
+  meterRouter.get(
+    "/balances",
+    asyncHandler(async (req, res) => {
+      const idsParam = req.query.ids as string;
+      
+      if (!idsParam) {
+        return res.status(400).json({ 
+          error: "ids query parameter is required", 
+          code: "VALIDATION_ERROR" 
+        });
+      }
+
+      const ids = idsParam.split(",").map(id => id.trim()).filter(Boolean);
+      
+      // Cap at 50 meters to avoid unbounded batch
+      const MAX_BATCH_SIZE = 50;
+      if (ids.length > MAX_BATCH_SIZE) {
+        return res.status(400).json({ 
+          error: `Maximum ${MAX_BATCH_SIZE} meter IDs allowed per request, received ${ids.length}`, 
+          code: "BATCH_SIZE_EXCEEDED" 
+        });
+      }
+
+      if (ids.length === 0) {
+        return res.status(400).json({ 
+          error: "At least one meter ID is required", 
+          code: "VALIDATION_ERROR" 
+        });
+      }
+
+      const balances: any[] = [];
+      const errors: Record<string, string> = {};
+
+      // Process each meter, using cache where available
+      await Promise.all(
+        ids.map(async (meterId) => {
+          try {
+            // Check cache first
+            const cached = balanceCache.get(meterId);
+            if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL_MS) {
+              balances.push(cached.data);
+              return;
+            }
+
+            // Cache miss - query contract
+            const result = await stellar.query("get_meter", [
+              StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+            ]);
+            const meter = StellarSdk.scValToNative(result) as any;
+            const payload = {
+              meter_id: meterId,
+              balance: meter.balance,
+              units_used: meter.units_used,
+              active: meter.active,
+            };
+            
+            // Update cache
+            balanceCache.set(meterId, { data: payload, ts: Date.now() });
+            balances.push(payload);
+          } catch (err: any) {
+            errors[meterId] = err.message || "Meter not found";
+          }
+        })
+      );
+
+      res.json({ 
+        balances,
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        count: balances.length,
+        requested: ids.length,
+      });
+    }),
+  );
+
   /** GET /api/meters/:id/history — paginated local usage history */
   meterRouter.get("/:id/history", (req, res) => {
     const page = Math.max(1, Number(req.query.page ?? 1) || 1);

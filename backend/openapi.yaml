@@ -429,6 +429,89 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/meters/balances:
+    get:
+      operationId: getBatchMeterBalances
+      summary: Batch balance query for multiple meters (cached 5 s per meter)
+      description: |
+        Returns balances for multiple meters in a single request. Reuses the existing
+        per-meter cache where fresh. Optimizes dashboard polling for multi-meter scenarios
+        by reducing HTTP round trips and RPC calls.
+        
+        Maximum 50 meter IDs per request to prevent unbounded batch queries.
+      tags: [Meters]
+      parameters:
+        - in: query
+          name: ids
+          required: true
+          schema:
+            type: string
+          description: Comma-separated list of meter IDs (max 50)
+          example: "METER1,METER2,METER3"
+      responses:
+        '200':
+          description: Batch balance response
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [balances, count, requested]
+                properties:
+                  balances:
+                    type: array
+                    items:
+                      type: object
+                      required: [meter_id, balance, units_used, active]
+                      properties:
+                        meter_id:
+                          type: string
+                        balance:
+                          type: integer
+                        units_used:
+                          type: integer
+                        active:
+                          type: boolean
+                  errors:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: Map of meter_id to error message for failed queries
+                  count:
+                    type: integer
+                    description: Number of successful balance queries
+                  requested:
+                    type: integer
+                    description: Total number of meter IDs requested
+              example:
+                balances:
+                  - meter_id: "METER1"
+                    balance: 5000000
+                    units_used: 1200
+                    active: true
+                  - meter_id: "METER2"
+                    balance: 3000000
+                    units_used: 800
+                    active: true
+                errors:
+                  METER3: "Meter not found"
+                count: 2
+                requested: 3
+        '400':
+          description: Invalid request (missing ids, too many ids, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                missing_ids:
+                  value:
+                    error: "ids query parameter is required"
+                    code: "VALIDATION_ERROR"
+                batch_size_exceeded:
+                  value:
+                    error: "Maximum 50 meter IDs allowed per request, received 75"
+                    code: "BATCH_SIZE_EXCEEDED"
+
   /api/meters/{id}/history:
     get:
       operationId: getMeterHistory
