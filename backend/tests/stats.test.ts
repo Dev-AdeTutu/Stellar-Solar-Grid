@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Request, Response } from "express";
-import { statsRouter } from "../src/routes/stats";
+import { statsRouter, __resetStatsCache } from "../src/routes/stats";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { stellarService } from "../src/lib/stellar";
 
@@ -18,6 +18,8 @@ describe("statsRouter - GET /api/stats", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    __resetStatsCache();
+
     
     jsonMock = vi.fn().mockReturnValue({});
     statusMock = vi.fn().mockReturnValue({ json: jsonMock });

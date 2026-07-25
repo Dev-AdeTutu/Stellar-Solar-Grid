@@ -19,6 +19,13 @@ let metersByPlanCache: { data: object; expiresAt: number } | null = null;
 // Cache for meter counts grouped by plan (30s TTL)
 let meterPlanCache: { data: object; expiresAt: number } | null = null;
 
+export function __resetStatsCache() {
+  contractCache = null;
+  metricsCache = null;
+  metersByPlanCache = null;
+  meterPlanCache = null;
+}
+
 
 type MeterPlanBreakdown = {
   Daily: number;

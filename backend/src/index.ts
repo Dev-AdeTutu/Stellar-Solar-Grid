@@ -14,6 +14,9 @@ import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
 import { statsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
+import { providerRouter } from "./routes/provider.js";
+import { solarRouter } from "./routes/solar.js";
+
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
