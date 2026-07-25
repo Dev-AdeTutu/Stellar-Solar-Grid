@@ -6,6 +6,7 @@ import mqtt from "mqtt";
 import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
+import * as StellarSdk from "@stellar/stellar-sdk";
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
@@ -183,11 +184,24 @@ app.get("/api/health", async (_req, res) => {
     logger.warn("MQTT health check failed");
   }
 
+  // Query contract schema version
+  let contractVersion: number | null = null;
+  try {
+    const result = await stellarService.query("get_contract_version", []);
+    contractVersion = StellarSdk.scValToNative(result) as number;
+  } catch (err) {
+    logger.warn("Contract version query failed", { err });
+  }
+
   const healthy = rpcOk && mqttOk;
   res.status(healthy ? 200 : 503).json({
     status: healthy ? "ok" : "degraded",
     version,
     uptimeSec,
+    contract: {
+      id: stellarService.contractId,
+      schemaVersion: contractVersion,
+    },
     dependencies: {
       stellarRpc: rpcOk ? "ok" : "unreachable",
       mqtt: mqttOk ? "ok" : "unreachable",
