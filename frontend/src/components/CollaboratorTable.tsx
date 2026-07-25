@@ -19,14 +19,40 @@ interface Props {
 
 import styles from './CollaboratorTable.module.css';
 
-export default function CollaboratorTable({ collaborators, loading }: Props) {
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+const MAX_BASIS_POINTS = 10000;
+
+interface TotalSharesResponse {
+  total_basis_points: number;
+  remaining: number;
+}
+
+export default function CollaboratorTable({ collaborators, loading, onAdd, onRemove, onRefresh }: Props) {
+  const { showToast } = useToast();
   const [copied, setCopied] = useState<string | null>(null);
   const [newAddress, setNewAddress] = useState("");
   const [newBasisPoints, setNewBasisPoints] = useState("");
   const [isAdding, setIsAdding] = useState(false);
   const [isRemoving, setIsRemoving] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [totalShares, setTotalShares] = useState<TotalSharesResponse | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
+
+  async function fetchTotalShares() {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/collaborators/total-shares`);
+      if (!res.ok) return;
+      const data: TotalSharesResponse = await res.json();
+      setTotalShares(data);
+    } catch {
+      // Best-effort — remaining-bps display simply stays hidden on failure.
+    }
+  }
+
+  // Fetch on mount and whenever the collaborator list changes.
+  useEffect(() => {
+    fetchTotalShares();
+  }, [collaborators]);
 
   // Focus trap + Escape key for confirmation dialog
   useEffect(() => {
@@ -65,6 +91,48 @@ export default function CollaboratorTable({ collaborators, loading }: Props) {
     navigator.clipboard.writeText(address);
     setCopied(address);
     setTimeout(() => setCopied(null), 1500);
+  }
+
+  const remaining = totalShares?.remaining ?? MAX_BASIS_POINTS - collaborators.reduce((sum, c) => sum + c.basisPoints, 0);
+  const parsedBasisPoints = Number(newBasisPoints);
+  const exceedsRemaining = newBasisPoints !== "" && Number.isFinite(parsedBasisPoints) && parsedBasisPoints > remaining;
+
+  async function handleAddSubmit() {
+    const address = newAddress.trim();
+    if (!address || !newBasisPoints || !Number.isFinite(parsedBasisPoints) || parsedBasisPoints <= 0) {
+      return;
+    }
+    if (parsedBasisPoints > remaining) {
+      showToast({
+        title: "Exceeds allocatable shares",
+        description: `Only ${remaining} basis points remain (10,000 total cap).`,
+        variant: "error",
+      });
+      return;
+    }
+
+    setIsAdding(true);
+    try {
+      await onAdd(address, parsedBasisPoints);
+      setNewAddress("");
+      setNewBasisPoints("");
+      await onRefresh?.();
+      await fetchTotalShares();
+    } finally {
+      setIsAdding(false);
+    }
+  }
+
+  async function handleRemove(address: string) {
+    setConfirmRemove(null);
+    setIsRemoving(address);
+    try {
+      await onRemove(address);
+      await onRefresh?.();
+      await fetchTotalShares();
+    } finally {
+      setIsRemoving(null);
+    }
   }
 
   if (loading) {
@@ -216,63 +284,41 @@ export default function CollaboratorTable({ collaborators, loading }: Props) {
                   value={newBasisPoints}
                   onChange={(e) => setNewBasisPoints(e.target.value)}
                   disabled={isAdding || isRemoving !== null}
-                  className="w-full bg-solar-dark border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-solar-yellow transition"
+                  aria-invalid={exceedsRemaining}
+                  className={`w-full bg-solar-dark border rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none transition ${
+                    exceedsRemaining ? "border-red-500/60 focus:border-red-500" : "border-white/10 focus:border-solar-yellow"
+                  }`}
                 />
               </td>
               <td className="pt-4" style={{ textAlign: "right" }}>
                 <button
                   onClick={handleAddSubmit}
-                  disabled={isAdding || isRemoving !== null}
+                  disabled={isAdding || isRemoving !== null || exceedsRemaining}
                   className="bg-solar-yellow text-solar-dark text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50 transition"
                 >
                   {isAdding ? "Adding..." : "Add"}
                 </button>
               </td>
             </tr>
-          ))}
-
-          {/* Inline Add Collaborator Form Row */}
-          <tr>
-            <td className="pt-4">
-              <input
-                type="text"
-                placeholder="Stellar Address (G...)"
-                value={newAddress}
-                onChange={(e) => setNewAddress(e.target.value)}
-                disabled={isAdding || isRemoving !== null}
-                className="w-full bg-solar-dark border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-solar-yellow transition"
-              />
-            </td>
-            <td className="pt-4">
-              <input
-                type="number"
-                placeholder="Basis points (100 = 1%)"
-                value={newBasisPoints}
-                onChange={(e) => setNewBasisPoints(e.target.value)}
-                disabled={isAdding || isRemoving !== null}
-                className="w-full bg-solar-dark border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-solar-yellow transition"
-              />
-            </td>
-            <td className="pt-4" style={{ textAlign: "right" }}>
-              <button
-                onClick={handleAddSubmit}
-                disabled={isAdding || isRemoving !== null}
-                className="bg-solar-yellow text-solar-dark text-xs font-semibold px-4 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50 transition"
-              >
-                {isAdding ? "Adding..." : "Add"}
-              </button>
-            </td>
-          </tr>
-        </tbody>
-        <tfoot>
-          <tr className={styles.totalRow}>
-            <td colSpan={2} className={styles.totalLabel}>Total</td>
-            <td className={`${styles.totalValue} ${collaborators.reduce((sum, c) => sum + c.basisPoints, 0) > 10000 ? styles.totalExceeded : ""}`}>
-              {(collaborators.reduce((sum, c) => sum + c.basisPoints, 0) / 100).toFixed(2)}%
-            </td>
-          </tr>
-        </tfoot>
-      </table>
-    </div>
+            <tr>
+              <td colSpan={2} className={`text-xs pt-1 ${exceedsRemaining ? "text-red-400" : "text-gray-500"}`}>
+                {exceedsRemaining
+                  ? `Exceeds remaining allocation — only ${remaining} bps (${(remaining / 100).toFixed(2)}%) left of the 10,000 cap.`
+                  : `${remaining} bps (${(remaining / 100).toFixed(2)}%) remaining of the 10,000 cap.`}
+              </td>
+              <td />
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr className={styles.totalRow}>
+              <td colSpan={2} className={styles.totalLabel}>Total</td>
+              <td className={`${styles.totalValue} ${collaborators.reduce((sum, c) => sum + c.basisPoints, 0) > 10000 ? styles.totalExceeded : ""}`}>
+                {(collaborators.reduce((sum, c) => sum + c.basisPoints, 0) / 100).toFixed(2)}%
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </>
   );
 }
