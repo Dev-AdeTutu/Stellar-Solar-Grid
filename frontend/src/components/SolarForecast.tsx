@@ -44,6 +44,36 @@ const PERIOD_ICONS: Record<string, string> = {
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
+/** Skeleton placeholder shown in the results area while a forecast is loading */
+function ForecastSkeleton() {
+  return (
+    <div className="space-y-4 animate-pulse" aria-hidden="true">
+      <div className="rounded-xl border border-white/10 bg-solar-yellow/5 px-5 py-4 flex flex-wrap gap-6">
+        <div className="space-y-2">
+          <div className="h-3 w-20 rounded bg-white/10" />
+          <div className="h-6 w-24 rounded bg-white/10" />
+        </div>
+        <div className="space-y-2">
+          <div className="h-3 w-24 rounded bg-white/10" />
+          <div className="h-6 w-16 rounded bg-white/10" />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div
+            key={i}
+            className="rounded-xl border border-white/10 bg-solar-dark p-4 flex flex-col gap-2"
+          >
+            <div className="h-3 w-12 rounded bg-white/10" />
+            <div className="h-5 w-16 rounded bg-white/10" />
+            <div className="h-3 w-14 rounded bg-white/10" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ForecastCard({ period }: { period: ForecastPeriod }) {
   return (
     <div className="rounded-xl border border-white/10 bg-solar-dark p-4 flex flex-col gap-1">
@@ -94,11 +124,9 @@ export default function SolarForecast() {
     }
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function runForecast() {
     setLoading(true);
     setError(null);
-    setResult(null);
 
     try {
       const params = new URLSearchParams({
@@ -119,9 +147,15 @@ export default function SolarForecast() {
       setResult(data as ForecastResult);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong");
+      setResult(null);
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    void runForecast();
   }
 
   return (
@@ -274,17 +308,27 @@ export default function SolarForecast() {
       </form>
 
       {/* Error */}
-      {error && (
+      {error && !loading && (
         <div
           role="alert"
-          className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300"
+          className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300 flex items-center justify-between gap-3"
         >
-          ✕ {error}
+          <span>✕ {error}</span>
+          <button
+            type="button"
+            onClick={() => void runForecast()}
+            className="shrink-0 rounded-lg border border-red-500/40 px-3 py-1 text-xs font-semibold text-red-200 hover:bg-red-500/10 transition"
+          >
+            Retry
+          </button>
         </div>
       )}
 
+      {/* Loading skeleton */}
+      {loading && <ForecastSkeleton />}
+
       {/* Results */}
-      {result && (
+      {result && !loading && (
         <div className="space-y-4" aria-live="polite">
 
           {/* Summary bar */}

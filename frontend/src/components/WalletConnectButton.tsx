@@ -32,6 +32,19 @@ function FreighterTooltip({ visible }: { visible: boolean }) {
   );
 }
 
+/** Banner shown when Freighter is connected but pointed at the wrong network */
+function WrongNetworkBanner({ message }: { message: string }) {
+  return (
+    <div
+      role="alert"
+      className="absolute top-full left-1/2 mt-2 w-64 -translate-x-1/2 rounded-lg border border-orange-500/30 bg-orange-900/90 px-3 py-2 text-xs text-orange-200 shadow-xl backdrop-blur-sm z-50"
+    >
+      <p className="font-semibold mb-1">Wrong network</p>
+      <p>{message} Switch networks in Freighter: Settings → Network.</p>
+    </div>
+  );
+}
+
 /** Animated spinner used during the connecting handshake */
 function Spinner() {
   return (
@@ -77,7 +90,7 @@ interface WalletConnectButtonProps {
  * Closes #398
  */
 export function WalletConnectButton({ compact = false }: WalletConnectButtonProps) {
-  const { address, connect, disconnect, isConnecting, connectError, clearConnectError } =
+  const { address, connect, disconnect, isConnecting, connectError, clearConnectError, networkError } =
     useWalletStore();
 
   const [copied, setCopied] = useState(false);
@@ -114,21 +127,34 @@ export function WalletConnectButton({ compact = false }: WalletConnectButtonProp
   // ── Connected state ──────────────────────────────────────────────────────
   if (address) {
     return (
-      <div className="flex items-center gap-1.5">
+      <div className="relative flex items-center gap-1.5">
         {/* Address pill — click to copy */}
         <button
           type="button"
           onClick={handleCopy}
           title="Click to copy full address"
           aria-label={`Wallet address ${address}. Click to copy.`}
+          aria-describedby={networkError ? "wrong-network-banner" : undefined}
           className={[
-            "rounded-lg border border-solar-yellow font-mono font-medium text-solar-yellow",
-            "hover:bg-solar-yellow hover:text-solar-dark transition",
+            "rounded-lg border font-mono font-medium",
+            networkError
+              ? "border-orange-500/60 text-orange-300 hover:bg-orange-500/10"
+              : "border-solar-yellow text-solar-yellow hover:bg-solar-yellow hover:text-solar-dark",
+            "transition",
             compact ? "px-2.5 py-1 text-xs" : "px-3 py-1.5 text-xs",
           ].join(" ")}
         >
           {copied ? "✓ Copied" : truncated}
         </button>
+
+        {/* Wrong-network indicator */}
+        {networkError && (
+          <span
+            aria-hidden="true"
+            title="Wrong network"
+            className="h-2 w-2 rounded-full bg-orange-400"
+          />
+        )}
 
         {/* Disconnect button */}
         <button
@@ -144,6 +170,13 @@ export function WalletConnectButton({ compact = false }: WalletConnectButtonProp
         >
           {compact ? "✕" : "Disconnect"}
         </button>
+
+        {/* Wrong-network banner — distinct from the "not installed" tooltip */}
+        {networkError && (
+          <div id="wrong-network-banner">
+            <WrongNetworkBanner message={networkError} />
+          </div>
+        )}
       </div>
     );
   }
