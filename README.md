@@ -150,32 +150,6 @@ The full machine-readable API specification is available at [`backend/openapi.ya
 npx @redocly/cli preview-docs backend/openapi.yaml
 ```
 
-### Contract Version Detection
-
-**`GET /api/health`**
-
-The health endpoint exposes the contract schema version, allowing API consumers to detect version mismatches before making calls that assume a schema the contract hasn't been migrated to yet.
-
-**Response**
-
-```json
-{
-  "status": "ok",
-  "version": "0.1.0",
-  "uptimeSec": 3600,
-  "contract": {
-    "id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
-    "schemaVersion": 2
-  },
-  "dependencies": {
-    "stellarRpc": "ok",
-    "mqtt": "ok"
-  }
-}
-```
-
-See [docs/CONTRACT_VERSIONING.md](docs/CONTRACT_VERSIONING.md) for details on how REST API versions relate to contract schema versions and migration workflows.
-
 ### Meter Balance
 
 **`GET /api/meters/:id/balance`**

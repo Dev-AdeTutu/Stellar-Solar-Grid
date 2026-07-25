@@ -39,28 +39,15 @@ components:
 
     HealthResponse:
       type: object
-      required: [status, version, uptimeSec, contract, dependencies]
+      required: [status, version, uptimeSec, dependencies]
       properties:
         status:
           type: string
           enum: [ok, degraded]
         version:
           type: string
-          description: Backend API version (from package.json)
         uptimeSec:
           type: integer
-          description: Service uptime in seconds
-        contract:
-          type: object
-          required: [id, schemaVersion]
-          properties:
-            id:
-              type: string
-              description: Deployed Stellar contract address
-            schemaVersion:
-              type: integer
-              nullable: true
-              description: Current contract meter schema version (null if query fails)
         dependencies:
           type: object
           required: [stellarRpc, mqtt]
@@ -184,14 +171,7 @@ paths:
     get:
       operationId: getHealth
       summary: Health check
-      description: |
-        Returns service version, uptime, contract schema version, and dependency status.
-        Used by load balancers and Docker healthchecks.
-        
-        The `contract.schemaVersion` field exposes the expected meter schema version
-        from the deployed Stellar contract, allowing API consumers to detect version
-        mismatches before making calls that assume a schema the contract hasn't been
-        migrated to yet.
+      description: Returns service version, uptime, and dependency status. Used by load balancers and Docker healthchecks.
       tags: [Health]
       responses:
         '200':
@@ -200,32 +180,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
-              example:
-                status: ok
-                version: "0.1.0"
-                uptimeSec: 3600
-                contract:
-                  id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
-                  schemaVersion: 2
-                dependencies:
-                  stellarRpc: ok
-                  mqtt: ok
         '503':
           description: One or more dependencies unreachable
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthResponse'
-              example:
-                status: degraded
-                version: "0.1.0"
-                uptimeSec: 3600
-                contract:
-                  id: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
-                  schemaVersion: 2
-                dependencies:
-                  stellarRpc: unreachable
-                  mqtt: ok
 
   # ── Meters ──────────────────────────────────────────────────────────────────
   /api/meters:

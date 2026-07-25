@@ -101,7 +101,7 @@ pub struct LegacyMeter {
 /// Migrate a v0 (legacy) meter entry to the current v2 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: CURRENT_METER_VERSION,
+        version: 2,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -117,7 +117,7 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
 /// Migrate a v1 meter entry to the current v2 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: CURRENT_METER_VERSION,
+        version: 2,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -161,9 +161,6 @@ pub struct MeterView {
 
 const EVT_NS: Symbol = symbol_short!("solargrid");
 
-/// Current meter schema version — increment when contract storage layout changes.
-/// Exposed via get_contract_version() for API version compatibility checks.
-const CURRENT_METER_VERSION: u32 = 2;
 
 #[contract]
 pub struct SolarGridContract;
@@ -216,7 +213,7 @@ impl SolarGridContract {
         }
         let now = env.ledger().timestamp();
         let meter = Meter {
-            version: CURRENT_METER_VERSION,
+            version: 2,
             owner: owner.clone(),
             active: false,
             units_used: 0,
@@ -448,13 +445,6 @@ impl SolarGridContract {
     pub fn get_oracle(env: Env) -> Result<Option<Address>, ContractError> {
         Self::require_initialized(&env)?;
         Ok(env.storage().instance().get(&ORACLE))
-    }
-
-    /// Returns the current meter schema version expected by the contract.
-    /// API consumers can use this to detect version mismatches before making
-    /// calls that assume a schema the contract hasn't been migrated to yet.
-    pub fn get_contract_version(_env: Env) -> u32 {
-        CURRENT_METER_VERSION
     }
 
     /// Explicitly clear the oracle address. Only admin may call this.
