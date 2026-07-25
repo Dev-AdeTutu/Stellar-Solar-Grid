@@ -15,6 +15,7 @@ import { allowlistRouter } from "./routes/allowlist.js";
 import { statsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
+import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -159,6 +160,7 @@ app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/stats", statsRouter);
 app.use("/api/provider", providerRouter);
 app.use("/api/sms-config", smsConfigRouter);
+app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 
