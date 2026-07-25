@@ -1,7 +1,7 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { z } from "zod";
-import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke } from "../lib/stellar.js";
+import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
