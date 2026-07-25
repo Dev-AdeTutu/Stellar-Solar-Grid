@@ -1,15 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useOffline } from "@/hooks/useOffline";
 
-const SMS_SHORTCODE = process.env.NEXT_PUBLIC_SMS_SHORTCODE ?? "20880";
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+const FALLBACK_SHORTCODE = process.env.NEXT_PUBLIC_SMS_SHORTCODE ?? "20880";
+const SMS_CONFIG_CACHE_KEY = "sms-provider-config";
 const SMS_WEBHOOK_DOCS =
   process.env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS ??
   "https://github.com/damiedee96/Stellar-Solar-Grid/blob/main/backend/README.md";
 
+interface SmsProviderConfig {
+  shortcode: string;
+  provider: string;
+  instructions?: string;
+}
+
 interface Props {
   meterId?: string;
+  region?: string;
   onClose: () => void;
 }
 
@@ -19,12 +28,44 @@ const PLANS = [
   { code: "U", label: "Usage-Based" },
 ];
 
-export default function OfflinePaymentModal({ meterId, onClose }: Props) {
+export default function OfflinePaymentModal({ meterId, region, onClose }: Props) {
   const isOffline = useOffline();
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
+  const [smsConfig, setSmsConfig] = useState<SmsProviderConfig | null>(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      const cached = window.localStorage.getItem(SMS_CONFIG_CACHE_KEY);
+      return cached ? (JSON.parse(cached) as SmsProviderConfig) : null;
+    } catch {
+      return null;
+    }
+  });
   const exampleMeter = meterId?.trim() || "METER1";
   const exampleSms = `PAY ${exampleMeter} 5 D`;
+  const smsShortcode = smsConfig?.shortcode ?? FALLBACK_SHORTCODE;
+
+  // Fetch the per-region/per-provider shortcode from the backend so
+  // different deployments/telecom partners can show the correct code
+  // without a rebuild. Cached locally so it still renders while offline.
+  useEffect(() => {
+    if (isOffline) return;
+    const params = region ? `?region=${encodeURIComponent(region)}` : "";
+    fetch(`${BACKEND_URL}/api/sms-config${params}`)
+      .then((res) => (res.ok ? (res.json() as Promise<SmsProviderConfig>) : null))
+      .then((data) => {
+        if (!data) return;
+        setSmsConfig(data);
+        try {
+          window.localStorage.setItem(SMS_CONFIG_CACHE_KEY, JSON.stringify(data));
+        } catch {
+          // localStorage may be unavailable (private browsing) — safe to skip caching.
+        }
+      })
+      .catch(() => {
+        // Network failure — keep whatever cached/fallback shortcode is already shown.
+      });
+  }, [isOffline, region]);
 
   async function copyToClipboard(text: string) {
     try {
@@ -138,13 +179,16 @@ export default function OfflinePaymentModal({ meterId, onClose }: Props) {
               SMS Format
             </h3>
             <p className="text-xs text-gray-400 mb-2">
-              Send an SMS to <span className="text-solar-yellow font-bold">{SMS_SHORTCODE}</span> using this format:
+              Send an SMS to <span className="text-solar-yellow font-bold">{smsShortcode}</span> using this format:
             </p>
             <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-solar-dark px-4 py-3">
               <code className="flex-1 text-sm text-solar-yellow font-mono tracking-wide">
                 PAY &lt;METER_ID&gt; &lt;AMOUNT&gt; &lt;PLAN&gt;
               </code>
             </div>
+            {smsConfig?.instructions && (
+              <p className="mt-2 text-xs text-gray-400">{smsConfig.instructions}</p>
+            )}
           </section>
 
           {/* Example */}
@@ -177,7 +221,7 @@ export default function OfflinePaymentModal({ meterId, onClose }: Props) {
               </div>
             )}
             <p className="mt-1.5 text-xs text-gray-500">
-              Send to: <span className="text-solar-yellow font-bold">{SMS_SHORTCODE}</span>
+              Send to: <span className="text-solar-yellow font-bold">{smsShortcode}</span>
             </p>
           </section>
 
