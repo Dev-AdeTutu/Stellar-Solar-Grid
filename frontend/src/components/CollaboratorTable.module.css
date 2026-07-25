@@ -1,5 +1,5 @@
 .emptyMessage {
-  color: var(--text-secondary, #9ca3af);
+  color: var(--color-text-secondary, #9ca3af);
 }
 
 .shareCell {
@@ -8,11 +8,11 @@
 
 .shareLabel {
   font-weight: 500;
-  color: var(--text-primary, #ffffff);
+  color: var(--color-text-primary, #ffffff);
 }
 
 .totalRow {
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--color-border, rgba(255, 255, 255, 0.1));
 }
 
 .totalLabel {
@@ -21,7 +21,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-secondary, #9ca3af);
+  color: var(--color-text-secondary, #9ca3af);
 }
 
 .totalValue {
@@ -29,7 +29,7 @@
   text-align: right;
   font-size: 0.875rem;
   font-weight: 700;
-  color: var(--text-primary, #ffffff);
+  color: var(--color-text-primary, #ffffff);
 }
 
 .totalExceeded {
