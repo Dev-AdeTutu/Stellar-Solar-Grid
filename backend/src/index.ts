@@ -14,12 +14,13 @@ import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
 import { adminLoginRouter } from "./routes/adminLogin.js";
-import { statsRouter } from "./routes/stats.js";
+import { statsRouter as duplicateStatsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { providerRouter } from "./routes/provider.js";
 import { solarRouter } from "./routes/solar.js";
+import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -157,6 +158,7 @@ app.use("/api/stats", statsRouter);
 
 app.get('/health', async (_req, res) => {
   const checks: Record<string, string> = {};
+});
 app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/allowlist", allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
@@ -164,6 +166,8 @@ app.use("/api/stats", statsRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
+app.use("/api/solar", solarRouter);
+app.use("/api/usage-events", usageEventsRouter);
 
 // #420: GET /api/health — version, uptime, dependency status
 app.get("/api/health", async (_req, res) => {
