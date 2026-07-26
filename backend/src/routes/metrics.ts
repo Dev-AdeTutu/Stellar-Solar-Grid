@@ -27,7 +27,8 @@ metricsRouter.get(
 
     const find = (name: string): number => {
       const metric = metrics.find((m: any) => m.name === name);
-      return metric?.values?.[0]?.value ?? 0;
+      if (!metric?.values) return 0;
+      return metric.values.reduce((acc: number, val: any) => acc + val.value, 0);
     };
 
     const data = {
