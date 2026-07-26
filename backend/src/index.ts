@@ -20,6 +20,7 @@ import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { providerRouter } from "./routes/provider.js";
 import { solarRouter } from "./routes/solar.js";
+import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -32,6 +33,7 @@ import {
   initUsageEventStore,
   startUsageEventRetryWorker,
 } from "./lib/usageEvents.js";
+import { getReqId } from "./lib/requestContext.js";
 import { createRequire } from "module";
 
 const _require = createRequire(import.meta.url);
@@ -144,7 +146,7 @@ app.use((req, _res, next) => {
   next();
 });
 
-// ── Routes ────────────────────────────────────────────────────────────────────
+// ── Routes ──────────────────────────────────────────────────────────────────────────────
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
@@ -164,6 +166,8 @@ app.use("/api/stats", statsRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
+app.use("/api/solar", solarRouter);
+app.use("/api/usage-events", usageEventsRouter);
 
 // #420: GET /api/health — version, uptime, dependency status
 app.get("/api/health", async (_req, res) => {
@@ -211,6 +215,7 @@ app.use((_req: Request, res: Response) => {
     error: "Route not found",
     code: "NOT_FOUND",
     hint: "Check /api/docs for available endpoints",
+    requestId: getReqId(),
   });
 });
 
@@ -218,7 +223,7 @@ app.use((_req: Request, res: Response) => {
 app.use((err: any, req: any, res: any, next: any) => {
   if (req.timedout) {
     logger.error("Request timed out", { method: req.method, path: req.path });
-    return res.status(504).json({ error: "Request timed out", code: "TIMEOUT" });
+    return res.status(504).json({ error: "Request timed out", code: "TIMEOUT", requestId: getReqId() });
   }
   next(err);
 });
@@ -226,20 +231,21 @@ app.use((err: any, req: any, res: any, next: any) => {
 // #423: 413 payload too large handler + global error handler (#418)
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   logger.error({ error: err.message, stack: err.stack }, "Unhandled error");
+  const requestId = getReqId();
 
   if (err.type === "entity.too.large") {
-    return res.status(413).json({ error: "Request body too large", code: "PAYLOAD_TOO_LARGE" });
+    return res.status(413).json({ error: "Request body too large", code: "PAYLOAD_TOO_LARGE", requestId });
   }
   if (err.type === "entity.parse.failed" || (err instanceof SyntaxError && (err as any).body !== undefined)) {
-    return res.status(400).json({ error: "Invalid JSON body", code: "INVALID_JSON" });
+    return res.status(400).json({ error: "Invalid JSON body", code: "INVALID_JSON", requestId });
   }
   if ((err as any).status === 404) {
-    return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND" });
+    return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND", requestId });
   }
   if ((err as any).code === "VALIDATION_ERROR" && (err as any).details) {
-    return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", details: (err as any).details });
+    return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", details: (err as any).details, requestId });
   }
-  res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR" });
+  res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR", requestId });
 });
 
 app.listen(PORT, () => {
