@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
+import { usageEvents } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -76,6 +77,9 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_retry
       ON usage_events (status, attempt_count, received_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+      ON usage_events (status, submitted_at);
   `);
   return database;
 }
@@ -114,6 +118,8 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     receivedAt,
     input.sourceTopic ?? null
   );
+
+  usageEvents.inc({ status: "pending" });
 
   return getUsageEventById(Number(result.lastInsertRowid))!;
 }
@@ -200,6 +206,7 @@ export function insertSubmittedUsageEvents(
         txHash,
         now,
       );
+      usageEvents.inc({ status: "submitted" });
     }
   });
 
@@ -293,6 +300,8 @@ async function submitUsageEvent(id: number) {
       `
     ).run(attemptedAt, hash, attemptedAt, id);
 
+    usageEvents.inc({ status: "submitted" });
+
     return getUsageEventById(id);
   } catch (error) {
     const nextAttemptCount = event.attempt_count + 1;
@@ -320,6 +329,8 @@ async function submitUsageEvent(id: number) {
       error instanceof Error ? error.message : String(error),
       id
     );
+
+    usageEvents.inc({ status: finalStatus });
 
     throw error;
   } finally {

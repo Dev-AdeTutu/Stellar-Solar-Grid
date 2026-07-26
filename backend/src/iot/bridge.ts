@@ -20,7 +20,7 @@ import {
   CONTRACT_ID,
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { mqttMessages } from "../lib/metrics.js";
+import { mqttMessages, activeMeters, paymentVolume } from "../lib/metrics.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -218,7 +218,9 @@ function startMqttBridge() {
   });
 
   client.on("message", async (topic, payload) => {
-    mqttMessages.inc();
+    const segments = topic.split("/");
+    const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
+    mqttMessages.inc({ topic: labelTopic });
     try {
       const meterId = topic.split("/")[2];
 
@@ -353,33 +355,53 @@ async function handleContractEvent(
     const eventKey = `${ns}:${action}`;
 
     switch (eventKey) {
-      case "payment:received": {
+      case "solargrid:payment": {
         const data = event.value;
-        const native = StellarSdk.scValToNative(data) as [
-          string,
-          bigint,
-          unknown,
-        ];
-        const [meterId, amount] = native;
-        logger.info("payment_received contract event", {
-          meterId: String(meterId),
-          amountXlm: Number(amount) / 10_000_000,
+        let amountXlm = 0;
+        let planName = "Unknown";
+
+        if (data) {
+          try {
+            const native = StellarSdk.scValToNative(data) as any[];
+            if (Array.isArray(native) && native.length >= 4) {
+              amountXlm = Number(native[2]) / 10_000_000;
+              const planRaw = native[3];
+              if (planRaw) {
+                if (typeof planRaw === "string") {
+                  planName = planRaw;
+                } else if (typeof planRaw === "object") {
+                  planName = Object.keys(planRaw)[0] ?? "Unknown";
+                }
+              }
+            }
+          } catch (err) {
+            logger.error("Failed to parse payment event data", { err });
+          }
+        }
+
+        const meterId = subject;
+        logger.info("payment contract event received", {
+          meterId,
+          amountXlm,
+          plan: planName,
         });
-        await onPaymentReceived(String(meterId), Number(amount));
+
+        // Increment XLM payment volume with plan label
+        paymentVolume.inc({ plan: planName }, amountXlm);
+
+        await onPaymentReceived(meterId, amountXlm * 10_000_000);
         break;
       }
 
-      case "meter:activated": {
-        const data = event.value;
-        const meterId = String(StellarSdk.scValToNative(data));
+      case "solargrid:mtr_actv": {
+        const meterId = subject;
         logger.info("meter_activated contract event", { meterId });
         await onMeterActivated(meterId);
         break;
       }
 
-      case "meter:deactivated": {
-        const data = event.value;
-        const meterId = String(StellarSdk.scValToNative(data));
+      case "solargrid:mtr_deact": {
+        const meterId = subject;
         logger.info("meter_deactivated contract event", { meterId });
         await onMeterDeactivated(meterId);
         break;
@@ -429,6 +451,7 @@ async function onPaymentReceived(meterId: string, amountStroops: number) {
 
 async function onMeterActivated(meterId: string) {
   logger.info({ meterId }, 'Sending ON signal to meter relay');
+  activeMeters.set({ meter_id: meterId }, 1);
   mqttClient?.publish(
     `solargrid/meters/${meterId}/control`,
     JSON.stringify({ cmd: 'ON', timestamp: new Date().toISOString() }),
@@ -439,6 +462,7 @@ async function onMeterActivated(meterId: string) {
 
 async function onMeterDeactivated(meterId: string) {
   logger.info({ meterId }, 'Sending OFF signal to meter relay');
+  activeMeters.set({ meter_id: meterId }, 0);
   mqttClient?.publish(
     `solargrid/meters/${meterId}/control`,
     JSON.stringify({ cmd: 'OFF', timestamp: new Date().toISOString() }),

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { logger } from "./logger.js";
+import { webhookDeliveries } from "./metrics.js";
 
 const DB_PATH =
   process.env.WEBHOOKS_DB_PATH ??
@@ -127,11 +128,14 @@ async function fireWebhookInternal(
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
+    webhookDeliveries.inc({ status: "success", attempt: String(attempt + 1) });
+
     // Success - log if this was a retry
     if (attempt > 0) {
       logger.info("Webhook delivery succeeded after retry", { url, attempt });
     }
   } catch (err: any) {
+    webhookDeliveries.inc({ status: "failure", attempt: String(attempt + 1) });
     // Log the failure
     logger.warn("Webhook delivery failed", {
       url,
