@@ -87,7 +87,7 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const windowHours = Number(req.query.hours ?? 24);
       if (isNaN(windowHours) || windowHours <= 0) {
-        return res.status(400).json({ error: "Invalid hours parameter" });
+        return res.status(400).json({ error: "Invalid hours parameter", code: "VALIDATION_ERROR" });
       }
 
       const result = await stellar.query("get_all_meters", []);
@@ -164,7 +164,7 @@ export function createMeterRouter(stellar: StellarService) {
       try {
         StellarSdk.StrKey.decodeEd25519PublicKey(req.params.address);
       } catch {
-        return res.status(400).json({ error: "Invalid Stellar address" });
+        return res.status(400).json({ error: "Invalid Stellar address", code: "VALIDATION_ERROR" });
       }
       const result = await stellar.query("get_meters_by_owner", [
         StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
@@ -230,7 +230,7 @@ export function createMeterRouter(stellar: StellarService) {
       try {
         StellarSdk.StrKey.decodeEd25519PublicKey(req.params.address);
       } catch {
-        return res.status(400).json({ error: "Invalid Stellar address" });
+        return res.status(400).json({ error: "Invalid Stellar address", code: "VALIDATION_ERROR" });
       }
       const result = await stellar.query("get_meters_by_owner", [
         StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
@@ -557,7 +557,7 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const limit = Number(req.body.limit);
       if (!Number.isInteger(limit) || limit < 0) {
-        return res.status(400).json({ error: "limit must be a non-negative integer (stroops)" });
+        return res.status(400).json({ error: "limit must be a non-negative integer (stroops)", code: "VALIDATION_ERROR" });
       }
       const hash = await stellar.invoke("set_daily_limit", [
         StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
@@ -786,6 +786,8 @@ export function createMeterRouter(stellar: StellarService) {
         return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
       }
       if (!meter) return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+
+
 
       const planValue = plan ?? meter.plan;
       const hash = await stellar.invoke("make_payment", [
