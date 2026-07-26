@@ -109,6 +109,65 @@ X-Idempotent-Replayed: true
 { "hash": "<original-transaction-hash>" }
 ```
 
+### `GET /api/payments/:address`
+
+Fetch paginated on-chain payment history for a Stellar address. Queries
+Soroban contract events for `make_payment` calls where `payer === address`,
+scoped to a rolling time window.
+
+**Path parameter**
+
+| Parameter | Description                              |
+|-----------|------------------------------------------|
+| `address` | Valid 56-character Stellar public key    |
+
+**Query parameters**
+
+| Parameter | Type    | Default | Range / Values   | Description                                      |
+|-----------|---------|---------|------------------|--------------------------------------------------|
+| `page`    | integer | `1`     | ≥ 1              | Page number                                      |
+| `limit`   | integer | `10`    | 1 – 50           | Records per page (capped at 50)                  |
+| `sort`    | string  | `desc`  | `asc` \| `desc`  | Sort order by payment date                       |
+| `days`    | integer | `30`    | 1 – 90           | Rolling window in days to query events (max 90)  |
+
+**Response `200`**
+
+```json
+{
+  "payments": [
+    {
+      "txHash": "<transaction-hash>",
+      "date": "2025-05-27T10:30:00.000Z",
+      "meterId": "METER1",
+      "amountXlm": 0.5,
+      "plan": "Daily"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "total": 42,
+    "pages": 5
+  }
+}
+```
+
+**Error responses**
+
+| Status | Code        | Reason                                     |
+|--------|-------------|--------------------------------------------|
+| `400`  | —           | Address is missing or not a valid Stellar key |
+| `502`  | `RPC_ERROR` | Soroban RPC unreachable                    |
+| `500`  | —           | Unexpected server error                    |
+
+**Example**
+
+```http
+GET /api/payments/GBRPYHIL2CI3FNV4HLWFIL45TEOZT5MVCTOFKH2UBIJBPQESELUBX4?page=1&limit=10&sort=desc&days=30
+```
+
+---
+
 ## Low-Balance Webhook Notifications
 
 Providers can register webhook URLs to receive notifications when a customer's meter balance drops below a configurable threshold.

@@ -853,8 +853,29 @@ paths:
     post:
       operationId: submitPayment
       summary: Submit a payment
-      description: Submit a payment on-chain for a meter. **Note:** Idempotency is not implemented; retrying may result in duplicate transactions.
+      description: |
+        Submit a payment on-chain for a meter.
+
+        Supports the `Idempotency-Key` request header. Supply a unique,
+        client-generated key (UUID v4 recommended) per logical payment attempt.
+        The server caches the response for 24 hours; any retry carrying the
+        same key within that window receives the original response without
+        re-invoking the contract. A repeated key returns `X-Idempotent-Replayed: true`.
+        A concurrent duplicate (same key, first request still in-flight) returns
+        `409 IDEMPOTENCY_CONFLICT`. 5xx responses are not cached and are safe
+        to retry with the same key.
       tags: [Payments]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: >
+            Client-generated unique key per payment attempt. Repeated requests
+            with the same key within 24 h return the cached response without
+            re-invoking the contract.
       requestBody:
         required: true
         content:
@@ -883,6 +904,15 @@ paths:
                     type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Concurrent request with the same Idempotency-Key is already in-flight
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "A request with this Idempotency-Key is already being processed"
+                code: "IDEMPOTENCY_CONFLICT"
         '500':
           $ref: '#/components/responses/InternalError'
 
