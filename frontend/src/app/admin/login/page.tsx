@@ -2,8 +2,9 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { env } from "@/lib/env";
 
-const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+const API = env.NEXT_PUBLIC_BACKEND_URL;
 
 export default function AdminLoginPage() {
   const router = useRouter();

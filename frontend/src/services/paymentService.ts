@@ -1,6 +1,7 @@
 import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
+import { env } from "@/lib/env";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001";
+const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 
 export interface PaymentRecord {
   txHash: string;

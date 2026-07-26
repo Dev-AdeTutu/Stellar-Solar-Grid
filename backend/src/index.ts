@@ -12,6 +12,7 @@ import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
+import { adminLoginRouter } from "./routes/adminLogin.js";
 import { statsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
@@ -148,6 +149,7 @@ app.use((req, _res, next) => {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);

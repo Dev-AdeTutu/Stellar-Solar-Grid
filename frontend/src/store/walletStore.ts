@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { env } from "@/lib/env";
 import {
   StellarWalletsKit,
   WalletNetwork,
@@ -28,6 +29,7 @@ const EXPECTED_NETWORK_NAME = EXPECTED_NETWORK_PASSPHRASE.includes("Test")
 
 function buildKit(): StellarWalletsKit {
   return new StellarWalletsKit({
+    network: env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     network: EXPECTED_NETWORK_PASSPHRASE.includes("Test")
       ? WalletNetwork.TESTNET
       : WalletNetwork.PUBLIC,
@@ -112,7 +114,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     if (!kit || !address) throw new Error("Wallet not connected");
     const { signedTxXdr } = await kit.signTransaction(xdr, {
       address,
-      networkPassphrase: import.meta.env.VITE_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
+      networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
   },
