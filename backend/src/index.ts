@@ -18,11 +18,13 @@ import { statsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { providerRouter } from "./routes/provider.js";
+import { solarRouter } from "./routes/solar.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { register } from "./lib/metrics.js";
-import { writeLimiter, readLimiter } from "./middleware/rateLimit.js";
+import { writeLimiter } from "./middleware/rateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import rateLimit from "express-rate-limit";
@@ -63,15 +65,6 @@ app.use(helmet({
   hsts: { maxAge: 31536000, includeSubDomains: true },
 }));
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_ORIGIN ?? "*",
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
-    optionsSuccessStatus: 204,
-  })
-);
-
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '*').split(',').map(o => o.trim());
 
 app.use(cors({
@@ -82,10 +75,11 @@ app.use(cors({
       cb(new Error(`Origin ${origin} not allowed by CORS`));
     }
   },
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
+  optionsSuccessStatus: 204,
   credentials: true,
 }));
-
-app.use(readLimiter);
 
 // Capture raw body for webhook signature verification before JSON parsing
 // Capture raw body for webhook signature verification before JSON parsing.
@@ -117,7 +111,8 @@ const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 60);
 const PAYMENTS_RATE_LIMIT_MAX = Number(process.env.PAYMENTS_RATE_LIMIT_MAX ?? 10);
 const RATE_LIMIT_MESSAGE = process.env.RATE_LIMIT_MESSAGE ?? 'Too many requests, please try again later.';
 
-const globalLimiter = rateLimit({
+// Single global read limiter — scoped to /api, one counter per class (#504)
+const globalReadLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: RATE_LIMIT_MAX,
   standardHeaders: true,
@@ -129,6 +124,7 @@ const globalLimiter = rateLimit({
   },
 });
 
+// Payments-specific write limiter — stricter than the general write limiter
 const paymentsLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: PAYMENTS_RATE_LIMIT_MAX,
@@ -140,8 +136,8 @@ const paymentsLimiter = rateLimit({
   },
 });
 
-// Apply global limiter to all /api routes
-app.use('/api', globalLimiter);
+// Apply global read limiter to all /api routes
+app.use('/api', globalReadLimiter);
 
 app.use((req, _res, next) => {
   logger.info({ method: req.method, path: req.path });
@@ -152,7 +148,7 @@ app.use((req, _res, next) => {
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", writeLimiter, paymentsRouter);
+app.use("/api/payments", paymentsLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/payments", paymentsRouter);

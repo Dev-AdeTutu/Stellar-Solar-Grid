@@ -266,10 +266,11 @@ curl https://soroban-testnet.stellar.org/
 API responses include `{"error":"Too many requests","code":"RATE_LIMITED"}` with a `Retry-After` header.
 
 **Fix**  
-For development, relax the rate limits in `backend/.env`:
+`RATE_LIMIT_MAX` is the single trigger threshold (per `RATE_LIMIT_WINDOW_MS` window) for both the global `/api` read limiter and the general write limiter — there is no separate multiplier for reads. Payments requests are gated independently by `PAYMENTS_RATE_LIMIT_MAX`. For development, relax the rate limits in `backend/.env`:
 ```
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX=120
+PAYMENTS_RATE_LIMIT_MAX=40
 ```
 In production, use the `Retry-After` value (seconds) before retrying.
 
