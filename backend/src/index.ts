@@ -10,8 +10,10 @@ import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
+import { adminLoginRouter } from "./routes/adminLogin.js";
 import { statsRouter } from "./routes/stats.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
@@ -144,17 +146,24 @@ app.use((req, _res, next) => {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
+app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
-app.use("/api/collaborators", writeLimiter, collaboratorRouter);
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
 app.use("/api/stats", statsRouter);
-app.use("/api/provider", providerRouter);
+
+app.get('/health', async (_req, res) => {
+  const checks: Record<string, string> = {};
+app.use("/api/collaborators", collaboratorRouter);
+app.use("/api/allowlist", allowlistRouter);
+app.use("/api/collaborators", collaboratorRouter);
+app.use("/api/stats", statsRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
-app.use("/api/solar", solarRouter);
 
 // #420: GET /api/health — version, uptime, dependency status
 app.get("/api/health", async (_req, res) => {

@@ -12,11 +12,12 @@ import {
   type PaymentRecord,
   type PaymentHistoryResponse,
 } from "@/services/paymentService";
+import { env } from "@/lib/env";
 
 type SortField = "date" | "amountXlm" | "plan" | "meterId";
 type SortDir = "asc" | "desc";
 
-const NETWORK = import.meta.env.VITE_NETWORK_PASSPHRASE?.includes("Test") ? "testnet" : "mainnet";
+const NETWORK = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test") ? "testnet" : "mainnet";
 
 const EXPLORER_BASE =
   NETWORK === "testnet"
