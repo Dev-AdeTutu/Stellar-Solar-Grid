@@ -58,7 +58,7 @@ webhookRouter.post(
         signature,
       )
     ) {
-      return res.status(401).json({ error: "Invalid webhook signature" });
+      return res.status(401).json({ error: "Invalid webhook signature", code: "UNAUTHORIZED" });
     }
 
     const { meter_id, amount_xlm, plan } = req.body;

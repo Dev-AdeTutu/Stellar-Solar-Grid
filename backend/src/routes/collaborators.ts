@@ -30,7 +30,7 @@ collaboratorRouter.get("/", async (req, res) => {
 
     res.json({ collaborators });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
   }
 });
 
@@ -55,7 +55,7 @@ collaboratorRouter.get("/total-shares", async (_req, res) => {
     totalSharesCache = { data, expiresAt: Date.now() + 5_000 };
     res.json(data);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
   }
 });
 
@@ -89,17 +89,17 @@ collaboratorRouter.post("/", requireAdminKey, async (req, res) => {
   };
 
   if (!address || basis_points == null) {
-    return res.status(400).json({ error: "address and basis_points are required" });
+    return res.status(400).json({ error: "address and basis_points are required", code: "VALIDATION_ERROR" });
   }
 
   try {
     StellarSdk.StrKey.decodeEd25519PublicKey(address);
   } catch {
-    return res.status(400).json({ error: "Invalid Stellar address" });
+    return res.status(400).json({ error: "Invalid Stellar address", code: "VALIDATION_ERROR" });
   }
 
   if (!Number.isInteger(basis_points) || basis_points < 0 || basis_points > 10000) {
-    return res.status(400).json({ error: "basis_points must be an integer between 0 and 10000" });
+    return res.status(400).json({ error: "basis_points must be an integer between 0 and 10000", code: "VALIDATION_ERROR" });
   }
 
   try {
@@ -116,7 +116,7 @@ collaboratorRouter.post("/", requireAdminKey, async (req, res) => {
       });
     }
   } catch (err: any) {
-    return res.status(500).json({ error: "Failed to validate total basis points" });
+    return res.status(500).json({ error: "Failed to validate total basis points", code: "INTERNAL_ERROR" });
   }
 
   try {
@@ -126,7 +126,7 @@ collaboratorRouter.post("/", requireAdminKey, async (req, res) => {
     ]);
     res.json({ hash });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
   }
 });
 
@@ -144,7 +144,7 @@ collaboratorRouter.delete("/:address", requireAdminKey, async (req, res) => {
   try {
     StellarSdk.StrKey.decodeEd25519PublicKey(address);
   } catch {
-    return res.status(400).json({ error: "Invalid Stellar address" });
+    return res.status(400).json({ error: "Invalid Stellar address", code: "VALIDATION_ERROR" });
   }
 
   try {
@@ -153,6 +153,6 @@ collaboratorRouter.delete("/:address", requireAdminKey, async (req, res) => {
     ]);
     res.json({ hash });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
   }
 });

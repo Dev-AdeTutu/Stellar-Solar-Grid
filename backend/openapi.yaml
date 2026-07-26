@@ -18,14 +18,44 @@ components:
   schemas:
     Error:
       type: object
+      description: |
+        Standard error envelope returned by every endpoint on non-2xx responses.
+
+        All error responses share this shape:
+        ```json
+        { "error": "Human-readable message", "code": "MACHINE_READABLE_CODE" }
+        ```
+
+        Common `code` values:
+        | Code | HTTP status | Meaning |
+        |------|-------------|---------|
+        | `VALIDATION_ERROR` | 400 | Request body / query / params failed validation |
+        | `UNAUTHORIZED` | 401 | Missing or invalid credential (admin key, JWT, webhook signature) |
+        | `NOT_FOUND` | 404 | Requested resource does not exist |
+        | `IDEMPOTENCY_CONFLICT` | 409 | Concurrent request with the same Idempotency-Key is in-flight |
+        | `BATCH_SIZE_EXCEEDED` | 400 | Batch request exceeds the allowed limit |
+        | `MISSING_PROVIDER_ID` | 400 | X-Provider-ID header is required but absent |
+        | `RPC_ERROR` | 502 | Soroban RPC node is unreachable or returned an error |
+        | `CONTRACT_ERROR` | 500 | Smart-contract call failed |
+        | `INTERNAL_ERROR` | 500 | Unexpected server error |
+        | `SERVER_MISCONFIGURATION` | 503 | Required environment variable is not set |
+        | `PAYLOAD_TOO_LARGE` | 413 | Request body exceeds the 100 kb limit |
+        | `INVALID_JSON` | 400 | Request body is not valid JSON |
+        | `TIMEOUT` | 504 | Request exceeded the server-side timeout |
       required: [error, code]
       properties:
         error:
           type: string
+          description: Human-readable error message.
         code:
           type: string
+          description: Machine-readable error code (see table above).
         hint:
           type: string
+          description: Optional additional guidance for the caller.
+        details:
+          type: object
+          description: Optional structured validation details (present on VALIDATION_ERROR responses).
 
     ValidationError:
       allOf:

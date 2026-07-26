@@ -38,7 +38,15 @@ allowlistRouter.get('/:address', asyncHandler(async (req, res) => {
 
 /** POST /api/allowlist — add address to allowlist */
 allowlistRouter.post('/', requireAdminKey, asyncHandler(async (req, res) => {
-  const { address } = AddressSchema.parse(req.body);
+  const parsed = AddressSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: "Invalid request",
+      code: "VALIDATION_ERROR",
+      details: parsed.error.flatten(),
+    });
+  }
+  const { address } = parsed.data;
   const hash = await stellarService.invoke('allowlist_add', [
     StellarSdk.nativeToScVal(address, { type: 'address' }),
   ]);

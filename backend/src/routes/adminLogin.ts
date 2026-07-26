@@ -8,12 +8,12 @@ adminLoginRouter.post('/', (req: Request, res: Response) => {
   const adminSecret = process.env.ADMIN_API_KEY;
   if (!adminSecret) {
     logger.error('ADMIN_API_KEY env var not set');
-    return res.status(503).json({ error: 'Server misconfiguration' });
+    return res.status(503).json({ error: 'Server misconfiguration', code: 'SERVER_MISCONFIGURATION' });
   }
 
   const { secret } = req.body as { secret?: string };
   if (!secret || secret !== adminSecret) {
-    return res.status(401).json({ error: 'Invalid admin secret' });
+    return res.status(401).json({ error: 'Invalid admin secret', code: 'UNAUTHORIZED' });
   }
 
   const jwtSecret = process.env.JWT_SECRET ?? adminSecret;
