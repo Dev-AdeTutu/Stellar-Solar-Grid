@@ -1,4 +1,7 @@
 const API_BASE = `${import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001"}/api`;
+import { env } from "@/lib/env";
+
+const API_BASE = env.NEXT_PUBLIC_COLLAB_API_URL;
 
 export interface CollaboratorShare {
   address: string;

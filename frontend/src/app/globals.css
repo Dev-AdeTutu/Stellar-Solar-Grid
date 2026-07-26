@@ -2,16 +2,30 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Brand accent — constant across themes, used for contrast-critical text/backgrounds */
+  --color-brand-yellow: #f5a623;
+  --color-button-text-on-accent: #0f1419;
+}
+
 :root[data-theme='dark'] {
   --color-bg-primary: #0d1b2a;
   --color-bg-card: #1c2b3a;
   --color-text-primary: #e0e6ed;
+  --color-text-secondary: #9ca3af;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-skeleton-base: #1c2b3a;
+  --color-skeleton-highlight: #243447;
 }
 
 :root[data-theme='light'] {
   --color-bg-primary: #f0f4f8;
   --color-bg-card: #ffffff;
   --color-text-primary: #1a202c;
+  --color-text-secondary: #4a5568;
+  --color-border: rgba(15, 23, 42, 0.1);
+  --color-skeleton-base: #e2e8f0;
+  --color-skeleton-highlight: #f1f5f9;
 }
 
 html {
@@ -57,7 +71,7 @@ input, select, textarea {
 /* ── Shared card / badge ─────────────────────────────────────────────────── */
 .card {
   background: var(--color-bg-card);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--color-border);
   border-radius: 0.75rem;
   padding: 1.25rem 1.5rem;
 }

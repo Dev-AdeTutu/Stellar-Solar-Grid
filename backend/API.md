@@ -39,42 +39,31 @@ To also remove volumes (e.g., for a clean restart):
 docker-compose down -v
 ```
 
-## Idempotency
+## Payments
 
-Payment endpoints support the `Idempotency-Key` header to prevent duplicate submissions on network retries.
-
-### `POST /api/meters/:id/pay`
+### `POST /api/payments`
 
 Submit a payment for a meter.
-
-**Headers**
-
-| Header            | Required | Description                                |
-| ----------------- | -------- | ------------------------------------------ |
-| `Idempotency-Key` | No       | Unique client-generated key (e.g. UUID v4) |
 
 **Body**
 
 ```json
 {
-  "token_address": "C...",
+  "meterId": "METER1",
   "payer": "G...",
-  "amount_stroops": 5000000,
-  "plan": "Daily"
+  "amount": 5000000
 }
 ```
-
-**Behaviour**
-
-- If `Idempotency-Key` is provided and a successful response for that key exists in the cache (within 24 h), the cached `{ hash }` is returned immediately — no duplicate contract call is made.
-- Cache entries expire after 24 hours.
-- Expired entries are evicted lazily on the next write.
 
 **Response**
 
 ```json
 { "hash": "<transaction-hash>" }
 ```
+
+**Idempotency**
+
+⚠️ **Note**: Idempotency is not currently implemented. Clients retrying failed payment requests may result in duplicate on-chain transactions. Use client-side deduplication or implement idempotency keys on your end. This is planned for a future release (see issue #API-22).
 
 ## Low-Balance Webhook Notifications
 
@@ -93,7 +82,15 @@ Set the following environment variables:
 
 **`POST /api/webhooks/low-balance`**
 
-Register or update the webhook URL for low-balance notifications.
+Register or update the webhook URL for low-balance notifications. Requires
+admin authentication via the `X-Admin-Key` header (same admin key used by
+`/api/collaborators`).
+
+**Headers**
+
+| Header        | Required | Description                          |
+| ------------- | -------- | ------------------------------------ |
+| `X-Admin-Key` | Yes      | Must match the server's `ADMIN_API_KEY` |
 
 **Body**
 
@@ -111,6 +108,8 @@ Register or update the webhook URL for low-balance notifications.
   "webhook_url": "https://your-service.com/webhooks/low-balance"
 }
 ```
+
+A request without a valid `X-Admin-Key` header returns `401 Unauthorized`.
 
 ### Webhook Payload
 

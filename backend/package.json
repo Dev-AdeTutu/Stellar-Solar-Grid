@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "test:e2e": "tsx ../tests/e2e/payment-flow.ts",
     "test:scrub": "tsx tests/scrub.test.ts",
-    "test:cors": "tsx tests/cors.test.ts"
+    "test:cors": "tsx tests/cors.test.ts",
+    "test:openapi": "tsx tests/openapi-validation.test.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0",

@@ -764,6 +764,8 @@ paths:
     post:
       operationId: registerLowBalanceWebhook
       summary: Register a webhook URL for low-balance notifications
+      security:
+        - AdminKey: []
       tags: [Webhooks]
       requestBody:
         required: true
@@ -790,6 +792,159 @@ paths:
                     type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    delete:
+      operationId: unregisterLowBalanceWebhook
+      summary: Unregister a webhook URL for low-balance notifications
+      description: Removes a previously registered webhook URL for this provider.
+      tags: [Webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [webhook_url]
+              properties:
+                webhook_url:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Webhook unregistered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  webhook_url:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/webhooks:
+    get:
+      operationId: listWebhooks
+      summary: List registered low-balance webhooks
+      description: Returns webhooks registered by this provider (if X-Provider-ID header provided) or all webhooks.
+      tags: [Webhooks]
+      responses:
+        '200':
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      type: string
+                  count:
+                    type: integer
+
+  /api/payments:
+    post:
+      operationId: submitPayment
+      summary: Submit a payment
+      description: Submit a payment on-chain for a meter. **Note:** Idempotency is not implemented; retrying may result in duplicate transactions.
+      tags: [Payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, amount, payer]
+              properties:
+                meterId:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+                payer:
+                  type: string
+                  length: 56
+      responses:
+        '200':
+          description: Payment submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hash:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/payments/history/{address}:
+    get:
+      operationId: getPaymentHistory
+      summary: Payment history for a Stellar address with date range filtering
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+          description: Stellar Ed25519 public key
+        - in: query
+          name: from
+          schema:
+            type: integer
+          description: Start timestamp (UNIX time)
+        - in: query
+          name: to
+          schema:
+            type: integer
+          description: End timestamp (UNIX time)
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: Payment history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentRecord'
+                  address:
+                    type: string
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  pages:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   # ── Allowlist ────────────────────────────────────────────────────────────────
   /api/allowlist:
@@ -950,6 +1105,63 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/collaborators/total-shares:
+    get:
+      operationId: getTotalCollaboratorShares
+      summary: Get total basis points allocated to collaborators
+      description: Returns sum of all collaborator basis points and remaining available. Cached for 5 seconds.
+      tags: [Collaborators]
+      responses:
+        '200':
+          description: Total shares info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total_basis_points, remaining]
+                properties:
+                  total_basis_points:
+                    type: integer
+                  remaining:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/collaborators/meter/{meterId}:
+    get:
+      operationId: getMeterCollaborators
+      summary: List collaborators for a specific meter
+      tags: [Collaborators]
+      parameters:
+        - in: path
+          name: meterId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Meter collaborators
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meterId:
+                    type: string
+                  collaborators:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        address:
+                          type: string
+                        sharePercent:
+                          type: number
+                  count:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   # ── Stats ────────────────────────────────────────────────────────────────────
   /api/stats:

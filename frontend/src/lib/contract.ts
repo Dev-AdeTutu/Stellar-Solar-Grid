@@ -1,5 +1,6 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { useWalletStore } from "@/store/walletStore";
+import { env } from "@/lib/env";
 
 export interface MeterData {
   version: number;
@@ -13,10 +14,7 @@ export interface MeterData {
   meter_id?: string;
 }
 
-const REQUEST_TIMEOUT_MS =
-  typeof window !== "undefined"
-    ? parseInt(process.env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS || "10000")
-    : 10000;
+const REQUEST_TIMEOUT_MS = env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;
 
 export class ContractClient {
   private server: StellarSdk.SorobanRpc.Server;
@@ -101,9 +99,9 @@ export class ContractClient {
 }
 
 export const client = new ContractClient(
-  process.env.NEXT_PUBLIC_CONTRACT_ID!,
-  process.env.NEXT_PUBLIC_RPC_URL ?? "https://soroban-testnet.stellar.org",
-  process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? StellarSdk.Networks.TESTNET,
+  env.NEXT_PUBLIC_CONTRACT_ID,
+  env.NEXT_PUBLIC_RPC_URL,
+  env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
 );
 
 export async function fetchMeter(meterId: string): Promise<MeterData> {
