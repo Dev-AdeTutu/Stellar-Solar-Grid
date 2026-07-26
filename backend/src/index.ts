@@ -10,6 +10,7 @@ import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
 import { adminLoginRouter } from "./routes/adminLogin.js";
@@ -156,6 +157,10 @@ app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/stats", statsRouter);
+
+app.get('/health', async (_req, res) => {
+  const checks: Record<string, string> = {};
 app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/allowlist", allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
