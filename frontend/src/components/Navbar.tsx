@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useWalletStore } from "@/store/walletStore";
+import { WalletConnectButton } from "@/components/WalletConnectButton";
 
 const NAV_LINKS = [
   { href: "/dashboard/user", label: "My Meter" },
@@ -12,10 +13,22 @@ const NAV_LINKS = [
 ];
 
 export default function Navbar() {
-  const { address, connect, disconnect } = useWalletStore();
+  const { connectError, clearConnectError } = useWalletStore();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [theme, setTheme] = useState("dark");
 
-  const short = address ? `${address.slice(0, 4)}…${address.slice(-4)}` : null;
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("theme") ?? "dark";
+    setTheme(savedTheme);
+    document.documentElement.setAttribute("data-theme", savedTheme);
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("theme", next);
+    document.documentElement.setAttribute("data-theme", next);
+  }
 
   function closeMenu() {
     setMenuOpen(false);
@@ -40,12 +53,18 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          <WalletButton address={short} connect={connect} disconnect={disconnect} />
+          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label="Toggle theme">
+            {theme === "dark" ? "🌙" : "☀️"}
+          </button>
+          <WalletConnectButton />
         </div>
 
         {/* Mobile: wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <WalletButton address={short} connect={connect} disconnect={disconnect} compact />
+          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label="Toggle theme">
+            {theme === "dark" ? "🌙" : "☀️"}
+          </button>
+          <WalletConnectButton compact />
           <button
             onClick={() => setMenuOpen((o) => !o)}
             aria-label={menuOpen ? "Close menu" : "Open menu"}
@@ -53,19 +72,46 @@ export default function Navbar() {
             className="rounded-lg border border-white/10 p-2 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
           >
             {menuOpen ? (
-              /* X icon */
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" />
               </svg>
             ) : (
-              /* Hamburger icon */
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path d="M3 5h14a1 1 0 010 2H3a1 1 0 010-2zm0 4h14a1 1 0 010 2H3a1 1 0 010-2zm0 4h14a1 1 0 010 2H3a1 1 0 010-2z" />
               </svg>
             )}
           </button>
         </div>
       </div>
+
+      {/* Wallet connect error banner */}
+      {connectError && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 border-t border-red-500/30 bg-red-900/20 px-4 py-2.5 text-sm text-red-400"
+        >
+          <span>
+            {connectError}{" "}
+            {connectError.toLowerCase().includes("not installed") && (
+              <a
+                href="https://freighter.app"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline underline-offset-2 text-red-300 hover:text-white transition"
+              >
+                Install Freighter ↗
+              </a>
+            )}
+          </span>
+          <button
+            onClick={clearConnectError}
+            aria-label="Dismiss error"
+            className="shrink-0 text-red-400 hover:text-white transition"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Mobile dropdown menu */}
       {menuOpen && (
@@ -83,38 +129,5 @@ export default function Navbar() {
         </div>
       )}
     </nav>
-  );
-}
-
-function WalletButton({
-  address,
-  connect,
-  disconnect,
-  compact = false,
-}: {
-  address: string | null;
-  connect: () => void;
-  disconnect: () => void;
-  compact?: boolean;
-}) {
-  if (address) {
-    return (
-      <button
-        onClick={disconnect}
-        className="rounded-lg border border-solar-yellow px-3 py-1.5 text-xs font-medium text-solar-yellow hover:bg-solar-yellow hover:text-solar-dark transition"
-      >
-        {address}
-      </button>
-    );
-  }
-  return (
-    <button
-      onClick={connect}
-      className={`rounded-lg bg-solar-yellow font-semibold text-solar-dark hover:opacity-90 transition ${
-        compact ? "px-3 py-1.5 text-xs" : "px-4 py-1.5 text-sm"
-      }`}
-    >
-      {compact ? "Connect" : "Connect Wallet"}
-    </button>
   );
 }

@@ -1,0 +1,32 @@
+name: Contract Deploy (Testnet)
+on:
+  push:
+    tags: [contract-v*]
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            contracts/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/Cargo.lock') }}
+      - name: Build WASM
+        run: cargo build --target wasm32-unknown-unknown --release
+        working-directory: contracts
+      - name: Install Stellar CLI
+        run: cargo install stellar-cli --locked
+      - name: Deploy to testnet
+        id: deploy
+        env:
+          ADMIN_SECRET_KEY: ${{ secrets.ADMIN_SECRET_KEY }}
+        run: |
+          ID=$(stellar contract deploy --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm --source "$ADMIN_SECRET_KEY" --network testnet)
+          echo "contract_id=$ID" >> $GITHUB_OUTPUT
+          echo "Deployed: $ID"
