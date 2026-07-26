@@ -12,6 +12,8 @@ interface WebhookQueueItem {
   payload: string;
   attempt: number;
   nextRetryAt: number;
+  /** X-Request-ID to forward on delivery for tracing */
+  correlationId?: string;
 }
 
 export interface WebhookRecord {
@@ -105,20 +107,29 @@ export function getWebhooksByProvider(providerId: string): WebhookRecord[] {
 /**
  * Fire a webhook with automatic retry on failure.
  * Implements exponential backoff: 1s, 2s, 4s, 8s, 16s (max 5 retries)
+ *
+ * @param correlationId Optional X-Request-ID to forward on the outbound request for tracing.
  */
-export async function fireWebhook(url: string, payload: string): Promise<void> {
-  return fireWebhookInternal(url, payload, 0);
+export async function fireWebhook(url: string, payload: string, correlationId?: string): Promise<void> {
+  return fireWebhookInternal(url, payload, 0, correlationId);
 }
 
 async function fireWebhookInternal(
   url: string,
   payload: string,
   attempt: number,
+  correlationId?: string,
 ): Promise<void> {
+  // Build request headers — always include Content-Type; forward X-Request-ID when available
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (correlationId) {
+    headers["X-Request-ID"] = correlationId;
+  }
+
   try {
     const response = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: payload,
       signal: AbortSignal.timeout(10_000), // 10 second timeout
     });
@@ -129,7 +140,7 @@ async function fireWebhookInternal(
 
     // Success - log if this was a retry
     if (attempt > 0) {
-      logger.info("Webhook delivery succeeded after retry", { url, attempt });
+      logger.info("Webhook delivery succeeded after retry", { url, attempt, correlationId });
     }
   } catch (err: any) {
     // Log the failure
@@ -138,6 +149,7 @@ async function fireWebhookInternal(
       attempt: attempt + 1,
       maxRetries: MAX_RETRIES,
       error: err.message,
+      correlationId,
     });
 
     // Retry if we haven't exceeded max attempts
@@ -150,6 +162,7 @@ async function fireWebhookInternal(
         payload,
         attempt: attempt + 1,
         nextRetryAt,
+        correlationId,
       });
 
       scheduleRetryProcessor();
@@ -157,6 +170,7 @@ async function fireWebhookInternal(
       logger.error("Webhook delivery failed permanently after max retries", {
         url,
         attempts: MAX_RETRIES + 1,
+        correlationId,
       });
     }
   }
@@ -190,7 +204,7 @@ function processRetryQueue(): void {
 
   // Fire ready webhooks
   for (const item of readyItems) {
-    fireWebhookInternal(item.url, item.payload, item.attempt).catch(() => {
+    fireWebhookInternal(item.url, item.payload, item.attempt, item.correlationId).catch(() => {
       // Errors are handled inside fireWebhookInternal
     });
   }
@@ -237,10 +251,14 @@ export async function drainWebhookQueue(): Promise<void> {
   logger.info("Draining webhook retry queue", { pending: retryQueue.length });
 
   // Fire all pending webhooks immediately (don't retry on failure during shutdown)
-  const promises = retryQueue.map((item) =>
-    fetch(item.url, {
+  const promises = retryQueue.map((item) => {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (item.correlationId) {
+      headers["X-Request-ID"] = item.correlationId;
+    }
+    return fetch(item.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: item.payload,
       signal: AbortSignal.timeout(5_000), // Shorter timeout during shutdown
     }).catch((err) => {
@@ -248,9 +266,10 @@ export async function drainWebhookQueue(): Promise<void> {
         url: item.url,
         attempt: item.attempt,
         error: err.message,
+        correlationId: item.correlationId,
       });
-    }),
-  );
+    });
+  });
 
   await Promise.allSettled(promises);
   retryQueue.length = 0;
