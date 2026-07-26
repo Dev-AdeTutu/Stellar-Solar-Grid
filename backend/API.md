@@ -1,3 +1,6 @@
+# Docker Setup
+
+Run the entire platform locally with Docker Compose:
 # SolarGrid Backend API
 
 ## Development with Docker Compose
@@ -10,6 +13,13 @@ Spin up the full development stack (backend + MQTT broker) with:
 docker-compose up --build
 ```
 
+Services:
+
+- **Backend**: Express API server + IoT Bridge (`http://localhost:3001`)
+- **Frontend**: Next.js dashboard (`http://localhost:3000`)
+- **MQTT**: Eclipse Mosquitto MQTT broker (`mqtt://localhost:1883`)
+
+To stop:
 This will:
 
 - Build and start the Node.js backend on port 3001
@@ -39,17 +49,37 @@ To also remove volumes (e.g., for a clean restart):
 docker-compose down -v
 ```
 
+## Idempotency
+
+Payment endpoints support the `Idempotency-Key` header to prevent duplicate submissions on network retries.
 ## Payments
 
 ### `POST /api/payments`
 
 Submit a payment for a meter.
 
+**Headers**
+
+| Header            | Required | Description                                |
+| ----------------- | -------- | ------------------------------------------ |
+| `Idempotency-Key` | No       | Unique client-generated key (e.g. UUID v4) |
+
 **Body**
 
 ```json
 {
   "meterId": "METER1",
+  "amount": 5000000,
+  "payer": "G..."
+}
+```
+
+**Behaviour**
+
+- If `Idempotency-Key` is provided and a successful response for that key exists in the cache (within 24 h), the cached `{ hash }` is returned immediately — no duplicate contract call is made.
+- Cache entries expire after 24 hours.
+- Expired entries are evicted lazily on the next write.
+
   "payer": "G...",
   "amount": 5000000
 }
@@ -61,6 +91,9 @@ Submit a payment for a meter.
 { "hash": "<transaction-hash>" }
 ```
 
+## Low-Balance Webhook Notifications
+
+Providers can register webhook URLs to receive notifications when a customer's meter balance drops below a configurable threshold.
 **Idempotency**
 
 ⚠️ **Note**: Idempotency is not currently implemented. Clients retrying failed payment requests may result in duplicate on-chain transactions. Use client-side deduplication or implement idempotency keys on your end. This is planned for a future release (see issue #API-22).
