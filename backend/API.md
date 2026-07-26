@@ -63,7 +63,51 @@ Submit a payment for a meter.
 
 **Idempotency**
 
-⚠️ **Note**: Idempotency is not currently implemented. Clients retrying failed payment requests may result in duplicate on-chain transactions. Use client-side deduplication or implement idempotency keys on your end. This is planned for a future release (see issue #API-22).
+`POST /api/payments` supports the `Idempotency-Key` header. Provide a unique,
+client-generated key (UUID v4 recommended) per logical payment attempt. The
+server caches the response for 24 hours keyed to that value. Any retry
+carrying the same key within that window receives the original response
+without re-invoking the on-chain contract — preventing duplicate money
+movement on network-level retries or multi-device submissions.
+
+| Header            | Required | Description                                      |
+|-------------------|----------|--------------------------------------------------|
+| `Idempotency-Key` | No       | Opaque string, max recommended length 128 chars  |
+
+**Behaviour**
+
+- **First request** — processed normally; response cached for 24 h.
+- **Repeat key (hit)** — cached response returned immediately with
+  `X-Idempotent-Replayed: true`; no contract call is made.
+- **Concurrent duplicate** — if the first request is still in-flight, the
+  second returns `409 Conflict` with code `IDEMPOTENCY_CONFLICT`.
+- **5xx responses** — not cached; the client may safely retry with the same
+  key after a transient server error.
+- **No header** — request is processed normally with no idempotency guarantee
+  (backwards-compatible).
+
+**Example**
+
+```http
+POST /api/payments
+Content-Type: application/json
+Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+
+{
+  "meterId": "METER1",
+  "payer": "G...",
+  "amount": 5000000
+}
+```
+
+Replayed response includes:
+
+```http
+HTTP/1.1 200 OK
+X-Idempotent-Replayed: true
+
+{ "hash": "<original-transaction-hash>" }
+```
 
 ## Low-Balance Webhook Notifications
 

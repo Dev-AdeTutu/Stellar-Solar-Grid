@@ -4,6 +4,7 @@ import { z } from "zod";
 import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { idempotency } from "../middleware/idempotency.js";
 
 export const paymentsRouter = Router();
 
@@ -15,6 +16,7 @@ const PaymentSchema = z.object({
 
 paymentsRouter.post(
   "/",
+  idempotency(),
   asyncHandler(async (req, res) => {
     const parsed = PaymentSchema.safeParse(req.body);
     if (!parsed.success) {
