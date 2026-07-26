@@ -59,6 +59,9 @@ const INTERNAL_ROUTE_PATTERNS = [
   /^\/health$/,
 ];
 
+// Suppress unused warning
+void isInternalRoute;
+
 function isInternalRoute(path: string): boolean {
   return INTERNAL_ROUTE_PATTERNS.some((pattern) => pattern.test(path));
 }
@@ -136,6 +139,11 @@ async function testOpenAPIValidation() {
     // Stats
     { path: "/api/stats", methods: ["GET"] },
     { path: "/api/stats/summary", methods: ["GET"] },
+
+    // Usage Events
+    { path: "/api/usage-events", methods: ["DELETE"] },
+    { path: "/api/usage-events/failed", methods: ["GET"] },
+    { path: "/api/usage-events/:id/replay", methods: ["POST"] },
 
     // Metrics (internal, may not be in spec)
     // { path: "/api/metrics/summary", methods: ["GET"] },

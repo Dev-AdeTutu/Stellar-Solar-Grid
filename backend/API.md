@@ -278,3 +278,78 @@ When a meter's balance drops below the threshold after a usage update, the bridg
 - Failed webhook calls are logged but do not crash the IoT bridge
 - Webhook timeouts can be configured via your HTTP client settings
 - Consider idempotency keys on your webhook endpoint to handle retries
+
+## Usage Events Lifecycle Management
+
+All usage event endpoints require a valid `Authorization: Bearer <ADMIN_API_KEY>` header.
+
+### `DELETE /api/usage-events`
+
+Purges submitted usage events older than `N` days.
+
+**Query Parameters**
+- `olderThanDays` (optional): Default `90`. Must be a non-negative integer.
+
+**Response**
+
+```json
+{
+  "deletedCount": 5
+}
+```
+
+### `GET /api/usage-events/failed`
+
+Returns a paginated list of dead-lettered/failed usage events.
+
+**Query Parameters**
+- `page` (optional): Default `1`.
+- `pageSize` (optional): Default `10`.
+
+**Response**
+
+```json
+{
+  "events": [
+    {
+      "id": 42,
+      "meter_id": "METER1",
+      "units": 100,
+      "cost": "500000",
+      "received_at": "2026-07-26T12:00:00.000Z",
+      "status": "failed",
+      "attempt_count": 5,
+      "last_error": "Stellar RPC error"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "pageSize": 10,
+    "total": 1,
+    "pages": 1
+  }
+}
+```
+
+### `POST /api/usage-events/:id/replay`
+
+Resets a failed usage event back to `pending` status and `attempt_count` to `0` so it can be retried.
+
+**Response**
+
+Returns the updated event record:
+
+```json
+{
+  "id": 42,
+  "meter_id": "METER1",
+  "units": 100,
+  "cost": "500000",
+  "received_at": "2026-07-26T12:00:00.000Z",
+  "status": "pending",
+  "attempt_count": 0,
+  "last_error": null
+}
+```
+
+If the event is not found or not in `failed` status, returns `404 Not Found`.

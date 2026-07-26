@@ -14,6 +14,9 @@ components:
       type: apiKey
       in: header
       name: X-Admin-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
 
   schemas:
     Error:
@@ -1290,3 +1293,108 @@ paths:
                     type: number
                   paymentVolumeXlm:
                     type: number
+
+  # ── Usage Events ─────────────────────────────────────────────────────────────
+  /api/usage-events:
+    delete:
+      operationId: purgeUsageEvents
+      summary: Purge submitted usage events older than N days
+      tags: [Usage Events]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: olderThanDays
+          required: false
+          schema:
+            type: integer
+            default: 90
+      responses:
+        '200':
+          description: Events purged successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletedCount:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/usage-events/failed:
+    get:
+      operationId: getFailedUsageEvents
+      summary: List all dead-lettered/failed usage events with pagination
+      tags: [Usage Events]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Paginated list of failed usage events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      pageSize:
+                        type: integer
+                      total:
+                        type: integer
+                      pages:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/usage-events/{id}/replay:
+    post:
+      operationId: replayFailedUsageEvent
+      summary: Replay a failed usage event by setting status to pending
+      tags: [Usage Events]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Usage event replayed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'

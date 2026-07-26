@@ -76,6 +76,9 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_retry
       ON usage_events (status, attempt_count, received_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+      ON usage_events (status, submitted_at);
   `);
   return database;
 }
@@ -300,7 +303,14 @@ async function submitUsageEvent(id: number) {
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
 
     if (finalStatus === "failed") {
-      logger.warn({ eventId: id, meterId: event.meter_id, attempts: nextAttemptCount }, 'Usage event dead-lettered after max retries');
+      logger.error(
+        {
+          meter_id: event.meter_id,
+          units: event.units,
+          last_error: error instanceof Error ? error.message : String(error),
+        },
+        "Usage event transitioned to failed"
+      );
     }
 
     db.prepare(
@@ -325,4 +335,46 @@ async function submitUsageEvent(id: number) {
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+export function purgeSubmittedUsageEvents(olderThanDays: number): number {
+  const cutoffDate = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  const stmt = db.prepare(
+    "DELETE FROM usage_events WHERE status = 'submitted' AND submitted_at < ?"
+  );
+  const result = stmt.run(cutoffDate);
+  return result.changes;
+}
+
+export function getFailedUsageEvents(
+  page: number,
+  pageSize: number
+): { events: UsageEventRecord[]; total: number } {
+  const offset = (page - 1) * pageSize;
+
+  const events = db
+    .prepare(
+      "SELECT * FROM usage_events WHERE status = 'failed' AND attempt_count >= ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
+    )
+    .all(MAX_RETRIES, pageSize, offset) as UsageEventRecord[];
+
+  const { count } = db
+    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed' AND attempt_count >= ?")
+    .get(MAX_RETRIES) as { count: number };
+
+  return {
+    events,
+    total: count,
+  };
+}
+
+export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined {
+  const stmt = db.prepare(
+    "UPDATE usage_events SET status = 'pending', attempt_count = 0, last_error = NULL WHERE id = ? AND status = 'failed'"
+  );
+  const result = stmt.run(id);
+  if (result.changes === 0) {
+    return undefined;
+  }
+  return getUsageEventById(id);
 }
