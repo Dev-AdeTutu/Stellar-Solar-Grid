@@ -37,7 +37,7 @@ import { createRequire } from "module";
 const _require = createRequire(import.meta.url);
 const { version } = _require("../../package.json") as { version: string };
 
-const REQUIRED_ENV = ["CONTRACT_ID", "ADMIN_SECRET_KEY", "STELLAR_RPC_URL", "MQTT_BROKER"];
+const REQUIRED_ENV = ["CONTRACT_ID", "ADMIN_SECRET_KEY", "ADMIN_API_KEY", "STELLAR_RPC_URL", "MQTT_BROKER"];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
 if (missing.length > 0) {
   logger.fatal(
