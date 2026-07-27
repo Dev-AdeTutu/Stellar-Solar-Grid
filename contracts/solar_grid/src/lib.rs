@@ -265,6 +265,10 @@ impl SolarGridContract {
     /// Transfer meter ownership from the current owner to a new owner.
     /// Both the current owner and the new owner must authorize this call.
     /// The new owner must already be on the allowlist.
+    ///
+    /// Emits `mtr_xfr` with topics `(EVT_NS, mtr_xfr, meter_id)` and data
+    /// `(old_owner, new_owner)` so the bridge can detect ownership changes
+    /// without polling every meter.
     pub fn transfer_meter_ownership(
         env: Env,
         meter_id: String,
@@ -281,8 +285,10 @@ impl SolarGridContract {
             return Err(ContractError::OwnerNotAllowlisted);
         }
 
+        let old_owner = meter.owner.clone();
+
         // Remove meter_id from old owner's index
-        let old_key = DataKey::OwnerMeters(meter.owner.clone());
+        let old_key = DataKey::OwnerMeters(old_owner.clone());
         let old_list: Vec<String> = env
             .storage()
             .persistent()
@@ -309,9 +315,10 @@ impl SolarGridContract {
         meter.owner = new_owner.clone();
         env.storage().persistent().set(&key, &meter);
 
+        // meter_ownership_transferred — bridge listens for this instead of polling
         env.events().publish(
-            (EVT_NS, symbol_short!("mtr_xfer"), meter_id),
-            new_owner,
+            (EVT_NS, symbol_short!("mtr_xfr"), meter_id),
+            (old_owner, new_owner),
         );
         Ok(())
     }
@@ -1689,6 +1696,35 @@ mod tests {
                 && topics.get(2) == Some(meter_id.clone().into())
         });
         assert!(has_deact, "mtr_deact event not emitted by set_active(false)");
+    }
+
+    #[test]
+    fn test_event_meter_ownership_transferred() {
+        let (env, client, _admin) = setup();
+        let old_owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EV_XFR");
+
+        allowlist_and_register(&client, &meter_id, &old_owner);
+        client.allowlist_add(&new_owner);
+        client.transfer_meter_ownership(&meter_id, &new_owner);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            let topics_ok = topics.len() >= 3
+                && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("mtr_xfr"))
+                && topics.get(2) == Some(meter_id.clone().into());
+            if !topics_ok {
+                return false;
+            }
+            let Ok(payload) = <(Address, Address)>::try_from_val(&env, &data) else {
+                return false;
+            };
+            payload.0 == old_owner && payload.1 == new_owner
+        });
+        assert!(found, "mtr_xfr event with old and new owner not emitted");
+        assert_eq!(client.get_meter(&meter_id).owner, new_owner);
     }
 
     /// register 3 meters for the same owner — get_meters_by_owner returns all 3.
