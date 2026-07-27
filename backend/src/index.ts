@@ -1,6 +1,7 @@
 import "dotenv/config";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
+import compression from "compression";
 import timeout from "connect-timeout";
 import mqtt from "mqtt";
 import helmet from "helmet";
@@ -66,6 +67,12 @@ app.use(helmet({
   },
   hsts: { maxAge: 31536000, includeSubDomains: true },
 }));
+
+// #599: gzip/brotli-compress responses over 1 KB (e.g. large meter-list
+// payloads). `compression` negotiates the best encoding the client
+// advertises via Accept-Encoding (br when supported, else gzip/deflate)
+// and leaves small responses untouched below the threshold.
+app.use(compression({ threshold: 1024 }));
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '*').split(',').map(o => o.trim());
 
