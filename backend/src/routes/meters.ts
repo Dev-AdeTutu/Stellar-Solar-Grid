@@ -1,6 +1,6 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { StellarService, stellarService } from "../lib/stellar.js";
+import { StellarService, stellarService, server } from "../lib/stellar.js";
 import {
   getUsageHistory,
   persistAndSubmitUsageEvent,
@@ -93,7 +93,25 @@ export function createMeterRouter(stellar: StellarService) {
       const result = await stellar.query("get_all_meters", []);
       const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 
-      const nowMs = Date.now();
+      // Issue #596: anchor "now" to the Stellar network's own ledger close
+      // time rather than this server's wall clock, so expiry comparisons
+      // against on-chain expires_at (a ledger timestamp) aren't skewed by
+      // local clock drift. getTransactions' summary fields are populated
+      // even when the requested page has zero transactions, so a cheap
+      // limit:1 call at the latest sequence is enough to read it.
+      let nowMs = Date.now();
+      try {
+        const latestLedger = await server.getLatestLedger();
+        const txPage = await server.getTransactions({
+          startLedger: latestLedger.sequence,
+          limit: 1,
+        });
+        if (txPage.latestLedgerCloseTimestamp) {
+          nowMs = txPage.latestLedgerCloseTimestamp * 1000;
+        }
+      } catch (err) {
+        logger.warn("Failed to fetch ledger close time, falling back to server clock", { err });
+      }
       const thresholdMs = nowMs + windowHours * 60 * 60 * 1000;
 
       const expiring = allMeters.filter((m: any) => {
@@ -597,25 +615,29 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
-      const results: Array<{ meter_id: string; hash?: string; error?: string }> = [];
+      // Issue #597: each meter registration is a separate on-chain tx, so a
+      // single failure must not fail the whole batch or return a hard 500 —
+      // report per-meter success/failure instead.
+      const succeeded: Array<{ meterId: string; hash: string }> = [];
+      const failed: Array<{ meterId: string; reason: string }> = [];
 
       for (const item of meters) {
         const meterId = item?.meter_id;
         const owner = item?.owner;
 
         if (!meterId || typeof meterId !== "string" || meterId.trim().length === 0) {
-          results.push({ meter_id: String(meterId ?? ""), error: "meter_id is required" });
+          failed.push({ meterId: String(meterId ?? ""), reason: "meter_id is required" });
           continue;
         }
 
         const trimmedId = meterId.trim();
         if (trimmedId.length > 12) {
-          results.push({ meter_id: trimmedId, error: "meter_id must be at most 12 characters" });
+          failed.push({ meterId: trimmedId, reason: "meter_id must be at most 12 characters" });
           continue;
         }
 
         if (!owner || typeof owner !== "string" || !STELLAR_ACCOUNT_REGEX.test(owner)) {
-          results.push({ meter_id: trimmedId, error: "Invalid Stellar account address format" });
+          failed.push({ meterId: trimmedId, reason: "Invalid Stellar account address format" });
           continue;
         }
 
@@ -624,13 +646,13 @@ export function createMeterRouter(stellar: StellarService) {
             StellarSdk.nativeToScVal(trimmedId, { type: "symbol" }),
             StellarSdk.nativeToScVal(owner, { type: "address" }),
           ]);
-          results.push({ meter_id: trimmedId, hash });
+          succeeded.push({ meterId: trimmedId, hash });
         } catch (err: any) {
-          results.push({ meter_id: trimmedId, error: err.message ?? "Registration failed" });
+          failed.push({ meterId: trimmedId, reason: err.message ?? "Registration failed" });
         }
       }
 
-      res.json({ results });
+      res.json({ succeeded, failed });
     }),
   );
 

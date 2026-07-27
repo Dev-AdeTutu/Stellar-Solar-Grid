@@ -10,7 +10,16 @@ function hasValidSessionToken(req: Request): boolean {
   if (!auth?.startsWith('Bearer ') || !ADMIN_API_KEY) return false;
   const jwtSecret = process.env.JWT_SECRET ?? ADMIN_API_KEY;
   try {
-    const payload = jwt.verify(auth.slice(7), jwtSecret);
+    // Issue #598: expiration must always be enforced here. `ignoreExpiration`
+    // is explicitly set to `false` (rather than just omitted) so a future
+    // edit can't silently disable exp-claim validation, and `algorithms` is
+    // pinned to the one algorithm we sign with to prevent algorithm-confusion
+    // attacks. jwt.verify throws (caught below, returns false) for an
+    // expired, malformed, or wrong-signature token.
+    const payload = jwt.verify(auth.slice(7), jwtSecret, {
+      algorithms: ['HS256'],
+      ignoreExpiration: false,
+    });
     return typeof payload === 'object' && payload.role === 'admin';
   } catch {
     return false;
