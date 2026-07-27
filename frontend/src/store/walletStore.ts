@@ -15,10 +15,12 @@ interface WalletState {
   connectError: string | null;
   networkError: string | null;
   isConnecting: boolean;
+  lastTopUpPerMeter: Record<string, bigint>;
   connect: () => Promise<void>;
   disconnect: () => void;
   clearConnectError: () => void;
   signTransaction: (xdr: string) => Promise<string>;
+  recordTopUp: (meterId: string, amount: bigint) => void;
 }
 
 const EXPECTED_NETWORK_PASSPHRASE =
@@ -29,7 +31,6 @@ const EXPECTED_NETWORK_NAME = EXPECTED_NETWORK_PASSPHRASE.includes("Test")
 
 function buildKit(): StellarWalletsKit {
   return new StellarWalletsKit({
-    network: env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     network: EXPECTED_NETWORK_PASSPHRASE.includes("Test")
       ? WalletNetwork.TESTNET
       : WalletNetwork.PUBLIC,
@@ -72,6 +73,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   connectError: null,
   networkError: null,
   isConnecting: false,
+  lastTopUpPerMeter: {},
 
   connect: async () => {
     set({ connectError: null, networkError: null, isConnecting: true });
@@ -117,6 +119,15 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
+  },
+
+  recordTopUp: (meterId: string, amount: bigint) => {
+    set((state) => ({
+      lastTopUpPerMeter: {
+        ...state.lastTopUpPerMeter,
+        [meterId]: amount,
+      },
+    }));
   },
 }));
 
