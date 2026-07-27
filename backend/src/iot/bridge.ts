@@ -420,6 +420,28 @@ async function handleContractEvent(
         break;
       }
 
+      case "solargrid:mtr_xfr": {
+        const [oldOwner, newOwner] = StellarSdk.scValToNative(event.value) as [
+          string,
+          string,
+        ];
+        const meterId = subject;
+        logger.info("meter_ownership_transferred contract event", {
+          meterId,
+          oldOwner,
+          newOwner,
+        });
+        mqttClient?.publish(
+          "meters/transfer",
+          JSON.stringify({ meterId, oldOwner, newOwner }),
+          { qos: 1 },
+          (err) => {
+            if (err) logger.error({ meterId, err }, "Failed to publish meters/transfer");
+          },
+        );
+        break;
+      }
+
       case "solargrid:lmt_set": {
         const [oldLimit, newLimit] = StellarSdk.scValToNative(event.value) as [bigint, bigint];
         logger.info("lmt_set contract event", {
