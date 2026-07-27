@@ -1,0 +1,40 @@
+openapi: 3.1.0
+info:
+  title: Stellar Solar Grid API
+  version: 0.1.0
+paths:
+  /api/meters/{id}/collaborators:
+    get:
+      summary: List collaborators for a meter
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: x-admin-key
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Meter collaborators
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meterId:
+                    type: string
+                  collaborators:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        address:
+                          type: string
+                        basisPoints:
+                          type: integer
+                      required: [address, basisPoints]
+                required: [meterId, collaborators]

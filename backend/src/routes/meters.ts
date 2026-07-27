@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke, contractQuery } from "../lib/stellar.js";
+import { requireAdminKey } from "../lib/adminAuth.js";
 
 export const meterRouter = Router();
 
@@ -25,6 +26,33 @@ meterRouter.get("/:id/access", async (req, res) => {
     res.json({ active: StellarSdk.scValToNative(result) });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/meters/:id/collaborators — list the provider revenue split */
+meterRouter.get("/:id/collaborators", requireAdminKey, async (req, res) => {
+  try {
+    await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
+    ]);
+
+    const collaborators = StellarSdk.scValToNative(
+      await contractQuery("get_collaborators", [])
+    ) as string[];
+
+    const result: { address: string; basisPoints: number }[] = [];
+    for (const address of collaborators) {
+      const share = StellarSdk.scValToNative(
+        await contractQuery("get_collaborator_share", [
+          StellarSdk.nativeToScVal(address, { type: "address" }),
+        ])
+      ) as number | null;
+      result.push({ address, basisPoints: share ?? 0 });
+    }
+
+    res.json({ meterId: req.params.id, collaborators: result });
+  } catch (err: any) {
+    res.status(404).json({ error: err.message });
   }
 });
 

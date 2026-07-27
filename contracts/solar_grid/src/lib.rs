@@ -1,13 +1,15 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, Symbol, Vec,
+    contract, contractimpl, contracttype, symbol_short, vec, Address, Env, Map, Symbol, Vec,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
+const COLLABS: Symbol = symbol_short!("COLLABS");
+const SHARES: Symbol = symbol_short!("SHARES");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -66,6 +68,14 @@ impl SolarGridContract {
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
+        let allowlist: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !allowlist.contains(&owner) {
+            panic!("owner not in allowlist");
+        }
         let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
             panic!("meter already registered");
@@ -142,88 +152,92 @@ impl SolarGridContract {
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Add an address to the meter-owner allowlist.
-    /// Only the admin may call this. Use this to pre-approve user accounts
-    /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
+    /// Add a collaborator share in basis points (100 = 1%).
+    pub fn add_collaborator(env: Env, collaborator: Address, basis_points: u32) {
         Self::require_admin(&env);
-        let mut list: Vec<Address> = env
+        if basis_points == 0 || basis_points > 10_000 {
+            panic!("invalid basis points");
+        }
+        let mut collabs: Vec<Address> = env
             .storage()
             .instance()
-            .get(&ALLOWLIST)
+            .get(&COLLABS)
             .unwrap_or(Vec::new(&env));
-        if !list.contains(&owner) {
-            list.push_back(owner);
-            env.storage().instance().set(&ALLOWLIST, &list);
-        }
-    }
-
-    /// Remove an address from the meter-owner allowlist.
-    /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let list: Vec<Address> = env
+        let mut shares: Map<Address, u32> = env
             .storage()
             .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        for addr in list.iter() {
-            if addr != owner {
-                new_list.push_back(addr);
-            }
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env));
+        if shares.contains_key(collaborator.clone()) {
+            panic!("collaborator already exists");
         }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
+        let total: u32 = shares.values().iter().sum();
+        if total + basis_points > 10_000 {
+            panic!("share total exceeds 100%");
+        }
+        collabs.push_back(collaborator.clone());
+        shares.set(collaborator, basis_points);
+        env.storage().instance().set(&COLLABS, &collabs);
+        env.storage().instance().set(&SHARES, &shares);
     }
 
-    /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
+    /// Returns collaborator addresses in insertion order.
+    pub fn get_collaborators(env: Env) -> Vec<Address> {
         env.storage()
             .instance()
-            .get(&ALLOWLIST)
+            .get(&COLLABS)
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Add an address to the meter-owner allowlist.
-    /// Only the admin may call this. Use this to pre-approve user accounts
-    /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let mut list: Vec<Address> = env
+    /// Returns the share (basis points) for a collaborator.
+    pub fn get_collaborator_share(env: Env, address: Address) -> Option<u32> {
+        let shares: Map<Address, u32> = env
             .storage()
             .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !list.contains(&owner) {
-            list.push_back(owner);
-            env.storage().instance().set(&ALLOWLIST, &list);
-        }
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env));
+        shares.get(address)
     }
 
-    /// Remove an address from the meter-owner allowlist.
-    /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        for addr in list.iter() {
-            if addr != owner {
-                new_list.push_back(addr);
-            }
-        }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
-    }
-
-    /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
+    /// Returns the full share map.
+    pub fn get_all_shares(env: Env) -> Map<Address, u32> {
         env.storage()
             .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env))
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env))
+    }
+
+    /// Split an amount across collaborators and emit payout events.
+    pub fn distribute(env: Env, amount: i128) -> Map<Address, i128> {
+        Self::require_admin(&env);
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
+        let collabs: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&COLLABS)
+            .unwrap_or(Vec::new(&env));
+        let shares: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env));
+        let mut payouts: Map<Address, i128> = Map::new(&env);
+        let mut total_distributed = 0_i128;
+        for collaborator in collabs.iter() {
+            let bp = shares.get(collaborator.clone()).unwrap_or(0) as i128;
+            let payout = (amount * bp) / 10_000;
+            payouts.set(collaborator.clone(), payout);
+            total_distributed += payout;
+            env.events().publish(
+                (EVT_NS, symbol_short!("dist"), collaborator.clone()),
+                payout,
+            );
+        }
+        env.events()
+            .publish((EVT_NS, symbol_short!("dist")), total_distributed);
+        payouts
     }
 
     /// Make a payment to top up a meter's balance and activate it.
@@ -349,7 +363,7 @@ impl SolarGridContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{symbol_short, testutils::Address as _, Env};
+    use soroban_sdk::{symbol_short, testutils::{Address as _, MockAuth, MockAuthInvoke}, Env, IntoVal};
 
     fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
         let env = Env::default();
@@ -463,7 +477,6 @@ mod tests {
     #[should_panic]
     fn test_set_active_non_admin_panics() {
         let env = Env::default();
-        // Only mock auth for the non-admin user, not the contract admin
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
 
@@ -471,22 +484,21 @@ mod tests {
         let non_admin = Address::generate(&env);
         let meter_id = symbol_short!("METER6");
 
-        // Initialize with real admin (mock all for setup only)
-        env.mock_all_auths();
         client.initialize(&admin);
         client.allowlist_add(&non_admin);
         client.register_meter(&meter_id, &non_admin);
         client.make_payment(&meter_id, &non_admin, &1_000_000_i128, &PaymentPlan::Daily);
 
-        // Stop mocking all auths — now only non_admin is authorized
-        // set_active requires admin auth, so this must panic
-        env.set_auths(&[soroban_sdk::auth::ContractContext {
-            contract: contract_id.clone(),
-            fn_name: soroban_sdk::symbol_short!("set_active"),
-            args: (meter_id.clone(), false).into_val(&env),
-        }
-        .into()]);
-        client.set_active(&meter_id, &false);
+        client.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_active",
+                args: (&meter_id, &false).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .set_active(&meter_id, &false);
     }
 
     /// check_access returns false when balance is zero even if active flag is true.
@@ -550,7 +562,7 @@ mod tests {
         client.allowlist_add(&user);
 
         let list = client.get_allowlist();
-        let count = list.iter().filter(|a| a == user).count();
+        let count = list.iter().filter(|a| *a == user).count();
         assert_eq!(count, 1);
     }
 
