@@ -28,6 +28,9 @@ const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
 export function getMqttClient() { return mqttClient; }
+export function setMqttClientForTests(client: mqtt.MqttClient | null) {
+  mqttClient = client;
+}
 const FLUSH_INTERVAL_MS = Number(process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
@@ -338,7 +341,7 @@ async function pollContractEvents() {
   }
 }
 
-async function handleContractEvent(
+export async function handleContractEvent(
   event: StellarSdk.SorobanRpc.Api.EventResponse,
 ) {
   try {
@@ -403,6 +406,13 @@ async function handleContractEvent(
       case "solargrid:mtr_deact": {
         const meterId = subject;
         logger.info("meter_deactivated contract event", { meterId });
+        await onMeterDeactivated(meterId);
+        break;
+      }
+
+      case "solargrid:limit_hit": {
+        const meterId = subject;
+        logger.info("limit_hit contract event received", { meterId });
         await onMeterDeactivated(meterId);
         break;
       }
