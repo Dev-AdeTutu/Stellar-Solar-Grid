@@ -8,6 +8,7 @@ use soroban_sdk::{
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
+const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -66,6 +67,14 @@ impl SolarGridContract {
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
+        let allowlist: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !allowlist.contains(&owner) {
+            panic!("owner not in allowlist");
+        }
         let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
             panic!("meter already registered");
@@ -142,88 +151,26 @@ impl SolarGridContract {
             .unwrap_or(Vec::new(&env))
     }
 
-    /// Add an address to the meter-owner allowlist.
-    /// Only the admin may call this. Use this to pre-approve user accounts
-    /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
+    /// Propose a new admin; the current admin must sign this call.
+    pub fn propose_admin(env: Env, new_admin: Address) {
         Self::require_admin(&env);
-        let mut list: Vec<Address> = env
+        env.storage().instance().set(&PENDING_ADMIN, &new_admin);
+        env.events()
+            .publish((EVT_NS, symbol_short!("adm_prop")), new_admin);
+    }
+
+    /// Accept admin rights; only the pending admin may sign this call.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env
             .storage()
             .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !list.contains(&owner) {
-            list.push_back(owner);
-            env.storage().instance().set(&ALLOWLIST, &list);
-        }
-    }
-
-    /// Remove an address from the meter-owner allowlist.
-    /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        for addr in list.iter() {
-            if addr != owner {
-                new_list.push_back(addr);
-            }
-        }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
-    }
-
-    /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env))
-    }
-
-    /// Add an address to the meter-owner allowlist.
-    /// Only the admin may call this. Use this to pre-approve user accounts
-    /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !list.contains(&owner) {
-            list.push_back(owner);
-            env.storage().instance().set(&ALLOWLIST, &list);
-        }
-    }
-
-    /// Remove an address from the meter-owner allowlist.
-    /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        for addr in list.iter() {
-            if addr != owner {
-                new_list.push_back(addr);
-            }
-        }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
-    }
-
-    /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env))
+            .get(&PENDING_ADMIN)
+            .expect("no pending admin");
+        pending.require_auth();
+        env.storage().instance().set(&ADMIN, &pending);
+        env.storage().instance().remove(&PENDING_ADMIN);
+        env.events()
+            .publish((EVT_NS, symbol_short!("adm_acc")), pending);
     }
 
     /// Make a payment to top up a meter's balance and activate it.
@@ -349,7 +296,7 @@ impl SolarGridContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{symbol_short, testutils::Address as _, Env};
+    use soroban_sdk::{symbol_short, testutils::{Address as _, Events, MockAuth, MockAuthInvoke}, Env, IntoVal};
 
     fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
         let env = Env::default();
@@ -390,6 +337,121 @@ mod tests {
         // Simulate usage that drains balance
         client.update_usage(&meter_id, &100_u64, &5_000_000_i128);
         assert!(!client.check_access(&meter_id));
+    }
+
+    #[test]
+    fn test_propose_and_accept_admin_emits_events() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let pending = Address::generate(&env);
+        let next_admin = Address::generate(&env);
+
+        client.initialize(&admin);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &admin,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "propose_admin",
+                    args: (&pending,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .propose_admin(&pending);
+
+        let events = env.events().all().filter_by_contract(&contract_id);
+        assert_eq!(
+            events,
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    soroban_sdk::vec![&env, EVT_NS.into_val(&env), symbol_short!("adm_prop").into_val(&env)],
+                    pending.clone().into_val(&env),
+                ),
+            ]
+        );
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &pending,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "accept_admin",
+                    args: ().into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .accept_admin();
+
+        let events = env.events().all().filter_by_contract(&contract_id);
+        assert_eq!(
+            events,
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    soroban_sdk::vec![&env, EVT_NS.into_val(&env), symbol_short!("adm_acc").into_val(&env)],
+                    pending.clone().into_val(&env),
+                ),
+            ]
+        );
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &pending,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "propose_admin",
+                    args: (&next_admin,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .propose_admin(&next_admin);
+
+        let events = env.events().all().filter_by_contract(&contract_id);
+        assert_eq!(
+            events,
+            soroban_sdk::vec![
+                &env,
+                (
+                    contract_id.clone(),
+                    soroban_sdk::vec![&env, EVT_NS.into_val(&env), symbol_short!("adm_prop").into_val(&env)],
+                    next_admin.clone().into_val(&env),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_accept_admin_requires_pending_auth() {
+        let env = Env::default();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let pending = Address::generate(&env);
+
+        client.initialize(&admin);
+
+        client
+            .mock_auths(&[MockAuth {
+                address: &admin,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "propose_admin",
+                    args: (&pending,).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .propose_admin(&pending);
+
+        client.accept_admin();
     }
 
     /// Registering the same meter_id twice should panic.
@@ -463,7 +525,6 @@ mod tests {
     #[should_panic]
     fn test_set_active_non_admin_panics() {
         let env = Env::default();
-        // Only mock auth for the non-admin user, not the contract admin
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
 
@@ -471,22 +532,22 @@ mod tests {
         let non_admin = Address::generate(&env);
         let meter_id = symbol_short!("METER6");
 
-        // Initialize with real admin (mock all for setup only)
-        env.mock_all_auths();
         client.initialize(&admin);
         client.allowlist_add(&non_admin);
         client.register_meter(&meter_id, &non_admin);
         client.make_payment(&meter_id, &non_admin, &1_000_000_i128, &PaymentPlan::Daily);
 
-        // Stop mocking all auths — now only non_admin is authorized
-        // set_active requires admin auth, so this must panic
-        env.set_auths(&[soroban_sdk::auth::ContractContext {
-            contract: contract_id.clone(),
-            fn_name: soroban_sdk::symbol_short!("set_active"),
-            args: (meter_id.clone(), false).into_val(&env),
-        }
-        .into()]);
-        client.set_active(&meter_id, &false);
+        client
+            .mock_auths(&[MockAuth {
+                address: &non_admin,
+                invoke: &MockAuthInvoke {
+                    contract: &contract_id,
+                    fn_name: "set_active",
+                    args: (&meter_id, &false).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }])
+            .set_active(&meter_id, &false);
     }
 
     /// check_access returns false when balance is zero even if active flag is true.
@@ -550,7 +611,7 @@ mod tests {
         client.allowlist_add(&user);
 
         let list = client.get_allowlist();
-        let count = list.iter().filter(|a| a == user).count();
+        let count = list.iter().filter(|a| *a == user).count();
         assert_eq!(count, 1);
     }
 
