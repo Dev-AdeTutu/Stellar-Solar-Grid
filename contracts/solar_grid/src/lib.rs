@@ -20,7 +20,7 @@ pub enum PaymentPlan {
 }
 
 #[contracttype]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Meter {
     pub owner: Address,
     pub active: bool,
@@ -28,6 +28,13 @@ pub struct Meter {
     pub units_used: u64,     // kWh * 1000 (milli-kWh for precision)
     pub plan: PaymentPlan,
     pub last_payment: u64,   // ledger timestamp
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeterView {
+    pub meter: Meter,
+    pub balance: i128,
 }
 
 #[contracttype]
@@ -66,6 +73,14 @@ impl SolarGridContract {
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: Symbol, owner: Address) {
         Self::require_admin(&env);
+        let allowlist: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&ALLOWLIST)
+            .unwrap_or(Vec::new(&env));
+        if !allowlist.contains(&owner) {
+            panic!("owner not in allowlist");
+        }
         let key = DataKey::Meter(meter_id.clone());
         if env.storage().persistent().has(&key) {
             panic!("meter already registered");
@@ -98,90 +113,6 @@ impl SolarGridContract {
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env])
-    }
-
-    /// Add an address to the meter-owner allowlist.
-    /// Only the admin may call this. Use this to pre-approve user accounts
-    /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !list.contains(&owner) {
-            list.push_back(owner);
-            env.storage().instance().set(&ALLOWLIST, &list);
-        }
-    }
-
-    /// Remove an address from the meter-owner allowlist.
-    /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        for addr in list.iter() {
-            if addr != owner {
-                new_list.push_back(addr);
-            }
-        }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
-    }
-
-    /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env))
-    }
-
-    /// Add an address to the meter-owner allowlist.
-    /// Only the admin may call this. Use this to pre-approve user accounts
-    /// (G… addresses) before they can be registered as meter owners.
-    pub fn allowlist_add(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        if !list.contains(&owner) {
-            list.push_back(owner);
-            env.storage().instance().set(&ALLOWLIST, &list);
-        }
-    }
-
-    /// Remove an address from the meter-owner allowlist.
-    /// Only the admin may call this.
-    pub fn allowlist_remove(env: Env, owner: Address) {
-        Self::require_admin(&env);
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env));
-        let mut new_list: Vec<Address> = Vec::new(&env);
-        for addr in list.iter() {
-            if addr != owner {
-                new_list.push_back(addr);
-            }
-        }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
-    }
-
-    /// Returns the current allowlist.
-    pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&ALLOWLIST)
-            .unwrap_or(Vec::new(&env))
     }
 
     /// Add an address to the meter-owner allowlist.
@@ -311,6 +242,13 @@ impl SolarGridContract {
         env.storage().persistent().get(&key).expect("meter not found")
     }
 
+    /// Get the meter plus its balance in one call.
+    pub fn get_meter_full(env: Env, meter_id: Symbol) -> MeterView {
+        let meter = Self::get_meter(env, meter_id);
+        let balance = meter.balance;
+        MeterView { meter, balance }
+    }
+
     /// Admin can manually toggle meter access (e.g. maintenance).
     ///
     /// Emits:
@@ -349,7 +287,7 @@ impl SolarGridContract {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{symbol_short, testutils::Address as _, Env};
+    use soroban_sdk::{symbol_short, testutils::{Address as _, MockAuth, MockAuthInvoke}, Env, IntoVal};
 
     fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
         let env = Env::default();
@@ -390,6 +328,23 @@ mod tests {
         // Simulate usage that drains balance
         client.update_usage(&meter_id, &100_u64, &5_000_000_i128);
         assert!(!client.check_access(&meter_id));
+    }
+
+    #[test]
+    fn test_get_meter_full_returns_meter_and_balance() {
+        let (env, client, _admin) = setup();
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("METERFULL");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        client.make_payment(&meter_id, &user, &7_500_000_i128, &PaymentPlan::Weekly);
+
+        let view = client.get_meter_full(&meter_id);
+        assert_eq!(view.balance, 7_500_000);
+        assert_eq!(view.meter.balance, 7_500_000);
+        assert_eq!(view.meter.owner, user);
+        assert!(view.meter.active);
     }
 
     /// Registering the same meter_id twice should panic.
@@ -463,7 +418,6 @@ mod tests {
     #[should_panic]
     fn test_set_active_non_admin_panics() {
         let env = Env::default();
-        // Only mock auth for the non-admin user, not the contract admin
         let contract_id = env.register_contract(None, SolarGridContract);
         let client = SolarGridContractClient::new(&env, &contract_id);
 
@@ -471,22 +425,21 @@ mod tests {
         let non_admin = Address::generate(&env);
         let meter_id = symbol_short!("METER6");
 
-        // Initialize with real admin (mock all for setup only)
-        env.mock_all_auths();
         client.initialize(&admin);
         client.allowlist_add(&non_admin);
         client.register_meter(&meter_id, &non_admin);
         client.make_payment(&meter_id, &non_admin, &1_000_000_i128, &PaymentPlan::Daily);
 
-        // Stop mocking all auths — now only non_admin is authorized
-        // set_active requires admin auth, so this must panic
-        env.set_auths(&[soroban_sdk::auth::ContractContext {
-            contract: contract_id.clone(),
-            fn_name: soroban_sdk::symbol_short!("set_active"),
-            args: (meter_id.clone(), false).into_val(&env),
-        }
-        .into()]);
-        client.set_active(&meter_id, &false);
+        client.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_active",
+                args: (&meter_id, &false).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .set_active(&meter_id, &false);
     }
 
     /// check_access returns false when balance is zero even if active flag is true.
@@ -550,7 +503,7 @@ mod tests {
         client.allowlist_add(&user);
 
         let list = client.get_allowlist();
-        let count = list.iter().filter(|a| a == user).count();
+        let count = list.iter().filter(|a| *a == user).count();
         assert_eq!(count, 1);
     }
 

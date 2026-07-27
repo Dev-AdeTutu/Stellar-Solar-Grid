@@ -28,7 +28,7 @@ export async function fetchMeter(meterId: string): Promise<MeterData> {
   })
     .addOperation(
       contract.call(
-        "get_meter",
+        "get_meter_full",
         StellarSdk.nativeToScVal(meterId, { type: "symbol" })
       )
     )
@@ -41,7 +41,11 @@ export async function fetchMeter(meterId: string): Promise<MeterData> {
   }
   const retval = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result?.retval;
   if (!retval) throw new Error("No result from contract");
-  return StellarSdk.scValToNative(retval) as MeterData;
+  const view = StellarSdk.scValToNative(retval) as {
+    meter: MeterData;
+    balance: bigint;
+  };
+  return { ...view.meter, balance: view.balance };
 }
 
 /**
