@@ -450,22 +450,38 @@ async function onPaymentReceived(meterId: string, amountStroops: number) {
 }
 
 async function onMeterActivated(meterId: string) {
-  logger.info({ meterId }, 'Sending ON signal to meter relay');
+  const topic = `solargrid/meters/${meterId}/control`;
+  const command = 'ON';
+  logger.info({
+    event: 'relay_command',
+    meterId,
+    command,
+    topic,
+    ts: new Date().toISOString(),
+  }, 'Sending ON signal to meter relay');
   activeMeters.set({ meter_id: meterId }, 1);
   mqttClient?.publish(
-    `solargrid/meters/${meterId}/control`,
-    JSON.stringify({ cmd: 'ON', timestamp: new Date().toISOString() }),
+    topic,
+    JSON.stringify({ cmd: command, timestamp: new Date().toISOString() }),
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish ON command'); },
   );
 }
 
 async function onMeterDeactivated(meterId: string) {
-  logger.info({ meterId }, 'Sending OFF signal to meter relay');
+  const topic = `solargrid/meters/${meterId}/control`;
+  const command = 'OFF';
+  logger.warn({
+    event: 'relay_command',
+    meterId,
+    command,
+    topic,
+    ts: new Date().toISOString(),
+  }, 'Sending OFF signal to meter relay');
   activeMeters.set({ meter_id: meterId }, 0);
   mqttClient?.publish(
-    `solargrid/meters/${meterId}/control`,
-    JSON.stringify({ cmd: 'OFF', timestamp: new Date().toISOString() }),
+    topic,
+    JSON.stringify({ cmd: command, timestamp: new Date().toISOString() }),
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish OFF command'); },
   );
