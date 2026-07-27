@@ -26,6 +26,7 @@ pub enum ContractError {
     DailyLimitReached = 14,
     MeterNotActive = 15,
     ContractNotFrozen = 16,
+    CollaboratorNotFound = 17,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -815,6 +816,47 @@ impl SolarGridContract {
         shares.set(collaborator, basis_points);
 
         env.storage().instance().set(&COLLABS, &collabs);
+        env.storage().instance().set(&SHARES, &shares);
+        Ok(())
+    }
+
+    /// Remove a collaborator from COLLABS and SHARES.
+    /// Remaining total basis points must not exceed 10 000 (100%).
+    /// Returns `Unauthorized` if the caller is not the admin.
+    /// Returns `CollaboratorNotFound` if the address is not a registered collaborator.
+    pub fn remove_collaborator(env: Env, collaborator: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        let collabs: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&COLLABS)
+            .unwrap_or(Vec::new(&env));
+        let mut shares: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env));
+
+        if !shares.contains_key(collaborator.clone()) {
+            return Err(ContractError::CollaboratorNotFound);
+        }
+
+        let mut new_collabs: Vec<Address> = Vec::new(&env);
+        for addr in collabs.iter() {
+            if addr != collaborator {
+                new_collabs.push_back(addr);
+            }
+        }
+        shares.remove(collaborator);
+
+        // Guard: remaining total must not exceed 100%
+        let total: u32 = shares.values().iter().sum();
+        if total > 10_000 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        env.storage().instance().set(&COLLABS, &new_collabs);
         env.storage().instance().set(&SHARES, &shares);
         Ok(())
     }
@@ -2807,6 +2849,42 @@ mod tests {
         let (env, client, _admin) = setup();
         let unknown = Address::generate(&env);
         assert_eq!(client.get_collaborator_share(&unknown), None);
+    }
+
+    // ── Issue #589: remove_collaborator ───────────────────────────────────────
+
+    /// Happy path: remove deletes the address from COLLABS and SHARES and leaves
+    /// remaining total within the 10 000 basis-point cap.
+    #[test]
+    fn test_remove_collaborator_happy_path() {
+        let (env, client, _admin) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.add_collaborator(&alice, &6_000_u32);
+        client.add_collaborator(&bob, &3_000_u32);
+
+        client.remove_collaborator(&alice);
+
+        let collabs = client.get_collaborators();
+        assert_eq!(collabs.len(), 1);
+        assert_eq!(collabs.get(0).unwrap(), bob);
+
+        let shares = client.get_all_shares();
+        assert_eq!(shares.get(alice.clone()), None);
+        assert_eq!(shares.get(bob.clone()).unwrap(), 3_000);
+
+        let total: u32 = shares.values().iter().sum();
+        assert!(total <= 10_000);
+    }
+
+    /// Removing an address that is not a collaborator returns CollaboratorNotFound.
+    #[test]
+    fn test_remove_collaborator_missing_address() {
+        let (env, client, _admin) = setup();
+        let unknown = Address::generate(&env);
+        let result = client.try_remove_collaborator(&unknown);
+        assert_eq!(result, Err(Ok(ContractError::CollaboratorNotFound)));
     }
 
     // ── Issue #415: freeze_contract / emergency_withdraw ──────────────────────
