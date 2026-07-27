@@ -6,8 +6,16 @@ import {
   persistAndSubmitUsageEvent,
   initUsageEventStore,
 } from "../lib/usageEvents.js";
+import {
+  addMeterNote,
+  getLatestMeterNotes,
+} from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
+import {
+  validateRequest,
+  RegisterMeterSchema,
+  MeterNoteSchema,
+} from "../lib/validation.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
@@ -261,6 +269,7 @@ export function createMeterRouter(stellar: StellarService) {
    * GET /api/meters/:id — get meter status with ETag support.
    * Sets ETag header based on a hash of the meter JSON so clients can make
    * conditional requests with If-None-Match to avoid redundant downloads.
+   * Includes the latest 5 admin notes from SQLite.
    *
    * Closes #462.
    */
@@ -271,7 +280,8 @@ export function createMeterRouter(stellar: StellarService) {
       const result = await stellar.query("get_meter", [
         StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
       ]);
-      const data = { meter: StellarSdk.scValToNative(result) };
+      const notes = getLatestMeterNotes(req.params.id, 5);
+      const data = { meter: StellarSdk.scValToNative(result), notes };
       const etag = etagFor(data);
 
       res.setHeader("ETag", etag);
@@ -281,6 +291,31 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       res.json(data);
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/note — admin free-text annotation persisted in SQLite.
+   *
+   * Closes #591.
+   */
+  meterRouter.post(
+    "/:id/note",
+    requireAdminKey,
+    validateRequest({ body: MeterNoteSchema }),
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const note = addMeterNote(meterId, req.body.text);
+      invalidateCache(`/api/meters/${meterId}`);
+      res.status(201).json(note);
     }),
   );
 
