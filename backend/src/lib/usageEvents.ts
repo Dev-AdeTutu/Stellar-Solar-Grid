@@ -182,6 +182,35 @@ export async function retryQueuedUsageEvents() {
   }
 }
 
+export type TopConsumer = {
+  meterId: string;
+  totalUnits: number;
+  rank: number;
+};
+
+/** Top consumers by total units used over the last `days` days. */
+export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `
+        SELECT meter_id AS meterId, SUM(units) AS totalUnits
+        FROM usage_events
+        WHERE received_at >= ?
+        GROUP BY meter_id
+        ORDER BY totalUnits DESC
+        LIMIT ?
+      `
+    )
+    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
+
+  return rows.map((row, index) => ({
+    meterId: row.meterId,
+    totalUnits: row.totalUnits,
+    rank: index + 1,
+  }));
+}
+
 function getUsageEventById(id: number): UsageEventRecord | undefined {
   return db
     .prepare("SELECT * FROM usage_events WHERE id = ?")

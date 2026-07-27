@@ -9,6 +9,7 @@
  */
 
 import mqtt from "mqtt";
+import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent } from "../lib/usageEvents.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
@@ -42,7 +43,10 @@ interface Reading {
 
 /** Fire webhook notification when meter balance drops below threshold */
 async function checkAndNotifyLowBalance(meterId: string) {
-  if (!WEBHOOK_URL) return;
+  // Read fresh each call — /api/webhooks/low-balance may register a URL
+  // after this module was first loaded.
+  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL ?? WEBHOOK_URL;
+  if (!webhookUrl) return;
 
   try {
     const result = await contractQuery("get_meter", [
@@ -55,16 +59,30 @@ async function checkAndNotifyLowBalance(meterId: string) {
     const balance = Number(meter.balance);
 
     if (balance <= LOW_BALANCE_THRESHOLD) {
-      await fetch(WEBHOOK_URL, {
+      const body = JSON.stringify({
+        event: "low_balance",
+        meter_id: meterId,
+        balance,
+        threshold: LOW_BALANCE_THRESHOLD,
+        timestamp: new Date().toISOString(),
+      });
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const secret = process.env.PROVIDER_WEBHOOK_SECRET;
+      if (secret) {
+        const signature = crypto
+          .createHmac("sha256", secret)
+          .update(body)
+          .digest("hex");
+        headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
+      }
+
+      await fetch(webhookUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event: "low_balance",
-          meter_id: meterId,
-          balance,
-          threshold: LOW_BALANCE_THRESHOLD,
-          timestamp: new Date().toISOString(),
-        }),
+        headers,
+        body,
       });
       logger.info("Low balance webhook fired", { meterId, balance });
     }

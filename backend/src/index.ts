@@ -1,11 +1,13 @@
 import "dotenv/config";
 import express from "express";
 import { NextFunction, Request, Response } from "express";
-import { stellarService } from "./lib/stellar.js";
-import { createMeterRouter } from "./routes/meters.js";
+import { meterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { configRouter } from "./routes/config.js";
+import { statsRouter } from "./routes/stats.js";
 import { startIoTBridge } from "./iot/bridge.js";
+import { register } from "./lib/metrics.js";
 import { logger } from "./lib/logger.js";
 import {
   initUsageEventStore,
@@ -34,9 +36,11 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use("/api/meters", createMeterRouter(stellarService));
+app.use("/api/meters", meterRouter);
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/config", configRouter);
+app.use("/api/stats", statsRouter);
 
 app.get("/health", (_, res) => res.json({ status: "ok" }));
 

@@ -12,6 +12,12 @@ export const RPC_URL =
     ? "https://soroban-rpc.stellar.org"
     : "https://soroban-testnet.stellar.org";
 
+export const HORIZON_URL =
+  process.env.HORIZON_URL ??
+  (NETWORK === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org");
+
 export const CONTRACT_ID = process.env.CONTRACT_ID!;
 export const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
 
