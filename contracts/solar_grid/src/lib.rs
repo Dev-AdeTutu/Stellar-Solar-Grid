@@ -354,34 +354,22 @@ impl SolarGridContract {
         limit: u32,
     ) -> Result<Vec<String>, ContractError> {
         Self::require_admin(&env)?;
-        
+
         // Cap limit at 100 to prevent single-call overruns
         let effective_limit = limit.min(100);
-        
+
         let meter_ids: Vec<String> = env
             .storage()
             .instance()
             .get(&METER_LIST)
             .unwrap_or_else(|| vec![&env]);
-        
-        let total = meter_ids.len() as u32;
-        
-        // Return empty Vec if offset exceeds meter count
-        if offset >= total {
-            return Ok(vec![&env]);
-        }
-        
-        let start = offset as usize;
-        let end = ((offset + effective_limit).min(total)) as usize;
-        
-        let mut page: Vec<String> = vec![&env];
-        for i in start..end {
-            if let Some(meter_id) = meter_ids.get(i as u32) {
-                page.push_back(meter_id);
-            }
-        }
-        
-        Ok(page)
+
+        // Clamp offset so an out-of-bounds page returns empty instead of panicking on slice
+        let total = meter_ids.len();
+        let start = offset.min(total);
+        let end = start.saturating_add(effective_limit).min(total);
+
+        Ok(meter_ids.slice(start..end))
     }
 
     /// Add an address to the meter-owner allowlist.
@@ -1840,6 +1828,26 @@ mod tests {
 
         // Offset beyond the 3 meters
         let page = client.get_all_meters_paginated(&5_u32, &10_u32);
+        assert_eq!(page.len(), 0);
+    }
+
+    /// Snapshot: offset=9999 on a 3-meter contract must return an empty page, not panic.
+    #[test]
+    fn test_get_all_meters_paginated_offset_9999_empty_page() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let ids = [
+            String::from_str(&env, "O999_1"),
+            String::from_str(&env, "O999_2"),
+            String::from_str(&env, "O999_3"),
+        ];
+
+        client.allowlist_add(&user);
+        for id in ids.iter() {
+            client.register_meter(id, &user);
+        }
+
+        let page = client.get_all_meters_paginated(&9999_u32, &10_u32);
         assert_eq!(page.len(), 0);
     }
 
