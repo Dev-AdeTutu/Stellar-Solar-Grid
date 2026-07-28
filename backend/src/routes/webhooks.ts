@@ -88,6 +88,12 @@ webhookRouter.post(
  * Requires X-Provider-ID header to scope webhooks per provider.
  *
  * Payload:
+ *   { "webhook_url": "https://example.com/webhook", "secret": "optional-signing-secret" }
+ *
+ * When a secret is provided, outbound low-balance webhook calls are signed
+ * with X-SolarGrid-Signature: sha256=HMAC-SHA256(secret, body). Only a hash
+ * of the secret is kept in the registry response/logs; the raw secret is
+ * held only in-process to sign outbound requests.
  *   { "webhook_url": "https://example.com/webhook" }
  *
  * Closes #516.
@@ -98,9 +104,27 @@ webhookRouter.post(
   validateRequest({
     body: z.object({
       webhook_url: z.string().url("Invalid webhook URL format"),
+      secret: z.string().min(1).optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
+    const { webhook_url, secret } = req.body as {
+      webhook_url: string;
+      secret?: string;
+    };
+
+    // For now, store in environment variables (in production, use a database).
+    process.env.PROVIDER_WEBHOOK_URL = webhook_url;
+
+    let secretHash: string | undefined;
+    if (secret) {
+      process.env.PROVIDER_WEBHOOK_SECRET = secret;
+      secretHash = crypto.createHash("sha256").update(secret).digest("hex");
+    }
+
+    logger.info("Low-balance webhook registered", {
+      webhook_url,
+      secretHash,
     const providerId = getProviderId(req);
     if (!providerId) {
       return res.status(400).json({
@@ -121,6 +145,7 @@ webhookRouter.post(
     return res.status(200).json({
       message: "Webhook registered successfully",
       webhook_url,
+      secretHash,
       provider_id: providerId,
       id: record.id,
       created_at: record.created_at,

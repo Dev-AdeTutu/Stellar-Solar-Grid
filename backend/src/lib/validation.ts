@@ -41,30 +41,15 @@ export const UsageUpdateSchema = z
   })
   .strict();
 
-/**
- * Full MQTT meter-reading payload schema.
- * meterId is extracted from the MQTT topic and merged in before validation
- * so every downstream handler has a single validated object to work with.
- */
-export const MqttPayloadSchema = z
+export const MeterNoteSchema = z
   .object({
-    meterId: z
+    text: z
       .string()
       .trim()
-      .min(1, "meterId is required")
-      .max(12, "meterId must be at most 12 characters"),
-    units: z
-      .number()
-      .int("units must be an integer")
-      .positive("units must be positive"),
-    cost: z
-      .number()
-      .int("cost must be an integer")
-      .positive("cost must be positive"),
+      .min(1, "text is required")
+      .max(2000, "text must be at most 2000 characters"),
   })
   .strict();
-
-export type MqttPayloadInput = z.infer<typeof MqttPayloadSchema>;
 
 export const MakePaymentSchema = z
   .object({
@@ -157,3 +142,4 @@ export { MeterRouteParamsSchema };
 export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
+export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;
