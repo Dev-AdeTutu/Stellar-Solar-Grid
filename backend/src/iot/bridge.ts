@@ -13,7 +13,7 @@ import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
-import { UsageUpdateSchema } from "../lib/validation.js";
+import { UsageUpdateSchema, MqttPayloadSchema } from "../lib/validation.js";
 import {
   adminInvoke,
   contractQuery,
@@ -163,9 +163,11 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
-  const parsed = UsageUpdateSchema.safeParse(raw);
+  // Merge meterId from the topic so the full { meterId, units, cost } triple is validated together
+  const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
   if (!parsed.success) {
     logger.error("Invalid MQTT payload (schema validation failed)", {
+      event: "mqtt_payload_invalid",
       topic,
       raw: rawStr,
       errors: parsed.error.flatten().fieldErrors,
@@ -299,9 +301,10 @@ function startMqttBridge() {
         return;
       }
 
-      const parsed = UsageUpdateSchema.safeParse(raw);
+      const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
       if (!parsed.success) {
         logger.error("Invalid MQTT payload (schema validation failed)", {
+          event: "mqtt_payload_invalid",
           topic,
           errors: parsed.error.flatten().fieldErrors,
         });
