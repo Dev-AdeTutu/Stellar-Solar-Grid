@@ -45,6 +45,39 @@ interface Reading {
   meterId: string;
   units: number;
   cost: number;
+  /** balance/daily_limit ratio at receive time; lower = more urgent (Issue #601). */
+  priority: number;
+}
+
+/**
+ * Priority score for batch ordering: the meter's current balance/daily_limit
+ * ratio. Meters near a zero balance relative to their daily budget get a
+ * lower (more urgent) score and are processed first in the next batch.
+ *
+ * Meters with no daily limit configured (0 = unlimited) or that fail to
+ * resolve have no meaningful ratio to prioritise on, so they sort last
+ * rather than being assumed urgent.
+ */
+async function getPriority(meterId: string): Promise<number> {
+  try {
+    const result = await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    const meter = StellarSdk.scValToNative(result) as {
+      balance: bigint;
+      daily_limit: bigint;
+      [key: string]: unknown;
+    };
+    const dailyLimit = Number(meter.daily_limit);
+    if (dailyLimit <= 0) return Number.POSITIVE_INFINITY;
+    return Number(meter.balance) / dailyLimit;
+  } catch (err) {
+    logger.warn("Failed to compute batch priority for meter, deprioritising", {
+      meterId,
+      err,
+    });
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /** Fire webhook notification when meter balance drops below threshold */
@@ -208,6 +241,9 @@ function startMqttBridge() {
   const flush = async () => {
     if (pending.length === 0) return;
     const batch = pending.splice(0);
+    // Issue #601: submit near-zero-balance meters (lowest balance/daily_limit
+    // ratio) first within the batch.
+    batch.sort((a, b) => a.priority - b.priority);
     logger.info(`Flushing batch of ${batch.length} meter update(s)`);
     try {
       const hash = await adminInvoke("batch_update_usage", [
@@ -223,6 +259,14 @@ function startMqttBridge() {
         );
       } catch (err) {
         logger.error("Failed to persist batch usage events to local DB", { err });
+      }
+
+      // Low-balance webhooks fire post-batch now that submission is batched
+      // rather than per-reading.
+      for (const reading of batch) {
+        checkAndNotifyLowBalance(reading.meterId).catch((err) => {
+          logger.error("Low balance check failed", { meterId: reading.meterId, err });
+        });
       }
     } catch (err) {
       logger.error("Batch submission error", { err });
@@ -271,30 +315,11 @@ function startMqttBridge() {
         cost,
       });
 
-      const event = await persistAndSubmitUsageEvent({
-        meterId,
-        units,
-        cost,
-        sourceTopic: topic,
-      });
-
-      if (event.on_chain_tx_hash) {
-        logger.info("Usage recorded on-chain", {
-          meterId,
-          eventId: event.id,
-          txHash: event.on_chain_tx_hash,
-        });
-        // Check if balance is low after usage update
-        checkAndNotifyLowBalance(meterId).catch(err => {
-          logger.error("Low balance check failed", { err });
-        });
-      } else {
-        logger.warn("Usage event queued for retry", {
-          meterId,
-          eventId: event.id,
-        });
-      }
-      await processMqttMessage(topic as string, payload as Buffer);
+      // Issue #601: queue for the next priority-ordered batch flush instead
+      // of submitting immediately, so near-zero-balance meters can be
+      // sequenced first within the batch.
+      const priority = await getPriority(meterId);
+      pending.push({ meterId, units, cost, priority });
     } catch (err) {
       // Catch any unexpected errors from processing to ensure the bridge keeps running
       logger.error("Unhandled error in MQTT message handler", { topic, raw: payload.toString(), err });
