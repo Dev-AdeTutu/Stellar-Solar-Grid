@@ -40,6 +40,16 @@ export const UsageUpdateSchema = z
   })
   .strict();
 
+export const MeterNoteSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1, "text is required")
+      .max(2000, "text must be at most 2000 characters"),
+  })
+  .strict();
+
 export const MakePaymentSchema = z
   .object({
     token_address: z
@@ -53,6 +63,16 @@ export const MakePaymentSchema = z
       .int("amount_stroops must be an integer")
       .positive("amount_stroops must be positive"),
     plan: PaymentPlanSchema,
+  })
+  .strict();
+
+export const ClientErrorReportSchema = z
+  .object({
+    message: z.string().trim().min(1, "message is required").max(2000),
+    stack: z.string().max(10000).optional(),
+    componentStack: z.string().max(10000).optional(),
+    url: z.string().max(2000).optional(),
+    userAgent: z.string().max(500).optional(),
   })
   .strict();
 
@@ -121,3 +141,4 @@ export { MeterRouteParamsSchema };
 export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
+export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;

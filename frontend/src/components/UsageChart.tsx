@@ -20,7 +20,8 @@ export interface UsageDataPoint {
 }
 
 interface UsageChartProps {
-  data: UsageDataPoint[];
+  /** Usage data points. Null/undefined treated as empty — no crash. */
+  data?: UsageDataPoint[] | null;
   /** Pass true while the parent is still fetching meter data */
   loading?: boolean;
   meterId?: string;
@@ -87,10 +88,12 @@ function CustomTooltip({
 import styles from './UsageChart.module.css';
 
 export default function UsageChart({
-  data,
+  data: rawData,
   loading = false,
   meterId,
 }: UsageChartProps) {
+  // Normalise: null/undefined → empty array so no downstream code can throw
+  const data: UsageDataPoint[] = Array.isArray(rawData) ? rawData : [];
   const isEmpty = !loading && data.length === 0;
 
   return (
@@ -115,8 +118,16 @@ export default function UsageChart({
         {loading ? (
           <ChartSkeleton />
         ) : isEmpty ? (
-          <div className="flex h-48 items-center justify-center text-sm text-gray-500">
-            No usage data available yet.
+          <div
+            role="status"
+            aria-label="No usage data"
+            className="flex h-48 flex-col items-center justify-center gap-2 text-center"
+          >
+            <span className="text-2xl" aria-hidden="true">📊</span>
+            <p className="text-sm text-gray-400 font-medium">No usage data yet</p>
+            <p className="text-xs text-gray-600 max-w-xs">
+              Data will appear here after your first recorded unit.
+            </p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={192}>

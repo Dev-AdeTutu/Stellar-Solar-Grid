@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001";
+const API_BASE = `${import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001"}/api`;
+import { env } from "@/lib/env";
+
+const API_BASE = env.NEXT_PUBLIC_COLLAB_API_URL;
 
 export interface CollaboratorShare {
   address: string;
@@ -10,7 +13,7 @@ export interface CollaboratorShare {
  * The backend resolves this with one get_all_shares simulation — no N+1.
  */
 export async function getCollaborators(): Promise<CollaboratorShare[]> {
-  const res = await fetch(`${API_BASE}/api/collaborators`);
+  const res = await fetch(`${API_BASE}/collaborators`);
   if (!res.ok) {
     const { error } = (await res.json()) as { error: string };
     throw new Error(error ?? "Failed to fetch collaborators");
@@ -20,7 +23,7 @@ export async function getCollaborators(): Promise<CollaboratorShare[]> {
 }
 
 export async function addCollaborator(address: string, basisPoints: number): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/collaborators`, {
+  const res = await fetch(`${API_BASE}/collaborators`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ address, basis_points: basisPoints }),
@@ -32,7 +35,7 @@ export async function addCollaborator(address: string, basisPoints: number): Pro
 }
 
 export async function removeCollaborator(address: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/collaborators/${address}`, {
+  const res = await fetch(`${API_BASE}/collaborators/${address}`, {
     method: "DELETE",
   });
   if (!res.ok) {

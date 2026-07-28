@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { Skeleton } from "@/components/Skeleton";
 import { useWalletStore } from "@/store/walletStore";
 import { useToast } from "@/components/ToastProvider";
 import {
@@ -9,13 +12,12 @@ import {
   type PaymentRecord,
   type PaymentHistoryResponse,
 } from "@/services/paymentService";
+import { env } from "@/lib/env";
 
 type SortField = "date" | "amountXlm" | "plan" | "meterId";
 type SortDir = "asc" | "desc";
 
-const NETWORK = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE?.includes("Test")
-  ? "testnet"
-  : "mainnet";
+const NETWORK = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test") ? "testnet" : "mainnet";
 
 const EXPLORER_BASE =
   NETWORK === "testnet"
@@ -27,6 +29,10 @@ const PAGE_SIZE = 10;
 export default function HistoryPage() {
   const { address } = useWalletStore();
   const { showToast } = useToast();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const queryPage = parseInt(searchParams.get("page") || "1");
+  const filterMeterId = searchParams.get("meterId");
 
   const [records, setRecords] = useState<PaymentRecord[]>([]);
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
@@ -36,16 +42,20 @@ export default function HistoryPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [exporting, setExporting] = useState(false);
 
+  // Sync page to URL
+  useEffect(() => {
+    if (pagination.page > 1) {
+      router.push(`?page=${pagination.page}`, { scroll: false } as any);
+    } else if (queryPage > 1) {
+      router.push("", { scroll: false } as any);
+    }
+  }, [pagination.page, queryPage, router]);
+
   async function handleExportCsv() {
     if (!address) return;
     setExporting(true);
     try {
-      const data = await getPaymentHistory(
-        address,
-        1,
-        pagination.total || 10000,
-        sortDir
-      );
+      const data = await getPaymentHistory(address, 1, pagination.total || 10000, sortDir);
 
       const header = "Date,Meter ID,Amount (XLM),Plan,Transaction Hash";
       const rows = data.payments.map((r) =>
@@ -55,7 +65,7 @@ export default function HistoryPage() {
           r.amountXlm.toFixed(7),
           r.plan,
           r.txHash || "",
-        ].join(",")
+        ].join(","),
       );
       const csv = [header, ...rows].join("\n");
       const blob = new Blob([csv], { type: "text/csv" });
@@ -94,26 +104,32 @@ export default function HistoryPage() {
           address,
           page,
           PAGE_SIZE,
-          serverSort
+          serverSort,
         );
+        if (!data || !data.payments) {
+          throw new Error("Invalid response: missing payments data");
+        }
         setRecords(data.payments);
         setPagination({
-          page: data.pagination.page,
-          pages: data.pagination.pages,
-          total: data.pagination.total,
+          page: data.pagination?.page ?? 1,
+          pages: data.pagination?.pages ?? 1,
+          total: data.pagination?.total ?? 0,
         });
       } catch (e: any) {
-        setError(e.message ?? "Failed to load payment history");
+        const errorMsg = e.message ?? "Failed to load payment history";
+        setError(errorMsg);
+        setRecords([]);
+        setPagination({ page: 1, pages: 1, total: 0 });
       } finally {
         setLoading(false);
       }
     },
-    [address, sortField, sortDir]
+    [address, sortField, sortDir],
   );
 
   useEffect(() => {
-    fetchHistory(1);
-  }, [fetchHistory]);
+    fetchHistory(queryPage);
+  }, [fetchHistory, queryPage]);
 
   function handleSort(field: SortField) {
     if (field === sortField) {
@@ -124,7 +140,7 @@ export default function HistoryPage() {
     }
   }
 
-  const sorted = [...records].sort((a, b) => {
+  const sorted = [...records].filter((r) => !filterMeterId || r.meterId === filterMeterId).sort((a, b) => {
     let cmp = 0;
     if (sortField === "date") cmp = new Date(a.date).getTime() - new Date(b.date).getTime();
     else if (sortField === "amountXlm") cmp = a.amountXlm - b.amountXlm;
@@ -145,12 +161,23 @@ export default function HistoryPage() {
     <>
       <Navbar />
       <main className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
-        <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">
-          Payment History
-        </h1>
-        <p className="text-gray-400 mb-6 text-sm">
+        <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">Payment History</h1>
+        <p className="text-gray-400 mb-3 text-sm">
           All <code className="text-solar-yellow">make_payment</code> transactions for your wallet.
         </p>
+        {filterMeterId && (
+          <div className="mb-4 inline-flex items-center gap-2 rounded-lg border border-solar-yellow/30 bg-solar-yellow/10 px-3 py-1.5 text-xs text-solar-yellow">
+            <span>Filtered by meter:</span>
+            <span className="font-mono font-semibold">{filterMeterId}</span>
+            <Link
+              href="/history"
+              className="ml-1 rounded px-1 hover:bg-solar-yellow/20 transition"
+              aria-label="Clear filter"
+            >
+              ✕
+            </Link>
+          </div>
+        )}
 
         {!address && (
           <div className="rounded-lg border border-white/10 bg-solar-accent p-8 text-center text-gray-400 text-sm">
@@ -166,14 +193,45 @@ export default function HistoryPage() {
 
         {address && !error && (
           <>
+            {/* ── Mobile sort control (desktop uses the table's column headers) ── */}
+            <div className="sm:hidden flex items-center gap-2 mb-3">
+              <label htmlFor="mobile-sort-field" className="text-xs text-gray-400">
+                Sort by
+              </label>
+              <select
+                id="mobile-sort-field"
+                value={sortField}
+                onChange={(e) => handleSort(e.target.value as SortField)}
+                className="rounded-lg border border-white/10 bg-solar-accent px-2 py-1.5 text-xs text-gray-200 focus:border-solar-yellow focus:outline-none transition"
+              >
+                <option value="date">Date</option>
+                <option value="amountXlm">Amount</option>
+                <option value="plan">Plan</option>
+                <option value="meterId">Meter ID</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
+                aria-label={`Sort direction: ${sortDir === "asc" ? "ascending" : "descending"}. Tap to toggle.`}
+                className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+              >
+                {sortDir === "asc" ? "↑ Asc" : "↓ Desc"}
+              </button>
+            </div>
+
             {/* ── Mobile card list (hidden on sm+) ── */}
             <div className="sm:hidden space-y-3">
-              {loading && (
-                <p className="text-center text-gray-500 py-10">Loading…</p>
-              )}
-              {!loading && sorted.length === 0 && (
-                <p className="text-center text-gray-500 py-10">No payment records found.</p>
-              )}
+              {loading && [0, 1, 2, 3].map((i) => (
+                <div key={i} className="rounded-xl border border-white/10 bg-solar-accent p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Skeleton width="35%" height={18} />
+                    <Skeleton width="22%" height={22} />
+                  </div>
+                  <Skeleton width="50%" height={12} />
+                  <Skeleton width="60%" height={12} />
+                </div>
+              ))}
+              {!loading && sorted.length === 0 && <EmptyState />}
               {!loading &&
                 sorted.map((r, i) => (
                   <div
@@ -186,12 +244,8 @@ export default function HistoryPage() {
                       </span>
                       <PlanBadge plan={r.plan} />
                     </div>
-                    <div className="text-xs text-gray-400">
-                      {new Date(r.date).toLocaleString()}
-                    </div>
-                    <div className="text-xs text-gray-300 font-mono">
-                      Meter: {r.meterId}
-                    </div>
+                    <div className="text-xs text-gray-400">{new Date(r.date).toLocaleString()}</div>
+                    <div className="text-xs text-gray-300 font-mono">Meter: {r.meterId}</div>
                     {r.txHash && (
                       <a
                         href={`${EXPLORER_BASE}/${r.txHash}`}
@@ -207,7 +261,10 @@ export default function HistoryPage() {
             </div>
 
             {/* ── Desktop table (hidden below sm) ── */}
-            <div className="hidden sm:block overflow-x-auto rounded-xl border border-white/10" style={{ WebkitOverflowScrolling: "touch" }}>
+            <div
+              className="hidden sm:block overflow-x-auto rounded-xl border border-white/10"
+              style={{ WebkitOverflowScrolling: "touch" }}
+            >
               <table className="w-full text-sm min-w-[600px]">
                 <thead className="bg-solar-accent border-b border-white/10">
                   <tr>
@@ -229,18 +286,18 @@ export default function HistoryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {loading && (
-                    <tr>
-                      <td colSpan={5} className="px-4 py-10 text-center text-gray-500">
-                        Loading…
-                      </td>
+                  {loading && [0, 1, 2, 3, 4].map((i) => (
+                    <tr key={i} className="border-t border-white/5">
+                      <td className="px-3 py-3"><Skeleton width="80%" height={14} /></td>
+                      <td className="px-3 py-3"><Skeleton width="65%" height={14} /></td>
+                      <td className="px-3 py-3"><Skeleton width="50%" height={14} /></td>
+                      <td className="px-3 py-3"><Skeleton width="55%" height={20} /></td>
+                      <td className="px-3 py-3"><Skeleton width="70%" height={14} /></td>
                     </tr>
-                  )}
+                  ))}
                   {!loading && sorted.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-4 py-10 text-center text-gray-500">
-                        No payment records found.
-                      </td>
+                      <td colSpan={5}><EmptyState /></td>
                     </tr>
                   )}
                   {!loading &&
@@ -323,6 +380,42 @@ export default function HistoryPage() {
   );
 }
 
+function EmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+      <svg
+        width="80"
+        height="80"
+        viewBox="0 0 80 80"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden="true"
+      >
+        <circle cx="40" cy="40" r="38" stroke="#374151" strokeWidth="2" />
+        <path
+          d="M40 22 L40 42 M34 30 L40 22 L46 30"
+          stroke="#F59E0B"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <rect x="26" y="44" width="28" height="4" rx="2" fill="#374151" />
+        <rect x="30" y="52" width="20" height="4" rx="2" fill="#374151" />
+      </svg>
+      <h3 className="mt-5 text-base font-semibold text-white">No payment history yet</h3>
+      <p className="mt-1.5 text-sm text-gray-400 max-w-xs">
+        Your transactions will appear here once you make a payment.
+      </p>
+      <Link
+        href="/pay"
+        className="mt-6 rounded-lg bg-solar-yellow px-5 py-2.5 text-sm font-semibold text-solar-dark hover:opacity-90 transition"
+      >
+        Make your first payment
+      </Link>
+    </div>
+  );
+}
+
 function PlanBadge({ plan }: { plan: string }) {
   const styles: Record<string, string> = {
     Daily: "bg-blue-900/40 text-blue-300 border-blue-700/40",
@@ -332,7 +425,9 @@ function PlanBadge({ plan }: { plan: string }) {
   };
   const cls = styles[plan] ?? "bg-gray-800 text-gray-400 border-gray-700/40";
   return (
-    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap ${cls}`}>
+    <span
+      className={`rounded-full border px-2 py-0.5 text-xs font-medium whitespace-nowrap ${cls}`}
+    >
       {plan}
     </span>
   );

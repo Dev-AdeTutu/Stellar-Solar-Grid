@@ -1,7 +1,6 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 
 interface PaymentFormState {
   meterId: string;
@@ -11,17 +10,10 @@ interface PaymentFormState {
   reset: () => void;
 }
 
-export const usePaymentStore = create<PaymentFormState>()(
-  persist(
-    (set) => ({
-      meterId: "",
-      plan: "Daily",
-      setMeterId: (id: string) => set({ meterId: id }),
-      setPlan: (plan: "Daily" | "Weekly" | "Usage") => set({ plan }),
-      reset: () => set({ meterId: "", plan: "Daily" }),
-    }),
-    {
-      name: "payment-form",
-    }
-  )
-);
+export const usePaymentStore = create<PaymentFormState>((set) => ({
+  meterId: "",
+  plan: "Daily",
+  setMeterId: (id: string) => set({ meterId: id }),
+  setPlan: (plan: "Daily" | "Weekly" | "Usage") => set({ plan }),
+  reset: () => set({ meterId: "", plan: "Daily" }),
+}));

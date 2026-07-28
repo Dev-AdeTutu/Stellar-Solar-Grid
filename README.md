@@ -1,6 +1,7 @@
 # Stellar SolarGrid
 
 [![CI](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/ci.yml/badge.svg)](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/ci.yml)
+[![Backend Tests](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/backend-test.yml/badge.svg)](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/backend-test.yml)
 
 > Powering Africa with affordable, pay-as-you-go solar energy on blockchain.
 
@@ -56,7 +57,7 @@ Rather than updating every usage update individually, the IoT Bridge consumes MQ
 #### 3. Allowlist Flow
 To prevent unauthorized usage reports or unauthorized meter controls, an Allowlist checks and verifies that only registered smart meters (registered via the admin CLI/dashboard) can be active on the system. Additionally, the IoT Bridge/Oracle address is allowlisted on the smart contract to restrict usage updates to trusted nodes.
 
-For local development setup and contributing guidelines, please refer to the [Contributing Guide](file:///Users/backenddevopsdeveloper/Downloads/DRIPS/viv-Stellar-Solar-Grid/CONTRIBUTING.md).
+For local development setup and contributing guidelines, please refer to the [Contributing Guide](CONTRIBUTING.md). For help with common errors, see the [Troubleshooting Guide](TROUBLESHOOTING.md).
 
 ## Core Features
 
@@ -143,6 +144,12 @@ The `SolarGrid` contract manages:
 | `deactivate_meter(meter_id)` | Admin-only: immediately deactivate a meter |
 
 ## Backend API
+
+The full machine-readable API specification is available at [`backend/openapi.yaml`](backend/openapi.yaml) (OpenAPI 3.1). You can preview it with:
+
+```bash
+npx @redocly/cli preview-docs backend/openapi.yaml
+```
 
 ### Meter Balance
 

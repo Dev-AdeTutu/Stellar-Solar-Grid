@@ -9,6 +9,7 @@ import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
 import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
+import { env } from "@/lib/env";
 
 type Plan = "Daily" | "Weekly" | "Usage";
 type Status = "idle" | "loading";
@@ -18,6 +19,12 @@ const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Weekly", label: "Weekly", desc: "Billed every 7 days" },
   { value: "Usage", label: "Usage-Based", desc: "Pay per kWh consumed" },
 ];
+
+const PLAN_AMOUNT_HINTS: Record<Plan, string> = {
+  Daily: "Suggested: 10 XLM/day",
+  Weekly: "Suggested: 50 XLM/week",
+  Usage: "Amount (billed per kWh consumed)",
+};
 
 export default function PayPage() {
   const { address, connect } = useWalletStore();
@@ -68,7 +75,7 @@ export default function PayPage() {
     localStorage.setItem("preferredCurrency", newCurrency);
   };
 
-  const EXPLORER_BASE = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE?.includes("Test")
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 
@@ -103,7 +110,7 @@ export default function PayPage() {
       showToast({
         variant: "success",
         title: "Payment successful",
-        description: `${meterId.trim()} was topped up with ${parseFloat(amount).toFixed(2)} XLM.`,
+        description: `${meterId.trim()} topped up · tx ${hash.slice(0, 8)}…`,
         actionHref: `${EXPLORER_BASE}/${hash}`,
         actionLabel: "View transaction",
       });
@@ -242,43 +249,6 @@ export default function PayPage() {
                   />
                 </div>
 
-                {/* Amount */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                    Amount (XLM)
-                  </label>
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => { setAmount(e.target.value); setTxHash(null); }}
-                    placeholder="0.00"
-                    min="0.0000001"
-                    step="any"
-                    required
-                    className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
-                  />
-                  {xlmRate && amount && (
-                    <div className="mt-2 flex items-center justify-between">
-                      <p className="text-xs text-gray-400">
-                        ≈ {(parseFloat(amount) * xlmRate).toLocaleString('en-NG', { 
-                          style: 'currency', 
-                          currency: currency 
-                        })}
-                      </p>
-                      <select
-                        value={currency}
-                        onChange={(e) => handleCurrencyChange(e.target.value)}
-                        className="text-xs bg-solar-dark border border-white/10 rounded px-2 py-1 text-gray-300"
-                      >
-                        <option value="NGN">NGN</option>
-                        <option value="KES">KES</option>
-                        <option value="GHS">GHS</option>
-                        <option value="USD">USD</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-
                 {/* Plan */}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">Billing Plan</label>
@@ -299,6 +269,44 @@ export default function PayPage() {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Amount */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">
+                    Amount (XLM)
+                  </label>
+                  <input
+                    type="number"
+                    value={amount}
+                    onChange={(e) => { setAmount(e.target.value); setTxHash(null); }}
+                    placeholder="0.00"
+                    min="0.0000001"
+                    step="any"
+                    required
+                    className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+                  />
+                  <p className="mt-1.5 text-xs text-gray-500">{PLAN_AMOUNT_HINTS[plan]}</p>
+                  {xlmRate && amount && (
+                    <div className="mt-2 flex items-center justify-between">
+                      <p className="text-xs text-gray-400">
+                        ≈ {(parseFloat(amount) * xlmRate).toLocaleString('en-NG', {
+                          style: 'currency',
+                          currency: currency
+                        })}
+                      </p>
+                      <select
+                        value={currency}
+                        onChange={(e) => handleCurrencyChange(e.target.value)}
+                        className="text-xs bg-solar-dark border border-white/10 rounded px-2 py-1 text-gray-300"
+                      >
+                        <option value="NGN">NGN</option>
+                        <option value="KES">KES</option>
+                        <option value="GHS">GHS</option>
+                        <option value="USD">USD</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
 
               {/* Submit */}

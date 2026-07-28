@@ -77,6 +77,9 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_retry
       ON usage_events (status, attempt_count, received_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+      ON usage_events (status, submitted_at);
   `);
   return database;
 }
@@ -115,6 +118,8 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     receivedAt,
     input.sourceTopic ?? null
   );
+
+  usageEvents.inc({ status: "pending" });
 
   return getUsageEventById(Number(result.lastInsertRowid))!;
 }
@@ -201,6 +206,7 @@ export function insertSubmittedUsageEvents(
         txHash,
         now,
       );
+      usageEvents.inc({ status: "submitted" });
     }
   });
 
@@ -217,6 +223,14 @@ export function startUsageEventRetryWorker() {
     void retryQueuedUsageEvents();
   }, RETRY_INTERVAL_MS);
   retryTimer.unref?.();
+
+  process.on('SIGTERM', () => {
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = undefined;
+      logger.info('Usage event retry worker stopped on SIGTERM');
+    }
+  });
 }
 
 export async function retryQueuedUsageEvents() {
@@ -245,6 +259,35 @@ export async function retryQueuedUsageEvents() {
   } finally {
     retryInFlight = false;
   }
+}
+
+export type TopConsumer = {
+  meterId: string;
+  totalUnits: number;
+  rank: number;
+};
+
+/** Top consumers by total units used over the last `days` days. */
+export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `
+        SELECT meter_id AS meterId, SUM(units) AS totalUnits
+        FROM usage_events
+        WHERE received_at >= ?
+        GROUP BY meter_id
+        ORDER BY totalUnits DESC
+        LIMIT ?
+      `
+    )
+    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
+
+  return rows.map((row, index) => ({
+    meterId: row.meterId,
+    totalUnits: row.totalUnits,
+    rank: index + 1,
+  }));
 }
 
 function getUsageEventById(id: number): UsageEventRecord | undefined {
@@ -286,6 +329,8 @@ async function submitUsageEvent(id: number) {
       `
     ).run(attemptedAt, hash, attemptedAt, id);
 
+    usageEvents.inc({ status: "submitted" });
+
     return getUsageEventById(id);
   } catch (error) {
     const nextAttemptCount = event.attempt_count + 1;
@@ -314,6 +359,8 @@ async function submitUsageEvent(id: number) {
       error instanceof Error ? error.message : String(error),
       id
     );
+
+    usageEvents.inc({ status: finalStatus });
 
     throw error;
   } finally {
