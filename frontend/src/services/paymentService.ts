@@ -1,4 +1,7 @@
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
+import { env } from "@/lib/env";
+
+const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 
 export interface PaymentRecord {
   txHash: string;
@@ -22,10 +25,10 @@ export async function getPaymentHistory(
   address: string,
   page = 1,
   limit = 10,
-  sort: "asc" | "desc" = "desc"
+  sort: "asc" | "desc" = "desc",
 ): Promise<PaymentHistoryResponse> {
   const url = `${BACKEND_URL}/api/payments/${address}?page=${page}&limit=${limit}&sort=${sort}`;
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error ?? `Request failed: ${res.status}`);

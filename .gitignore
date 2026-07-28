@@ -2,6 +2,29 @@ node_modules/
 dist/
 target/
 .env
+.env.local
+.env.*.local
 *.wasm
 .DS_Store
 logs/
+data/*.db
+data/*.sqlite
+
+# Test snapshots
+__snapshots__/
+*.snap
+
+# Coverage
+coverage/
+.nyc_output/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Build caches
+.cache/
+.parcel-cache/
+
+# OS
+Thumbs.db

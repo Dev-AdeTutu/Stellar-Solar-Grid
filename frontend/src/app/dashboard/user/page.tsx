@@ -1,17 +1,22 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
-import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
+import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
+import { useInterval } from "@/hooks/useInterval";
+import { env } from "@/lib/env";
 
 const STROOPS_PER_XLM = 10_000_000n;
+
+const API = env.NEXT_PUBLIC_BACKEND_URL;
+const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
 
 function stroopsToXlm(stroops: bigint): string {
   const whole = stroops / STROOPS_PER_XLM;
@@ -51,7 +56,7 @@ function PlanBadge({ plan }: { plan: string }) {
 
 function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
   return (
-    <div className="rounded-xl border border-red-500/40 bg-red-900/20 p-5 space-y-4">
+    <div className="rounded-xl border border-red-500/40 bg-red-900/20 p-4 sm:p-5 space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-mono text-sm text-red-400 font-semibold">{meterId}</span>
@@ -79,11 +84,63 @@ function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
   );
 }
 
+function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }) {
+  const isTimedPlan = plan === "Daily" || plan === "Weekly";
+  const expSec = Number(expiresAt);
+  const hasExpiry = expSec > 0 && expSec !== Number.MAX_SAFE_INTEGER;
+
+  const [remaining, setRemaining] = useState(() =>
+    isTimedPlan && hasExpiry ? Math.max(0, expSec - Math.floor(Date.now() / 1000)) : -1
+  );
+
+  useEffect(() => {
+    if (!isTimedPlan || !hasExpiry) return;
+    const tick = () => setRemaining(Math.max(0, expSec - Math.floor(Date.now() / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [isTimedPlan, hasExpiry, expSec]);
+
+  if (!isTimedPlan || !hasExpiry || remaining < 0) return null;
+
+  if (remaining === 0) {
+    return <span className="text-xs font-semibold text-red-400">Expired</span>;
+  }
+
+  const h = Math.floor(remaining / 3600).toString().padStart(2, "0");
+  const m = Math.floor((remaining % 3600) / 60).toString().padStart(2, "0");
+  const s = (remaining % 60).toString().padStart(2, "0");
+
+  return <span className="text-xs font-mono text-solar-yellow">{h}:{m}:{s}</span>;
+}
+
 function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
   const now = Date.now() / 1000; // Current time in seconds
   const expiresAt = Number(meter.expires_at);
   const isExpired = expiresAt !== Number.MAX_SAFE_INTEGER && expiresAt > 0 && now >= expiresAt;
   const hasAccess = meter.active && meter.balance > 0n && !isExpired;
+
+  const [history, setHistory] = useState<UsageDataPoint[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+
+  useEffect(() => {
+    setLoadingHistory(true);
+    fetch('/api/meters/' + meterId + '/history?limit=7')
+      .then(r => r.json())
+      .then(d => {
+        const events: UsageDataPoint[] = (d.events || []).map((e: { recorded_at: string; units: number; cost?: number }) => ({
+          date: new Date(e.recorded_at).toLocaleDateString(),
+          units: e.units,
+          cost: e.cost,
+        }));
+        setHistory(events);
+        setLoadingHistory(false);
+      })
+      .catch(() => {
+        setHistory([]);
+        setLoadingHistory(false);
+      });
+  }, [meterId]);
 
   // Format expiry date
   const formatExpiry = () => {
@@ -97,7 +154,7 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
   };
 
   return (
-    <div className="rounded-xl border border-white/10 bg-solar-accent p-5 space-y-4">
+    <div className="rounded-xl border border-white/10 bg-solar-accent p-4 sm:p-5 space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-mono text-sm text-solar-yellow font-semibold">{meterId}</span>
@@ -108,7 +165,7 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-1 min-[480px]:grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Balance", value: `${stroopsToXlm(meter.balance)} XLM` },
           { label: "Units Used", value: `${Number(meter.units_used) / 1000} kWh` },
@@ -124,6 +181,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         ))}
       </div>
 
+      {/* Countdown timer for time-based plans */}
+      {(meter.plan === "Daily" || meter.plan === "Weekly") && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs uppercase tracking-wider text-gray-500">Time Remaining</span>
+          <CountdownTimer expiresAt={meter.expires_at} plan={meter.plan} />
+        </div>
+      )}
+
       {/* Warning for expired or low balance */}
       {(isExpired || meter.balance === 0n) && (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 p-3 text-yellow-300 text-xs flex items-start gap-2">
@@ -136,6 +201,11 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         </div>
       )}
 
+      {/* Usage History Chart */}
+      <div className="pt-4 border-t border-white/10">
+        <UsageChart data={history} loading={loadingHistory} meterId={meterId} />
+      </div>
+
       {/* Actions */}
       <div className="flex gap-2 pt-1">
         <Link
@@ -145,34 +215,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
           Top Up
         </Link>
         <Link
-          href="/history"
+          href={`/history?meterId=${meterId}`}
           className="rounded-lg border border-white/10 px-4 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
         >
-          History
+          View history
         </Link>
       </div>
     </div>
   );
-}
-
-/** Build a 7-day usage history from a meter's total units_used, spreading
- *  consumption over the past week with a small sinusoidal variation so the
- *  chart always has an interesting shape rather than a flat line. */
-function buildUsageHistory(meters: Record<string, MeterData>): UsageDataPoint[] {
-  const totalUnits = Object.values(meters).reduce(
-    (sum, m) => sum + Number(m.units_used),
-    0
-  );
-  return Array.from({ length: 7 }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (6 - i));
-    const label = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    // Spread total units across 7 days with a sine wave for a realistic curve
-    const share = totalUnits > 0
-      ? +((totalUnits / 7) * (0.7 + 0.3 * Math.sin(i * 1.1))).toFixed(2)
-      : 0;
-    return { date: label, units: share };
-  });
 }
 
 export default function UserDashboardPage() {
@@ -185,8 +235,6 @@ export default function UserDashboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-
-  const chartData = useMemo(() => buildUsageHistory(meters), [meters]);
 
   const fetchAll = useCallback(async () => {
     if (!address) return;
@@ -230,6 +278,7 @@ export default function UserDashboardPage() {
     }
   }, [address, showToast]);
 
+  // Initial fetch when wallet connects / address changes
   useEffect(() => {
     if (!address) {
       setMeterIds([]);
@@ -242,8 +291,41 @@ export default function UserDashboardPage() {
     fetchAll();
   }, [address, fetchAll]);
 
+  // Poll individual meter balances for live updates.
+  // useInterval does NOT fire on mount, so fetchAll() above handles the
+  // first load — no double-fetch on first render.
+  const pollBalances = useCallback(async () => {
+    if (!address || meterIds.length === 0) return;
+    for (const id of meterIds) {
+      try {
+        const res = await fetch(`${API}/api/meters/${id}/balance`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        setMeters((prev) => {
+          const existing = prev[id];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [id]: {
+              ...existing,
+              balance: BigInt(data.balance ?? existing.balance),
+              units_used: data.units_used ?? existing.units_used,
+              active: data.active ?? existing.active,
+            },
+          };
+        });
+      } catch {
+        // Silently skip — full refresh will recover on next interval
+      }
+    }
+    setLastRefresh(new Date());
+  }, [address, meterIds]);
+
+  // Pause polling when address is gone or no meters loaded yet
+  useInterval(pollBalances, address && meterIds.length > 0 ? BALANCE_POLL_INTERVAL_MS : null);
+
   return (
-    <>
+    <ErrorBoundary>
       <Navbar />
       <main className="min-h-screen px-4 py-8 max-w-3xl mx-auto">
         {/* Header */}
@@ -298,12 +380,12 @@ export default function UserDashboardPage() {
         {address && loading && meterIds.length === 0 && (
           <div className="space-y-4">
             {[0, 1].map((i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-solar-accent p-5 space-y-4">
+              <div key={i} className="rounded-xl border border-white/10 bg-solar-accent p-4 sm:p-5 space-y-4">
                 <div className="flex items-center justify-between gap-2">
                   <Skeleton width="30%" height={16} />
                   <Skeleton width="20%" height={24} />
                 </div>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <div className="grid grid-cols-1 min-[480px]:grid-cols-2 sm:grid-cols-4 gap-3">
                   {[1, 2, 3, 4].map((j) => (
                     <div key={j} className="flex flex-col gap-1">
                       <Skeleton width="60%" height={10} />
@@ -339,16 +421,8 @@ export default function UserDashboardPage() {
           </div>
         )}
 
-        {/* Usage chart — visible once connected; shows skeleton while loading */}
-        {address && (
-          <div className="mt-6">
-            <UsageChart
-              data={chartData}
-              loading={loading && meterIds.length === 0}
-            />
-          </div>
-        )}
+
       </main>
-    </>
+    </ErrorBoundary>
   );
 }

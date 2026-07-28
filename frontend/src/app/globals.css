@@ -3,8 +3,29 @@
 @tailwind utilities;
 
 :root {
-  --foreground: #ededed;
-  --background: #1a1a2e;
+  /* Brand accent — constant across themes, used for contrast-critical text/backgrounds */
+  --color-brand-yellow: #f5a623;
+  --color-button-text-on-accent: #0f1419;
+}
+
+:root[data-theme='dark'] {
+  --color-bg-primary: #0d1b2a;
+  --color-bg-card: #1c2b3a;
+  --color-text-primary: #e0e6ed;
+  --color-text-secondary: #9ca3af;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-skeleton-base: #1c2b3a;
+  --color-skeleton-highlight: #243447;
+}
+
+:root[data-theme='light'] {
+  --color-bg-primary: #f0f4f8;
+  --color-bg-card: #ffffff;
+  --color-text-primary: #1a202c;
+  --color-text-secondary: #4a5568;
+  --color-border: rgba(15, 23, 42, 0.1);
+  --color-skeleton-base: #e2e8f0;
+  --color-skeleton-highlight: #f1f5f9;
 }
 
 html {
@@ -15,8 +36,8 @@ html {
 }
 
 body {
-  color: var(--foreground);
-  background: var(--background);
+  color: var(--color-text-primary);
+  background: var(--color-bg-primary);
   font-family: system-ui, -apple-system, sans-serif;
   /* Prevent horizontal overflow on small screens */
   overflow-x: hidden;
@@ -49,8 +70,8 @@ input, select, textarea {
 
 /* ── Shared card / badge ─────────────────────────────────────────────────── */
 .card {
-  background: #16213e;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
   border-radius: 0.75rem;
   padding: 1.25rem 1.5rem;
 }
@@ -67,6 +88,10 @@ input, select, textarea {
   padding: 0.2rem 0.65rem;
   margin-bottom: 0.75rem;
 }
+
+.badge--active   { background: #22c55e; color: #fff; }
+.badge--inactive { background: #ef4444; color: #fff; }
+.badge--expired  { background: #f59e0b; color: #fff; }
 
 /* ── CollaboratorTable ───────────────────────────────────────────────────── */
 .collab-table {
@@ -145,4 +170,51 @@ input, select, textarea {
   background: #f5a623;
   border-radius: 999px;
   vertical-align: middle;
+}
+
+/* ── Print styles for /meters/[id]/report ───────────────────────────────── */
+@media print {
+  /* Hide all navigation, buttons, and interactive elements */
+  nav,
+  .no-print,
+  button:not(.print-btn) {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+    font-size: 12pt;
+  }
+
+  /* Remove decorative backgrounds on print */
+  .print-report * {
+    background: transparent !important;
+    color: black !important;
+    box-shadow: none !important;
+  }
+
+  .print-report .border,
+  .print-report [class*="border-"] {
+    border-color: #333 !important;
+  }
+
+  /* Ensure QR code prints correctly */
+  .print-report canvas {
+    background: white !important;
+  }
+
+  /* Remove Tailwind dark text overrides for print */
+  .print-report .text-white,
+  .print-report .text-gray-300,
+  .print-report .text-gray-400,
+  .print-report .text-gray-500 {
+    color: black !important;
+  }
+
+  .print-report .text-solar-yellow,
+  .print-report .text-green-400,
+  .print-report .text-red-400 {
+    color: black !important;
+  }
 }

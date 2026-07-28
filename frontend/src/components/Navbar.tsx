@@ -1,21 +1,39 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useWalletStore } from "@/store/walletStore";
-
-const NAV_LINKS = [
-  { href: "/dashboard/user", label: "My Meter" },
-  { href: "/pay", label: "Pay" },
-  { href: "/dashboard/provider", label: "Provider" },
-  { href: "/history", label: "History" },
-];
+import { WalletConnectButton } from "@/components/WalletConnectButton";
+import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
+import { useLocale } from "@/components/I18nProvider";
 
 export default function Navbar() {
-  const { address, connect, disconnect, connectError, clearConnectError } = useWalletStore();
+  const { connectError, clearConnectError } = useWalletStore();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [theme, setTheme] = useState("dark");
+  const t = useTranslations("nav");
+  const { toggleLocale } = useLocale();
 
-  const short = address ? `${address.slice(0, 4)}…${address.slice(-4)}` : null;
+  const NAV_LINKS = [
+    { href: "/dashboard/user", label: t("myMeter") },
+    { href: "/pay", label: t("pay") },
+    { href: "/dashboard/provider", label: t("provider") },
+    { href: "/history", label: t("history") },
+  ];
+
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("theme") ?? "dark";
+    setTheme(savedTheme);
+    document.documentElement.setAttribute("data-theme", savedTheme);
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("theme", next);
+    document.documentElement.setAttribute("data-theme", next);
+  }
 
   function closeMenu() {
     setMenuOpen(false);
@@ -26,7 +44,7 @@ export default function Navbar() {
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
         <Link href="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>
-          ☀️ SolarGrid
+          ☀️ {t("brand")}
         </Link>
 
         {/* Desktop links */}
@@ -40,26 +58,47 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          <WalletButton address={short} connect={connect} disconnect={disconnect} />
+          {/* Language toggle */}
+          <button
+            onClick={toggleLocale}
+            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+            aria-label={t("languageLabel")}
+            title={t("languageLabel")}
+          >
+            {t("languageToggle")}
+          </button>
+          <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
+            {theme === "dark" ? "🌙" : "☀️"}
+          </button>
+          <WalletConnectButton />
         </div>
 
-        {/* Mobile: wallet button + hamburger */}
+        {/* Mobile: language toggle + wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <WalletButton address={short} connect={connect} disconnect={disconnect} compact />
+          <button
+            onClick={toggleLocale}
+            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+            aria-label={t("languageLabel")}
+            title={t("languageLabel")}
+          >
+            {t("languageToggle")}
+          </button>
+          <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
+            {theme === "dark" ? "🌙" : "☀️"}
+          </button>
+          <WalletConnectButton compact />
           <button
             onClick={() => setMenuOpen((o) => !o)}
-            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            aria-label={menuOpen ? t("closeMenu") : t("openMenu")}
             aria-expanded={menuOpen}
             className="rounded-lg border border-white/10 p-2 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
           >
             {menuOpen ? (
-              /* X icon */
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" />
               </svg>
             ) : (
-              /* Hamburger icon */
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                 <path d="M3 5h14a1 1 0 010 2H3a1 1 0 010-2zm0 4h14a1 1 0 010 2H3a1 1 0 010-2zm0 4h14a1 1 0 010 2H3a1 1 0 010-2z" />
               </svg>
             )}
@@ -69,10 +108,13 @@ export default function Navbar() {
 
       {/* Wallet connect error banner */}
       {connectError && (
-        <div className="flex items-center justify-between gap-3 border-t border-red-500/30 bg-red-900/20 px-4 py-2.5 text-sm text-red-400">
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-3 border-t border-red-500/30 bg-red-900/20 px-4 py-2.5 text-sm text-red-400"
+        >
           <span>
             {connectError}{" "}
-            {connectError.includes("not installed") && (
+            {connectError.toLowerCase().includes("not installed") && (
               <a
                 href="https://freighter.app"
                 target="_blank"
@@ -108,39 +150,9 @@ export default function Navbar() {
           ))}
         </div>
       )}
-    </nav>
-  );
-}
 
-function WalletButton({
-  address,
-  connect,
-  disconnect,
-  compact = false,
-}: {
-  address: string | null;
-  connect: () => void;
-  disconnect: () => void;
-  compact?: boolean;
-}) {
-  if (address) {
-    return (
-      <button
-        onClick={disconnect}
-        className="rounded-lg border border-solar-yellow px-3 py-1.5 text-xs font-medium text-solar-yellow hover:bg-solar-yellow hover:text-solar-dark transition"
-      >
-        {address}
-      </button>
-    );
-  }
-  return (
-    <button
-      onClick={connect}
-      className={`rounded-lg bg-solar-yellow font-semibold text-solar-dark hover:opacity-90 transition ${
-        compact ? "px-3 py-1.5 text-xs" : "px-4 py-1.5 text-sm"
-      }`}
-    >
-      {compact ? "Connect" : "Connect Wallet"}
-    </button>
+      {/* Network mismatch banner — shown below nav when wallet is on the wrong network */}
+      <NetworkMismatchBanner />
+    </nav>
   );
 }

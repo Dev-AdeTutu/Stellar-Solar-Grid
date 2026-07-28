@@ -1,0 +1,40 @@
+name: Contract CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['contracts/**']
+  pull_request:
+    paths: ['contracts/**']
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cd contracts && cargo test
+      - run: cd contracts && cargo build --target wasm32-unknown-unknown --release
+      - name: Verify WASM Size
+        run: |
+          WASM_FILE="contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm"
+          WASM_SIZE=$(wc -c < "$WASM_FILE")
+          echo "WASM size: $WASM_SIZE bytes"
+          
+          # Write summary
+          echo "### WASM Binary Size Verification" >> $GITHUB_STEP_SUMMARY
+          echo "- **File:** \`$WASM_FILE\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size:** $WASM_SIZE bytes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Limit:** $MAX_WASM_BYTES bytes" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$WASM_SIZE" -gt "$MAX_WASM_BYTES" ]; then
+            echo ":x: **Failure:** WASM binary size ($WASM_SIZE bytes) exceeds the limit of $MAX_WASM_BYTES bytes!" >> $GITHUB_STEP_SUMMARY
+            echo "Error: WASM size exceeds limit!"
+            exit 1
+          else
+            echo ":white_check_mark: **Success:** WASM binary size is within limits." >> $GITHUB_STEP_SUMMARY
+          fi
+        env:
+          MAX_WASM_BYTES: ${{ vars.MAX_WASM_BYTES || '102400' }}

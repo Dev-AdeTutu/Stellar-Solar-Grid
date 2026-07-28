@@ -3,12 +3,17 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
+import { logger } from "./logger.js";
+import { usageEvents } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
   path.resolve(process.cwd(), "data", "usage-events.sqlite");
-const RETRY_INTERVAL_MS = Number(process.env.USAGE_RETRY_INTERVAL_MS ?? 10_000);
-const MAX_RETRIES = 3;
+const RETRY_INTERVAL_MS = Number(
+  process.env.RETRY_INTERVAL_MS ?? process.env.USAGE_RETRY_INTERVAL_MS ?? 30_000,
+);
+const MAX_RETRY_ATTEMPTS = Number(process.env.MAX_RETRY_ATTEMPTS ?? 5);
+const MAX_RETRIES = MAX_RETRY_ATTEMPTS;
 
 type UsageEventStatus = "pending" | "submitted" | "failed";
 
@@ -34,7 +39,10 @@ type CreateUsageEventInput = {
   sourceTopic?: string | null;
 };
 
-const db = openDatabase();
+// Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
+// such that the instance type loses its namespace-declared methods at this call site.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = openDatabase() as any;
 let retryTimer: NodeJS.Timeout | undefined;
 let retryInFlight = false;
 const activeSubmissionIds = new Set<number>();
@@ -44,6 +52,11 @@ function openDatabase() {
   const database = new Database(DB_PATH);
   database.pragma("journal_mode = WAL");
   database.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS usage_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       meter_id TEXT NOT NULL,
@@ -64,12 +77,24 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_retry
       ON usage_events (status, attempt_count, received_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+      ON usage_events (status, submitted_at);
   `);
   return database;
 }
 
 export function initUsageEventStore() {
   return db;
+}
+
+export function getKV(key: string): string | null {
+  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
+  return row?.value ?? null;
+}
+
+export function setKV(key: string, value: string) {
+  db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
@@ -94,6 +119,8 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     input.sourceTopic ?? null
   );
 
+  usageEvents.inc({ status: "pending" });
+
   return getUsageEventById(Number(result.lastInsertRowid))!;
 }
 
@@ -102,34 +129,31 @@ export function getUsageHistory(
   page: number,
   pageSize: number
 ): {
-  data: UsageEventRecord[];
-  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  events: UsageEventRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
 } {
-  const totalRow = db
-    .prepare("SELECT COUNT(*) as total FROM usage_events WHERE meter_id = ?")
-    .get(meterId) as { total: number };
-  const total = totalRow.total;
   const offset = (page - 1) * pageSize;
-  const data = db
+
+  const events = db
     .prepare(
-      `
-        SELECT *
-        FROM usage_events
-        WHERE meter_id = ?
-        ORDER BY received_at DESC, id DESC
-        LIMIT ? OFFSET ?
-      `
+      "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
+      "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
     )
     .all(meterId, pageSize, offset) as UsageEventRecord[];
 
+  const { count } = db
+    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
+    .get(meterId) as { count: number };
+
   return {
-    data,
-    pagination: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / pageSize)),
-    },
+    events,
+    page,
+    pageSize,
+    total: count,
+    hasMore: offset + pageSize < count,
   };
 }
 
@@ -143,15 +167,70 @@ export async function persistAndSubmitUsageEvent(input: CreateUsageEventInput) {
   return getUsageEventById(event.id)!;
 }
 
+/**
+ * Insert a batch of usage events and mark them as submitted with a tx hash.
+ * This is used by the IoT bridge when it submits a batched update on-chain so
+ * each event is persisted locally with the on-chain tx hash.
+ */
+export function insertSubmittedUsageEvents(
+  readings: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>,
+  txHash: string,
+) {
+  const now = new Date().toISOString();
+  const stmt = db.prepare(
+    `
+      INSERT INTO usage_events (
+        meter_id,
+        units,
+        cost,
+        received_at,
+        source_topic,
+        status,
+        attempt_count,
+        last_attempt_at,
+        on_chain_tx_hash,
+        submitted_at
+      ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
+    `,
+  );
+
+  const insert = db.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
+    for (const r of rows) {
+      stmt.run(
+        r.meterId,
+        r.units,
+        String(r.cost),
+        now,
+        r.sourceTopic ?? null,
+        now,
+        txHash,
+        now,
+      );
+      usageEvents.inc({ status: "submitted" });
+    }
+  });
+
+  insert(readings);
+}
+
 export function startUsageEventRetryWorker() {
   if (retryTimer) {
     return;
   }
 
+  logger.info('Usage event retry worker started', { intervalMs: RETRY_INTERVAL_MS, maxRetryAttempts: MAX_RETRY_ATTEMPTS });
   retryTimer = setInterval(() => {
     void retryQueuedUsageEvents();
   }, RETRY_INTERVAL_MS);
   retryTimer.unref?.();
+
+  process.on('SIGTERM', () => {
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = undefined;
+      logger.info('Usage event retry worker stopped on SIGTERM');
+    }
+  });
 }
 
 export async function retryQueuedUsageEvents() {
@@ -250,11 +329,24 @@ async function submitUsageEvent(id: number) {
       `
     ).run(attemptedAt, hash, attemptedAt, id);
 
+    usageEvents.inc({ status: "submitted" });
+
     return getUsageEventById(id);
   } catch (error) {
     const nextAttemptCount = event.attempt_count + 1;
     const finalStatus: UsageEventStatus =
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
+
+    if (finalStatus === "failed") {
+      logger.error(
+        {
+          meter_id: event.meter_id,
+          units: event.units,
+          last_error: error instanceof Error ? error.message : String(error),
+        },
+        "Usage event transitioned to failed"
+      );
+    }
 
     db.prepare(
       `
@@ -274,8 +366,52 @@ async function submitUsageEvent(id: number) {
       id
     );
 
+    usageEvents.inc({ status: finalStatus });
+
     throw error;
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+export function purgeSubmittedUsageEvents(olderThanDays: number): number {
+  const cutoffDate = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  const stmt = db.prepare(
+    "DELETE FROM usage_events WHERE status = 'submitted' AND submitted_at < ?"
+  );
+  const result = stmt.run(cutoffDate);
+  return result.changes;
+}
+
+export function getFailedUsageEvents(
+  page: number,
+  pageSize: number
+): { events: UsageEventRecord[]; total: number } {
+  const offset = (page - 1) * pageSize;
+
+  const events = db
+    .prepare(
+      "SELECT * FROM usage_events WHERE status = 'failed' AND attempt_count >= ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
+    )
+    .all(MAX_RETRIES, pageSize, offset) as UsageEventRecord[];
+
+  const { count } = db
+    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed' AND attempt_count >= ?")
+    .get(MAX_RETRIES) as { count: number };
+
+  return {
+    events,
+    total: count,
+  };
+}
+
+export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined {
+  const stmt = db.prepare(
+    "UPDATE usage_events SET status = 'pending', attempt_count = 0, last_error = NULL WHERE id = ? AND status = 'failed'"
+  );
+  const result = stmt.run(id);
+  if (result.changes === 0) {
+    return undefined;
+  }
+  return getUsageEventById(id);
 }
