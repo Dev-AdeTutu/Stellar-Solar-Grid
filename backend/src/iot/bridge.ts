@@ -21,7 +21,7 @@ import {
   CONTRACT_ID,
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { mqttMessages, activeMeters, paymentVolume } from "../lib/metrics.js";
+import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted } from "../lib/metrics.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -229,8 +229,16 @@ function startMqttBridge() {
   client.on('reconnect', () => {
     reconnectAttempts++;
     if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      logger.error('MQTT reconnect attempts exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
-      client.end(); // stop reconnecting
+      logger.error('Max MQTT reconnect attempts reached. IoT bridge stopped.', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
+      // #528: flip the Prometheus gauge so Grafana alerting can page on-call
+      mqttReconnectExhausted.set(1);
+      client.end(true, () => {
+        // Exit the process so Docker's restart policy (restart: unless-stopped /
+        // on-failure) can bring the service back cleanly rather than leaving it
+        // in a permanently-broken, non-recovering state.
+        logger.fatal('Exiting process after MQTT reconnect exhaustion — expecting Docker/supervisor restart');
+        process.exit(1);
+      });
       return;
     }
     const delay = Math.min(1000 * 2 ** reconnectAttempts, 30_000);
