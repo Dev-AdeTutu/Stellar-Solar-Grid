@@ -1,9 +1,43 @@
 
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { logger } from '../lib/logger.js';
 
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+
+/**
+ * #530 — Dedicated rate-limiter scoped exclusively to *failed* admin-auth
+ * attempts.  Intentionally separate from the general writeLimiter so that
+ * brute-force probing of X-Admin-Key cannot hide inside the shared write
+ * budget and cannot be exhausted by legitimate write traffic.
+ *
+ * Window / max are independently configurable via env vars so operators can
+ * tune them without touching the write-limiter knobs.
+ */
+const ADMIN_FAIL_WINDOW_MS = Number(process.env.ADMIN_FAIL_RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000); // 15 min
+const ADMIN_FAIL_MAX = Number(process.env.ADMIN_FAIL_RATE_LIMIT_MAX ?? 10);
+
+export const adminFailureLimiter = rateLimit({
+  windowMs: ADMIN_FAIL_WINDOW_MS,
+  max: ADMIN_FAIL_MAX,
+  skipSuccessfulRequests: false, // we gate it manually below — see requireAdminKey
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Key by IP so each client gets its own bucket
+  keyGenerator: (req) => req.ip ?? 'unknown',
+  handler: (_req, res) => {
+    res.setHeader('Retry-After', String(Math.ceil(ADMIN_FAIL_WINDOW_MS / 1000)));
+    logger.warn('Admin auth failure rate limit exceeded — possible brute-force attempt');
+    res.status(429).json({
+      error: 'Too many failed admin auth attempts. Try again later.',
+      code: 'ADMIN_AUTH_RATE_LIMITED',
+    });
+  },
+  // Only count requests that actually reach this limiter (failures); successful
+  // requests bypass it entirely — see the early-return in requireAdminKey below.
+  skip: () => false,
+});
 
 function hasValidSessionToken(req: Request): boolean {
   const auth = req.headers.authorization;
@@ -26,6 +60,16 @@ function hasValidSessionToken(req: Request): boolean {
   }
 }
 
+/**
+ * requireAdminKey — verifies the request carries a valid admin credential.
+ *
+ * On *success* the request proceeds immediately; the failure limiter is never
+ * consulted so legitimate traffic can never exhaust the lockout budget.
+ *
+ * On *failure* the dedicated adminFailureLimiter is invoked first.  Once the
+ * caller has burned through ADMIN_FAIL_MAX bad attempts within the window,
+ * subsequent requests receive 429 until the window resets.
+ */
 export function requireAdminKey(req: Request, res: Response, next: NextFunction) {
   if (!ADMIN_API_KEY) {
     if (process.env.NODE_ENV === 'production') {
@@ -37,8 +81,13 @@ export function requireAdminKey(req: Request, res: Response, next: NextFunction)
   }
   const provided = req.headers['x-admin-key'];
   if (provided === ADMIN_API_KEY || hasValidSessionToken(req)) {
+    // Successful auth — skip the failure limiter entirely
     return next();
   }
-  logger.warn({ path: req.path, method: req.method }, 'Unauthorized admin request');
-  return res.status(401).json({ error: 'Unauthorized' });
+
+  // Failed auth — pass through the failure-specific limiter before returning 401
+  adminFailureLimiter(req, res, () => {
+    logger.warn({ path: req.path, method: req.method }, 'Unauthorized admin request');
+    res.status(401).json({ error: 'Unauthorized' });
+  });
 }

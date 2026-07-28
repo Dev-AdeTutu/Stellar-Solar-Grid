@@ -42,6 +42,7 @@ import rateLimit from "express-rate-limit";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
+  getUsageEventStoreHealth,
 } from "./lib/usageEvents.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
@@ -215,7 +216,11 @@ app.get("/api/health", async (_req, res) => {
     logger.warn("MQTT health check failed");
   }
 
-  const healthy = rpcOk && mqttOk;
+  // #531: Check usage-event store (SQLite reachability + retry-worker liveness)
+  const usageStore = getUsageEventStoreHealth();
+  const usageStoreOk = usageStore.reachable && usageStore.retryWorkerRunning;
+
+  const healthy = rpcOk && mqttOk && usageStoreOk;
   res.status(healthy ? 200 : 503).json({
     status: healthy ? "ok" : "degraded",
     version,
@@ -223,6 +228,17 @@ app.get("/api/health", async (_req, res) => {
     dependencies: {
       stellarRpc: rpcOk ? "ok" : "unreachable",
       mqtt: mqttOk ? "ok" : "unreachable",
+      usageEventStore: usageStoreOk
+        ? "ok"
+        : !usageStore.reachable
+          ? "unreachable"
+          : "degraded",
+    },
+    usageEventStore: {
+      reachable: usageStore.reachable,
+      retryWorkerRunning: usageStore.retryWorkerRunning,
+      pendingCount: usageStore.pendingCount,
+      failedCount: usageStore.failedCount,
     },
   });
 });
