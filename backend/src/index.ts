@@ -43,6 +43,7 @@ import {
   initUsageEventStore,
   startUsageEventRetryWorker,
 } from "./lib/usageEvents.js";
+import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
 import { createRequire } from "module";
 
@@ -273,6 +274,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
+  initMeterNotesStore();
   startUsageEventRetryWorker();
   logger.info("SolarGrid backend listening", { port: PORT });
   startLimitWatcher(stellarService);

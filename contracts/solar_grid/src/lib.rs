@@ -274,6 +274,10 @@ impl SolarGridContract {
     /// Transfer meter ownership from the current owner to a new owner.
     /// Both the current owner and the new owner must authorize this call.
     /// The new owner must already be on the allowlist.
+    ///
+    /// Emits `mtr_xfr` with topics `(EVT_NS, mtr_xfr, meter_id)` and data
+    /// `(old_owner, new_owner)` so the bridge can detect ownership changes
+    /// without polling every meter.
     pub fn transfer_meter_ownership(
         env: Env,
         meter_id: String,
@@ -290,8 +294,10 @@ impl SolarGridContract {
             return Err(ContractError::OwnerNotAllowlisted);
         }
 
+        let old_owner = meter.owner.clone();
+
         // Remove meter_id from old owner's index
-        let old_key = DataKey::OwnerMeters(meter.owner.clone());
+        let old_key = DataKey::OwnerMeters(old_owner.clone());
         let old_list: Vec<String> = env
             .storage()
             .persistent()
@@ -855,6 +861,47 @@ impl SolarGridContract {
         shares.set(collaborator, basis_points);
 
         env.storage().instance().set(&COLLABS, &collabs);
+        env.storage().instance().set(&SHARES, &shares);
+        Ok(())
+    }
+
+    /// Remove a collaborator from COLLABS and SHARES.
+    /// Remaining total basis points must not exceed 10 000 (100%).
+    /// Returns `Unauthorized` if the caller is not the admin.
+    /// Returns `CollaboratorNotFound` if the address is not a registered collaborator.
+    pub fn remove_collaborator(env: Env, collaborator: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        let collabs: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&COLLABS)
+            .unwrap_or(Vec::new(&env));
+        let mut shares: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env));
+
+        if !shares.contains_key(collaborator.clone()) {
+            return Err(ContractError::CollaboratorNotFound);
+        }
+
+        let mut new_collabs: Vec<Address> = Vec::new(&env);
+        for addr in collabs.iter() {
+            if addr != collaborator {
+                new_collabs.push_back(addr);
+            }
+        }
+        shares.remove(collaborator);
+
+        // Guard: remaining total must not exceed 100%
+        let total: u32 = shares.values().iter().sum();
+        if total > 10_000 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        env.storage().instance().set(&COLLABS, &new_collabs);
         env.storage().instance().set(&SHARES, &shares);
         Ok(())
     }
@@ -1756,6 +1803,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_event_meter_ownership_transferred() {
+        let (env, client, _admin) = setup();
+        let old_owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EV_XFR");
+
+        allowlist_and_register(&client, &meter_id, &old_owner);
+        client.allowlist_add(&new_owner);
+        client.transfer_meter_ownership(&meter_id, &new_owner);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            let topics_ok = topics.len() >= 3
+                && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("mtr_xfr"))
+                && topics.get(2) == Some(meter_id.clone().into());
+            if !topics_ok {
+                return false;
+            }
+            let Ok(payload) = <(Address, Address)>::try_from_val(&env, &data) else {
+                return false;
+            };
+            payload.0 == old_owner && payload.1 == new_owner
+        });
+        assert!(found, "mtr_xfr event with old and new owner not emitted");
+        assert_eq!(client.get_meter(&meter_id).owner, new_owner);
+    }
+
     /// register 3 meters for the same owner — get_meters_by_owner returns all 3.
     #[test]
     fn test_get_meters_by_owner_returns_all() {
@@ -1924,6 +2000,26 @@ mod tests {
 
         // Offset beyond the 3 meters
         let page = client.get_all_meters_paginated(&5_u32, &10_u32);
+        assert_eq!(page.len(), 0);
+    }
+
+    /// Snapshot: offset=9999 on a 3-meter contract must return an empty page, not panic.
+    #[test]
+    fn test_get_all_meters_paginated_offset_9999_empty_page() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let ids = [
+            String::from_str(&env, "O999_1"),
+            String::from_str(&env, "O999_2"),
+            String::from_str(&env, "O999_3"),
+        ];
+
+        client.allowlist_add(&user);
+        for id in ids.iter() {
+            client.register_meter(id, &user);
+        }
+
+        let page = client.get_all_meters_paginated(&9999_u32, &10_u32);
         assert_eq!(page.len(), 0);
     }
 
@@ -2949,6 +3045,42 @@ mod tests {
         let (env, client, _admin) = setup();
         let unknown = Address::generate(&env);
         assert_eq!(client.get_collaborator_share(&unknown), None);
+    }
+
+    // ── Issue #589: remove_collaborator ───────────────────────────────────────
+
+    /// Happy path: remove deletes the address from COLLABS and SHARES and leaves
+    /// remaining total within the 10 000 basis-point cap.
+    #[test]
+    fn test_remove_collaborator_happy_path() {
+        let (env, client, _admin) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.add_collaborator(&alice, &6_000_u32);
+        client.add_collaborator(&bob, &3_000_u32);
+
+        client.remove_collaborator(&alice);
+
+        let collabs = client.get_collaborators();
+        assert_eq!(collabs.len(), 1);
+        assert_eq!(collabs.get(0).unwrap(), bob);
+
+        let shares = client.get_all_shares();
+        assert_eq!(shares.get(alice.clone()), None);
+        assert_eq!(shares.get(bob.clone()).unwrap(), 3_000);
+
+        let total: u32 = shares.values().iter().sum();
+        assert!(total <= 10_000);
+    }
+
+    /// Removing an address that is not a collaborator returns CollaboratorNotFound.
+    #[test]
+    fn test_remove_collaborator_missing_address() {
+        let (env, client, _admin) = setup();
+        let unknown = Address::generate(&env);
+        let result = client.try_remove_collaborator(&unknown);
+        assert_eq!(result, Err(Ok(ContractError::CollaboratorNotFound)));
     }
 
     // ── Issue #415: freeze_contract / emergency_withdraw ──────────────────────

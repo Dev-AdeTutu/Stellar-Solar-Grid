@@ -123,6 +123,20 @@ components:
         daily_limit:
           type: integer
 
+    MeterNote:
+      type: object
+      required: [id, meter_id, text, created_at]
+      properties:
+        id:
+          type: integer
+        meter_id:
+          type: string
+        text:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
     PaymentRecord:
       type: object
       required: [txHash, date, meterId, amountXlm, plan]
@@ -358,7 +372,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Meter data
+          description: Meter data with latest admin notes
           content:
             application/json:
               schema:
@@ -366,6 +380,52 @@ paths:
                 properties:
                   meter:
                     $ref: '#/components/schemas/Meter'
+                  notes:
+                    type: array
+                    maxItems: 5
+                    items:
+                      $ref: '#/components/schemas/MeterNote'
+                    description: Latest 5 admin notes, newest first
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/meters/{id}/note:
+    post:
+      operationId: addMeterNote
+      summary: Add a free-text admin annotation for a meter
+      tags: [Meters]
+      security:
+        - AdminKey: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                  description: Free-text admin annotation
+      responses:
+        '201':
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeterNote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
