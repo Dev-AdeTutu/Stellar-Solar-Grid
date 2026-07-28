@@ -1,0 +1,779 @@
+openapi: "3.1.0"
+
+info:
+  title: SolarGrid Backend API
+  description: |
+    REST API for the Stellar SolarGrid PAYG solar energy platform.
+
+    Provides access to smart meter data, payment processing, energy statistics,
+    provider revenue, webhook management, and admin utilities.  Most write
+    endpoints and admin endpoints require the `X-Admin-Key` header.
+  version: "0.1.0"
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:3001
+    description: Local development server
+
+# ── Security ──────────────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    AdminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: >
+        Admin API key set via the `ADMIN_API_KEY` environment variable.
+        Required for all write and admin-only endpoints.
+
+  schemas:
+    # ── Common ────────────────────────────────────────────────────────────────
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+
+    TxHash:
+      type: object
+      required: [hash]
+      properties:
+        hash:
+          type: string
+          description: Stellar transaction hash
+
+    # ── Meter ─────────────────────────────────────────────────────────────────
+
+    MeterBalance:
+      type: object
+      required: [meter_id, balance, units_used, active]
+      properties:
+        meter_id:
+          type: string
+        balance:
+          type: integer
+          description: Current balance in stroops
+        units_used:
+          type: integer
+          description: Total energy units consumed
+        active:
+          type: boolean
+
+    UsageEvent:
+      type: object
+      properties:
+        id:
+          type: integer
+        meter_id:
+          type: string
+        units:
+          type: integer
+        cost:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        source_topic:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, submitted, failed]
+        attempt_count:
+          type: integer
+        last_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+        on_chain_tx_hash:
+          type: string
+          nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+
+    ContractStats:
+      type: object
+      required: [totalMeters, activeMeters, totalUnits, totalRevenue]
+      properties:
+        totalMeters:
+          type: integer
+          description: Total registered meters on-chain
+        activeMeters:
+          type: integer
+          description: Meters currently active (paid and within validity period)
+        totalUnits:
+          type: integer
+          description: Total energy units consumed across all meters
+        totalRevenue:
+          type: integer
+          description: Provider total revenue in stroops
+
+    MetricsSummary:
+      type: object
+      required: [mqttMessages, contractCalls, activeMeters, paymentVolumeXlm]
+      properties:
+        mqttMessages:
+          type: number
+          description: Total MQTT messages received since process start
+        contractCalls:
+          type: number
+          description: Total Soroban contract invocations since process start
+        activeMeters:
+          type: number
+          description: Current active meter gauge value
+        paymentVolumeXlm:
+          type: number
+          description: Cumulative payment volume in XLM
+
+    # ── Provider ──────────────────────────────────────────────────────────────
+
+    ProviderSummary:
+      type: object
+      required: [provider, totalRevenue, totalMeters, activeMeters, totalUnitsUsed]
+      properties:
+        provider:
+          type: string
+          nullable: true
+          description: Admin address (ADMIN_ADDRESS env var)
+        totalRevenue:
+          type: integer
+          description: Provider revenue in stroops
+        totalMeters:
+          type: integer
+        activeMeters:
+          type: integer
+        totalUnitsUsed:
+          type: integer
+
+    # ── Dead-letter ───────────────────────────────────────────────────────────
+
+    DeadLetterList:
+      type: object
+      required: [total, limit, offset, events]
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageEvent"
+
+    # ── Collaborator ──────────────────────────────────────────────────────────
+
+    CollaboratorShare:
+      type: object
+      required: [address, basisPoints]
+      properties:
+        address:
+          type: string
+          description: Stellar account address
+        basisPoints:
+          type: integer
+          description: Revenue share in basis points (100 = 1%)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      summary: Service health check
+      description: >
+        Returns the health of the Stellar RPC and MQTT broker connections.
+        Also surfaces the current count of dead-lettered usage events.
+      operationId: getHealth
+      responses:
+        "200":
+          description: All services healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  deadLetterEvents:
+                    type: integer
+        "503":
+          description: One or more services degraded
+
+  # ── Stats ────────────────────────────────────────────────────────────────────
+
+  /api/stats:
+    get:
+      summary: Contract-derived meter statistics
+      description: |
+        Queries the Soroban contract for a real-time aggregate of all meters:
+        total count, active count, total units consumed, and provider revenue.
+
+        Response is cached for **30 seconds** to reduce RPC load.
+      operationId: getStats
+      responses:
+        "200":
+          description: Meter statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractStats"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/stats/summary:
+    get:
+      summary: Prom-client metrics snapshot
+      description: |
+        Returns a JSON snapshot of the four core prom-client counters/gauges
+        for the admin dashboard.  Does **not** require Prometheus or Grafana
+        to be running.
+
+        Response is cached for **15 seconds**.
+      operationId: getStatsSummary
+      responses:
+        "200":
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSummary"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Provider ─────────────────────────────────────────────────────────────────
+
+  /api/provider:
+    get:
+      summary: Provider revenue and meter summary
+      description: |
+        Returns the energy provider's on-chain revenue alongside an aggregate
+        summary of all meters.  Requires admin authentication.
+
+        Response is cached for **30 seconds**.
+      operationId: getProvider
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Provider summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/provider/webhook:
+    post:
+      summary: Register provider low-balance webhook
+      description: |
+        Register or replace the webhook URL that receives low-balance
+        notifications when a meter's balance drops below `LOW_BALANCE_THRESHOLD`.
+
+        Alias for `POST /api/webhooks/low-balance` in the provider-facing
+        namespace.  Requires admin authentication.
+      operationId: registerProviderWebhook
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [webhook_url]
+              properties:
+                webhook_url:
+                  type: string
+                  format: uri
+                  example: "https://provider.example.com/hooks/low-balance"
+      responses:
+        "200":
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  webhook_url:
+                    type: string
+                    format: uri
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Meters ────────────────────────────────────────────────────────────────────
+
+  /api/meters:
+    get:
+      summary: List all meters (paginated)
+      operationId: listMeters
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated meter list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meters:
+                    type: array
+                    items: {}
+                  pagination:
+                    type: object
+    post:
+      summary: Register a new meter (admin only)
+      operationId: registerMeter
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_id, owner]
+              properties:
+                meter_id:
+                  type: string
+                  maxLength: 12
+                owner:
+                  type: string
+                  description: Stellar account address (G…)
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/meters/{id}/balance:
+    get:
+      summary: Live meter balance
+      description: Response is cached for 5 seconds.
+      operationId: getMeterBalance
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Balance data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterBalance"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/deactivate:
+    post:
+      summary: Admin deactivate a meter
+      operationId: deactivateMeter
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/activate:
+    post:
+      summary: Admin activate a meter
+      operationId: activateMeter
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/history:
+    get:
+      summary: Paginated local usage history for a meter
+      operationId: getMeterHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Usage history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UsageEvent"
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+
+  # ── Webhooks ──────────────────────────────────────────────────────────────────
+
+  /api/webhooks/low-balance:
+    post:
+      summary: Register low-balance webhook URL
+      description: |
+        Register a webhook URL to receive `low_balance` notifications.
+        Multiple URLs may be registered; all receive the notification.
+      operationId: registerLowBalanceWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [webhook_url]
+              properties:
+                webhook_url:
+                  type: string
+                  format: uri
+      responses:
+        "200":
+          description: Webhook registered
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/webhooks/sms-payment:
+    post:
+      summary: Telecom partner SMS payment webhook
+      description: |
+        Receives a signed payment event from a telecom partner and triggers
+        `make_payment` on-chain.  Requires a valid `X-Webhook-Signature` header
+        (HMAC-SHA256 of the raw request body using `TELECOM_WEBHOOK_SECRET`).
+      operationId: handleSmsPaymentWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_id, amount_xlm]
+              properties:
+                meter_id: { type: string }
+                amount_xlm: { type: number }
+                plan:
+                  type: string
+                  enum: [Daily, Weekly, Usage, UsageBased]
+                  default: Daily
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          description: Invalid webhook signature
+
+  # ── Allowlist ─────────────────────────────────────────────────────────────────
+
+  /api/allowlist:
+    get:
+      summary: Get all allowlisted addresses
+      operationId: getAllowlist
+      responses:
+        "200":
+          description: List of allowlisted Stellar addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  addresses:
+                    type: array
+                    items: { type: string }
+    post:
+      summary: Add address to allowlist (admin only)
+      operationId: addToAllowlist
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address:
+                  type: string
+                  description: 56-character Stellar address
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/allowlist/{address}:
+    delete:
+      summary: Remove address from allowlist (admin only)
+      operationId: removeFromAllowlist
+      security:
+        - AdminKey: []
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Collaborators ─────────────────────────────────────────────────────────────
+
+  /api/collaborators:
+    get:
+      summary: List all collaborators and their revenue shares
+      operationId: getCollaborators
+      responses:
+        "200":
+          description: Collaborator list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collaborators:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/CollaboratorShare"
+    post:
+      summary: Add collaborator (admin only)
+      operationId: addCollaborator
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address, basis_points]
+              properties:
+                address:
+                  type: string
+                  description: Stellar account address
+                basis_points:
+                  type: integer
+                  description: Revenue share in basis points
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/collaborators/{address}:
+    delete:
+      summary: Remove collaborator (admin only)
+      operationId: removeCollaborator
+      security:
+        - AdminKey: []
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "400":
+          description: Invalid Stellar address
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Admin: Dead-letter ────────────────────────────────────────────────────────
+
+  /api/admin/dead-letters:
+    get:
+      summary: List dead-lettered usage events (admin only)
+      description: |
+        Returns usage events that have been dead-lettered after exhausting all
+        retry attempts (`MAX_RETRY_ATTEMPTS`, default 5).
+
+        These events were not submitted on-chain and require manual review or
+        reprocessing via `POST /api/admin/dead-letters/{id}/reprocess`.
+      operationId: getDeadLetters
+      security:
+        - AdminKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Dead-letter event list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeadLetterList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/admin/dead-letters/{id}/reprocess:
+    post:
+      summary: Requeue a dead-lettered event (admin only)
+      description: |
+        Resets the event status to `pending` and zeroes the attempt counter so
+        the retry worker picks it up on its next tick.
+      operationId: reprocessDeadLetter
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Event requeued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  event:
+                    $ref: "#/components/schemas/UsageEvent"
+        "400":
+          description: Invalid event id
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Event not found or not in dead-letter state
+
+  # ── Metrics ───────────────────────────────────────────────────────────────────
+
+  /api/metrics/summary:
+    get:
+      summary: JSON metrics snapshot for admin dashboard
+      description: |
+        Returns a JSON snapshot of core prom-client counters/gauges.  Does not
+        require Prometheus or Grafana to be running.  Cached for 15 seconds.
+
+        Note: `/api/stats/summary` provides the same payload — this endpoint
+        is kept for backwards compatibility.
+      operationId: getMetricsSummary
+      responses:
+        "200":
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSummary"
+
+  /metrics:
+    get:
+      summary: Prometheus scrape endpoint (text format)
+      description: Standard Prometheus exposition format for scraping.
+      operationId: getPrometheusMetrics
+      responses:
+        "200":
+          description: Prometheus metrics text
+
+# ── Shared response components ────────────────────────────────────────────────
+
+  responses:
+    TxHash:
+      description: On-chain transaction hash
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TxHash"
+
+    Unauthorized:
+      description: Missing or invalid X-Admin-Key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ValidationError:
+      description: Request body validation failed
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              code: { type: string }
+              details: { type: object }
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

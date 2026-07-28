@@ -21,4 +21,10 @@ export const paymentVolume = new Counter({
   help: "Total XLM processed in payments",
 });
 
+export const deadLetterEvents = new Counter({
+  name: "solargrid_dead_letter_events_total",
+  help: "Usage events moved to dead-letter state after exhausting all retries",
+  labelNames: ["meter_id"] as const,
+});
+
 export { register };

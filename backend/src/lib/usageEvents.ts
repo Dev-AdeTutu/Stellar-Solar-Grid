@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
+import { deadLetterEvents } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -293,6 +294,7 @@ async function submitUsageEvent(id: number) {
 
     if (finalStatus === "failed") {
       logger.warn({ eventId: id, meterId: event.meter_id, attempts: nextAttemptCount }, 'Usage event dead-lettered after max retries');
+      deadLetterEvents.inc({ meter_id: event.meter_id });
     }
 
     db.prepare(
@@ -317,4 +319,58 @@ async function submitUsageEvent(id: number) {
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+/**
+ * Return all events in 'failed' (dead-lettered) status, newest first.
+ * Supports optional pagination via limit/offset.
+ */
+export function getDeadLetterEvents(
+  limit = 50,
+  offset = 0,
+): { events: UsageEventRecord[]; total: number } {
+  const events = db
+    .prepare(
+      `SELECT * FROM usage_events
+       WHERE status = 'failed'
+       ORDER BY last_attempt_at DESC, id DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(limit, offset) as UsageEventRecord[];
+
+  const { count } = db
+    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
+    .get() as { count: number };
+
+  return { events, total: count };
+}
+
+/**
+ * Requeue a dead-lettered event for retry by resetting its status to
+ * 'pending' and zeroing the attempt counter.  Returns the updated record,
+ * or undefined if the event does not exist or is not in 'failed' state.
+ */
+export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined {
+  const event = getUsageEventById(id);
+  if (!event || event.status !== 'failed') return undefined;
+
+  db.prepare(
+    `UPDATE usage_events
+     SET status = 'pending',
+         attempt_count = 0,
+         last_error = NULL,
+         last_attempt_at = NULL
+     WHERE id = ?`,
+  ).run(id);
+
+  logger.info({ eventId: id, meterId: event.meter_id }, 'Dead-lettered event requeued for retry');
+  return getUsageEventById(id);
+}
+
+/** Count of events currently in dead-letter state (used by /health). */
+export function countDeadLetterEvents(): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
+    .get() as { count: number };
+  return row.count;
 }

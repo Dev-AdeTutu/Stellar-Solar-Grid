@@ -1,4 +1,3 @@
-﻿export { asyncHandler } from '../lib/asyncHandler.js';
 export { asyncHandler } from '../lib/asyncHandler.js';
 export { validateRequest } from '../lib/validation.js';
 export { requireAdminKey } from './adminAuth.js';

@@ -1,25 +1,4 @@
-﻿import { Request, Response, NextFunction } from 'express';
-import { ZodSchema, ZodError } from 'zod';
-
-/**
- * Validates req.body against the provided Zod schema.
- * Returns 400 with validation errors if the body is invalid.
- */
-export function validateRequest<T>(schema: ZodSchema<T>) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const result = schema.safeParse(req.body);
-    if (!result.success) {
-      const errors = (result.error as ZodError).errors.map((e) => ({
-        path: e.path.join('.'),
-        message: e.message,
-      }));
-      return res.status(400).json({ error: 'Validation failed', details: errors });
-    }
-    req.body = result.data;
-    next();
-  };
-}
-import type { RequestHandler } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { z, type ZodTypeAny } from "zod";
 
 const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
@@ -95,7 +74,7 @@ type RequestSchemaSet = {
 };
 
 export function validateRequest(schemas: RequestSchemaSet): RequestHandler {
-  return (req, res, next) => {
+  return (req: Request, res: Response, next: NextFunction) => {
     const details: Record<string, unknown> = {};
 
     if (schemas.body) {
