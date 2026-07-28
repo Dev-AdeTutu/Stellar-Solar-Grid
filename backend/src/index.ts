@@ -1,4 +1,13 @@
 import "dotenv/config";
+import express from "express";
+import { NextFunction, Request, Response } from "express";
+import { meterRouter } from "./routes/meters.js";
+import { paymentsRouter } from "./routes/payments.js";
+import { webhookRouter } from "./routes/webhooks.js";
+import { configRouter } from "./routes/config.js";
+import { statsRouter } from "./routes/stats.js";
+import { startIoTBridge } from "./iot/bridge.js";
+import { register } from "./lib/metrics.js";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import timeout from "connect-timeout";
@@ -146,6 +155,11 @@ app.use((req, _res, next) => {
   next();
 });
 
+app.use("/api/meters", meterRouter);
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
+app.use("/api/config", configRouter);
+app.use("/api/stats", statsRouter);
 // ── Routes ──────────────────────────────────────────────────────────────────────────────
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);

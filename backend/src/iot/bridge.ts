@@ -9,6 +9,7 @@
  */
 
 import mqtt from "mqtt";
+import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
@@ -48,6 +49,10 @@ interface Reading {
 
 /** Fire webhook notification when meter balance drops below threshold */
 async function checkAndNotifyLowBalance(meterId: string) {
+  // Read fresh each call — /api/webhooks/low-balance may register a URL
+  // after this module was first loaded.
+  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL ?? WEBHOOK_URL;
+  if (!webhookUrl) return;
   const urls = getWebhookUrls();
   if (urls.size === 0) return;
 
@@ -68,6 +73,24 @@ async function checkAndNotifyLowBalance(meterId: string) {
         balance,
         threshold: LOW_BALANCE_THRESHOLD,
         timestamp: new Date().toISOString(),
+      });
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const secret = process.env.PROVIDER_WEBHOOK_SECRET;
+      if (secret) {
+        const signature = crypto
+          .createHmac("sha256", secret)
+          .update(body)
+          .digest("hex");
+        headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
+      }
+
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers,
+        body,
       });
 
       // Fire webhooks with automatic retry
