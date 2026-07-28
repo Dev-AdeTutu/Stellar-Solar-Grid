@@ -1,4 +1,5 @@
 import React from "react";
+import Link from "next/link";
 import { MeterStatusBadge } from "./MeterStatusBadge";
 
 export interface MeterCardProps {
@@ -89,6 +90,14 @@ export function MeterCard({
           {isDeactivating ? "Deactivating…" : "Deactivate Meter"}
         </button>
       )}
+
+      {/* Print Report Link */}
+      <Link
+        href={`/meters/${meterId}/report`}
+        className="block w-full rounded-lg border border-solar-yellow/30 bg-solar-yellow/10 px-3 py-2 text-xs font-semibold text-solar-yellow hover:bg-solar-yellow/20 transition text-center mt-2"
+      >
+        Print Report
+      </Link>
     </div>
   );
 }

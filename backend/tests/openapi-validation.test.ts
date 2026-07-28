@@ -107,6 +107,7 @@ async function testOpenAPIValidation() {
     { path: "/api/meters/export", methods: ["GET"] },
     { path: "/api/meters/owner/:address", methods: ["GET"] },
     { path: "/api/meters/:id", methods: ["GET"] },
+    { path: "/api/meters/:id/note", methods: ["POST"] },
     { path: "/api/meters/:id/access", methods: ["GET"] },
     { path: "/api/meters/:id/balance", methods: ["GET"] },
     { path: "/api/meters/balances", methods: ["GET"] },
