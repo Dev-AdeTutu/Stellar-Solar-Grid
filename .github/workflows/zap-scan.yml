@@ -1,0 +1,91 @@
+name: ZAP Baseline Security Scan
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  zap-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write  # for SARIF upload if needed
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create fake .env for env-check
+        run: |
+          cat > .env <<'EOF'
+          CONTRACT_ID=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+          ADMIN_SECRET_KEY=SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+          VITE_CONTRACT_ID=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+          ADMIN_ADDRESS=GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM
+          EOF
+          # Strip leading whitespace introduced by heredoc indentation
+          sed -i 's/^ *//' .env
+          cp .env backend/.env
+
+      - name: Start backend services
+        run: docker compose up -d mqtt backend
+
+      - name: Wait for backend to be healthy
+        run: |
+          echo "Waiting for backend to become healthy..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:3001/api/health; then
+              echo ""
+              echo "Backend is up!"
+              exit 0
+            fi
+            echo "Attempt $i/30 failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "Backend failed to start within 150s"
+          docker compose logs backend
+          exit 1
+
+      - name: Create ZAP output directory
+        run: mkdir -p zap-output
+
+      - name: Run ZAP Baseline Scan
+        id: zap
+        run: |
+          docker run --rm \
+            --network host \
+            -v "$(pwd)/.zap:/zap/wrk/.zap:ro" \
+            -v "$(pwd)/zap-output:/zap/wrk" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://localhost:3001 \
+              -c .zap/rules.tsv \
+              -r zap-report.html \
+              -l HIGH \
+              -I
+          ZAP_EXIT=$?
+          echo "zap_exit_code=$ZAP_EXIT" >> "$GITHUB_OUTPUT"
+          # ZAP exit codes: 0 = pass, 1 = warn only, 2 = HIGH alerts found
+          if [ "$ZAP_EXIT" -eq 2 ]; then
+            echo "ZAP found HIGH risk alerts — failing the build."
+            exit 1
+          fi
+        continue-on-error: true
+
+      - name: Upload ZAP HTML Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-baseline-report
+          path: zap-output/zap-report.html
+          retention-days: 30
+
+      - name: Fail build on HIGH risk alerts
+        if: steps.zap.outcome == 'failure'
+        run: |
+          echo "::error::ZAP found HIGH risk security alerts. Download the 'zap-baseline-report' artifact for details."
+          exit 1
+
+      - name: Stop services
+        if: always()
+        run: docker compose down
