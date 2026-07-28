@@ -1,7 +1,40 @@
 /**
  * Normalises errors thrown by Freighter / stellar-wallets-kit / Soroban RPC
  * into a human-readable string.
+ *
+ * The backend now returns a consistent envelope on every non-2xx response:
+ *   { error: string, code: string, details?: object }
+ *
+ * Use `parseApiError` to handle API responses and `parseWalletError` for
+ * wallet/transaction errors.
  */
+
+// ── API error helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Extract a human-readable message from a backend API error response.
+ * Works with both the new standardized envelope and any legacy bare shapes.
+ */
+export function parseApiError(body: unknown): string {
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    if (typeof b.error === "string") return b.error;
+  }
+  if (typeof body === "string") return body;
+  return "Something went wrong. Please try again.";
+}
+
+/**
+ * Extract the machine-readable code from a backend API error response.
+ * Returns null if the response does not include a code field.
+ */
+export function parseApiErrorCode(body: unknown): string | null {
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    if (typeof b.code === "string") return b.code;
+  }
+  return null;
+}
 
 // Known Freighter rejection signals
 const REJECTION_PATTERNS = [
@@ -16,9 +49,34 @@ const REJECTION_PATTERNS = [
   "4001",        // EIP-1193 style rejection code used by some wallets
 ];
 
+const CONTRACT_ERRORS: Record<number, string> = {
+  1: "Contract not initialized.",
+  2: "Contract already initialized.",
+  3: "Meter not found.",
+  4: "Meter already exists.",
+  5: "Unauthorized access.",
+  6: "Invalid amount provided.",
+  7: "Owner is not in the allowlist.",
+  8: "IoT Oracle address not set.",
+  9: "Insufficient provider revenue for withdrawal.",
+  10: "Batch update size too large.",
+  11: "Cannot activate meter with zero balance.",
+  12: "Insufficient meter balance.",
+  13: "Collaborator already exists.",
+};
+
 export function parseWalletError(err: unknown): string {
   const raw = normaliseToString(err);
   const lower = raw.toLowerCase();
+
+  // Handle Soroban contract errors: "Error(Contract, 1)"
+  const contractErrMatch = raw.match(/Error\(Contract, (\d+)\)/);
+  if (contractErrMatch) {
+    const code = parseInt(contractErrMatch[1]);
+    if (CONTRACT_ERRORS[code]) {
+      return CONTRACT_ERRORS[code];
+    }
+  }
 
   if (REJECTION_PATTERNS.some((p) => lower.includes(p))) {
     return "Transaction cancelled by user.";
