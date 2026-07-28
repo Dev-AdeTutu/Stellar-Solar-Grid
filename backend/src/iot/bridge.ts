@@ -9,10 +9,11 @@
  */
 
 import mqtt from "mqtt";
+import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
-import { UsageUpdateSchema } from "../lib/validation.js";
+import { UsageUpdateSchema, MqttPayloadSchema } from "../lib/validation.js";
 import {
   adminInvoke,
   contractQuery,
@@ -44,10 +45,47 @@ interface Reading {
   meterId: string;
   units: number;
   cost: number;
+  /** balance/daily_limit ratio at receive time; lower = more urgent (Issue #601). */
+  priority: number;
+}
+
+/**
+ * Priority score for batch ordering: the meter's current balance/daily_limit
+ * ratio. Meters near a zero balance relative to their daily budget get a
+ * lower (more urgent) score and are processed first in the next batch.
+ *
+ * Meters with no daily limit configured (0 = unlimited) or that fail to
+ * resolve have no meaningful ratio to prioritise on, so they sort last
+ * rather than being assumed urgent.
+ */
+async function getPriority(meterId: string): Promise<number> {
+  try {
+    const result = await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    const meter = StellarSdk.scValToNative(result) as {
+      balance: bigint;
+      daily_limit: bigint;
+      [key: string]: unknown;
+    };
+    const dailyLimit = Number(meter.daily_limit);
+    if (dailyLimit <= 0) return Number.POSITIVE_INFINITY;
+    return Number(meter.balance) / dailyLimit;
+  } catch (err) {
+    logger.warn("Failed to compute batch priority for meter, deprioritising", {
+      meterId,
+      err,
+    });
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /** Fire webhook notification when meter balance drops below threshold */
 async function checkAndNotifyLowBalance(meterId: string) {
+  // Read fresh each call — /api/webhooks/low-balance may register a URL
+  // after this module was first loaded.
+  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL ?? WEBHOOK_URL;
+  if (!webhookUrl) return;
   const urls = getWebhookUrls();
   if (urls.size === 0) return;
 
@@ -68,6 +106,24 @@ async function checkAndNotifyLowBalance(meterId: string) {
         balance,
         threshold: LOW_BALANCE_THRESHOLD,
         timestamp: new Date().toISOString(),
+      });
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const secret = process.env.PROVIDER_WEBHOOK_SECRET;
+      if (secret) {
+        const signature = crypto
+          .createHmac("sha256", secret)
+          .update(body)
+          .digest("hex");
+        headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
+      }
+
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers,
+        body,
       });
 
       // Fire webhooks with automatic retry
@@ -107,9 +163,11 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
-  const parsed = UsageUpdateSchema.safeParse(raw);
+  // Merge meterId from the topic so the full { meterId, units, cost } triple is validated together
+  const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
   if (!parsed.success) {
     logger.error("Invalid MQTT payload (schema validation failed)", {
+      event: "mqtt_payload_invalid",
       topic,
       raw: rawStr,
       errors: parsed.error.flatten().fieldErrors,
@@ -185,6 +243,9 @@ function startMqttBridge() {
   const flush = async () => {
     if (pending.length === 0) return;
     const batch = pending.splice(0);
+    // Issue #601: submit near-zero-balance meters (lowest balance/daily_limit
+    // ratio) first within the batch.
+    batch.sort((a, b) => a.priority - b.priority);
     logger.info(`Flushing batch of ${batch.length} meter update(s)`);
     try {
       const hash = await adminInvoke("batch_update_usage", [
@@ -200,6 +261,14 @@ function startMqttBridge() {
         );
       } catch (err) {
         logger.error("Failed to persist batch usage events to local DB", { err });
+      }
+
+      // Low-balance webhooks fire post-batch now that submission is batched
+      // rather than per-reading.
+      for (const reading of batch) {
+        checkAndNotifyLowBalance(reading.meterId).catch((err) => {
+          logger.error("Low balance check failed", { meterId: reading.meterId, err });
+        });
       }
     } catch (err) {
       logger.error("Batch submission error", { err });
@@ -232,9 +301,10 @@ function startMqttBridge() {
         return;
       }
 
-      const parsed = UsageUpdateSchema.safeParse(raw);
+      const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
       if (!parsed.success) {
         logger.error("Invalid MQTT payload (schema validation failed)", {
+          event: "mqtt_payload_invalid",
           topic,
           errors: parsed.error.flatten().fieldErrors,
         });
@@ -248,30 +318,11 @@ function startMqttBridge() {
         cost,
       });
 
-      const event = await persistAndSubmitUsageEvent({
-        meterId,
-        units,
-        cost,
-        sourceTopic: topic,
-      });
-
-      if (event.on_chain_tx_hash) {
-        logger.info("Usage recorded on-chain", {
-          meterId,
-          eventId: event.id,
-          txHash: event.on_chain_tx_hash,
-        });
-        // Check if balance is low after usage update
-        checkAndNotifyLowBalance(meterId).catch(err => {
-          logger.error("Low balance check failed", { err });
-        });
-      } else {
-        logger.warn("Usage event queued for retry", {
-          meterId,
-          eventId: event.id,
-        });
-      }
-      await processMqttMessage(topic as string, payload as Buffer);
+      // Issue #601: queue for the next priority-ordered batch flush instead
+      // of submitting immediately, so near-zero-balance meters can be
+      // sequenced first within the batch.
+      const priority = await getPriority(meterId);
+      pending.push({ meterId, units, cost, priority });
     } catch (err) {
       // Catch any unexpected errors from processing to ensure the bridge keeps running
       logger.error("Unhandled error in MQTT message handler", { topic, raw: payload.toString(), err });
@@ -416,6 +467,28 @@ async function handleContractEvent(
           JSON.stringify({ meterId, owner }),
           { qos: 1 },
           (err) => { if (err) logger.error({ meterId, err }, "Failed to publish meters/new"); },
+        );
+        break;
+      }
+
+      case "solargrid:mtr_xfr": {
+        const [oldOwner, newOwner] = StellarSdk.scValToNative(event.value) as [
+          string,
+          string,
+        ];
+        const meterId = subject;
+        logger.info("meter_ownership_transferred contract event", {
+          meterId,
+          oldOwner,
+          newOwner,
+        });
+        mqttClient?.publish(
+          "meters/transfer",
+          JSON.stringify({ meterId, oldOwner, newOwner }),
+          { qos: 1 },
+          (err) => {
+            if (err) logger.error({ meterId, err }, "Failed to publish meters/transfer");
+          },
         );
         break;
       }
