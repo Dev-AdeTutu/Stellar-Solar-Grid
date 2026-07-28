@@ -7,8 +7,8 @@ const config: Config = {
       colors: {
         solar: {
           yellow: "#F5A623",
-          dark: "#1A1A2E",
-          accent: "#16213E",
+          dark: "var(--color-bg-primary)",
+          accent: "var(--color-bg-card)",
         },
       },
     },

@@ -1,10 +1,22 @@
-import { fetchMeter, contractInvoke, type MeterData } from "@/lib/contract";
+import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, contractInvoke, type MeterData } from "@/lib/contract";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData };
 
 export async function getMeter(meterId: string): Promise<MeterData> {
   return fetchMeter(meterId);
+}
+
+export async function getMetersByOwner(ownerAddress: string): Promise<string[]> {
+  return fetchMetersByOwner(ownerAddress);
+}
+
+export async function checkAccess(meterId: string): Promise<boolean> {
+  return checkMeterAccess(meterId);
+}
+
+export async function getAllMeters(): Promise<MeterData[]> {
+  return fetchAllMeters();
 }
 
 export async function makePayment(
@@ -16,7 +28,8 @@ export async function makePayment(
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
   return contractInvoke(sourceAddress, "make_payment", [
     StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(sourceAddress, { type: "address" }),
     StellarSdk.nativeToScVal(amountStroops, { type: "i128" }),
-    StellarSdk.nativeToScVal({ [plan]: null }, { type: "map" }),
+    StellarSdk.nativeToScVal(plan, { type: "symbol" }),
   ]);
 }
