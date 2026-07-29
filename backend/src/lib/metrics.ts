@@ -63,4 +63,10 @@ export const deadLetterEvents = new Counter({
   labelNames: ["meter_id"] as const,
 });
 
+export const contractEventsProcessed = new Counter({
+  name: "solargrid_contract_events_processed_total",
+  help: "Total contract events processed by the bridge, by topic",
+  labelNames: ["topic"] as const,
+});
+
 export { register };
