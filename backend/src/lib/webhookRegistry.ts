@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { logger } from "./logger.js";
-import { webhookDeliveries } from "./metrics.js";
+import { webhookDeliveries, webhookDeliveryFailures } from "./metrics.js";
 
 const DB_PATH =
   process.env.WEBHOOKS_DB_PATH ??
@@ -171,6 +172,11 @@ async function fireWebhookInternal(
 
       scheduleRetryProcessor();
     } else {
+      // #529: increment the permanent-failure counter with a hashed URL so
+      // Grafana can alert on delivery failures without leaking full URLs
+      // (which may contain tokens or PII) into metric label cardinality.
+      const urlHash = crypto.createHash("sha256").update(url).digest("hex").slice(0, 12);
+      webhookDeliveryFailures.inc({ url_hash: urlHash });
       logger.error("Webhook delivery failed permanently after max retries", {
         url,
         attempts: MAX_RETRIES + 1,

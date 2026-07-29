@@ -41,6 +41,16 @@ export const UsageUpdateSchema = z
   })
   .strict();
 
+export const MeterNoteSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1, "text is required")
+      .max(2000, "text must be at most 2000 characters"),
+  })
+  .strict();
+
 export const MakePaymentSchema = z
   .object({
     token_address: z
@@ -132,3 +142,4 @@ export { MeterRouteParamsSchema };
 export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
+export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;

@@ -1,13 +1,22 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { StellarService, stellarService } from "../lib/stellar.js";
+import { contractQuery, adminInvoke } from "../lib/stellar.js";
+import { StellarService, stellarService, server } from "../lib/stellar.js";
 import {
   getUsageHistory,
   persistAndSubmitUsageEvent,
   initUsageEventStore,
 } from "../lib/usageEvents.js";
+import {
+  addMeterNote,
+  getLatestMeterNotes,
+} from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
+import {
+  validateRequest,
+  RegisterMeterSchema,
+  MeterNoteSchema,
+} from "../lib/validation.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
@@ -37,6 +46,161 @@ export function createMeterRouter(stellar: StellarService) {
         Math.max(1, Number(req.query.pageSize ?? 25) || 25),
       );
 
+    const header = "owner,active,units_used,plan,last_payment,expires_at,daily_limit";
+    const rows = meters.map((m: any) =>
+      [m.owner, m.active, m.units_used, m.plan, m.last_payment, m.expires_at, m.daily_limit].join(",")
+    );
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=meters.csv");
+    return res.send([header, ...rows].join("\n"));
+  }),
+);
+
+/**
+ * GET /api/meters/search?q=&page=&pageSize= — case-insensitive substring
+ * search across meter ID and owner address, paginated.
+ */
+meterRouter.get(
+  "/search",
+  asyncHandler(async (req, res) => {
+    const q = String(req.query.q ?? "").toLowerCase().trim();
+    const page = Math.max(1, Number(req.query.page ?? 1) || 1);
+    const pageSize = Math.min(
+      100,
+      Math.max(1, Number(req.query.pageSize ?? 25) || 25),
+    );
+
+    const result = await contractQuery("get_all_meters", []);
+    const meters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+
+    const matches = q
+      ? meters.filter((m: any) => {
+          const id = String(m.meter_id ?? m.id ?? "").toLowerCase();
+          const owner = String(m.owner ?? "").toLowerCase();
+          return id.includes(q) || owner.includes(q);
+        })
+      : meters;
+
+    const total = matches.length;
+    const offset = (page - 1) * pageSize;
+    const data = matches.slice(offset, offset + pageSize);
+
+    res.json({
+      data,
+      pagination: {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      },
+    });
+  }),
+);
+
+/** GET /api/meters/:id — get meter status */
+meterRouter.get(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    const result = await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
+    ]);
+    res.json({ meter: StellarSdk.scValToNative(result) });
+  }),
+);
+
+/** GET /api/meters/:id/access — check if meter is active */
+meterRouter.get(
+  "/:id/access",
+  asyncHandler(async (req, res) => {
+    const result = await contractQuery("check_access", [
+      StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
+    ]);
+    res.json({ active: StellarSdk.scValToNative(result) });
+  }),
+);
+
+/** GET /api/meters/:id/history — paginated local usage history */
+meterRouter.get("/:id/history", (req, res) => {
+  const page = Math.max(1, Number(req.query.page ?? 1) || 1);
+  const pageSize = Math.min(
+    100,
+    Math.max(1, Number(req.query.pageSize ?? 25) || 25),
+  );
+
+  try {
+    const history = getUsageHistory(req.params.id, page, pageSize);
+    res.json(history);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** GET /api/meters/owner/:address — list all meters for an owner */
+meterRouter.get(
+  "/owner/:address",
+  asyncHandler(async (req, res) => {
+    const result = await contractQuery("get_meters_by_owner", [
+      StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
+    ]);
+    res.json({ meters: StellarSdk.scValToNative(result) });
+  }),
+);
+
+/** POST /api/meters — register a new meter (admin only) */
+meterRouter.post(
+  "/",
+  validateRequest({ body: RegisterMeterSchema }),
+  asyncHandler(async (req, res) => {
+    const { meter_id, owner } = req.body;
+
+    const hash = await adminInvoke("register_meter", [
+      StellarSdk.nativeToScVal(meter_id, { type: "symbol" }),
+      StellarSdk.nativeToScVal(owner, { type: "address" }),
+    ]);
+    res.json({ hash });
+  }),
+);
+
+/** POST /api/meters/:id/usage — IoT oracle reports usage */
+meterRouter.post("/:id/usage", async (req, res) => {
+  const { units, cost } = req.body as { units: unknown; cost: unknown };
+
+  if (units == null || cost == null) {
+    return res.status(400).json({ error: "units and cost are required" });
+  }
+
+  const unitsNum = Number(units);
+  const costNum = Number(cost);
+
+  if (!Number.isFinite(unitsNum) || !Number.isFinite(costNum)) {
+    return res.status(400).json({ error: "units and cost must be valid numbers" });
+  }
+
+  if (!Number.isInteger(unitsNum) || !Number.isInteger(costNum)) {
+    return res.status(400).json({ error: "units and cost must be integers" });
+  }
+
+  if (unitsNum <= 0 || costNum <= 0) {
+    return res.status(400).json({ error: "units and cost must be positive" });
+  }
+
+  try {
+    const event = await persistAndSubmitUsageEvent({
+      meterId: req.params.id,
+      units: unitsNum,
+      cost: costNum,
+      sourceTopic: null,
+    });
+
+    res.json({
+      event,
+      hash: event.on_chain_tx_hash,
+      queued: !event.on_chain_tx_hash,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
       const result = await stellar.query("get_all_meters", []);
       const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 
@@ -93,7 +257,25 @@ export function createMeterRouter(stellar: StellarService) {
       const result = await stellar.query("get_all_meters", []);
       const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 
-      const nowMs = Date.now();
+      // Issue #596: anchor "now" to the Stellar network's own ledger close
+      // time rather than this server's wall clock, so expiry comparisons
+      // against on-chain expires_at (a ledger timestamp) aren't skewed by
+      // local clock drift. getTransactions' summary fields are populated
+      // even when the requested page has zero transactions, so a cheap
+      // limit:1 call at the latest sequence is enough to read it.
+      let nowMs = Date.now();
+      try {
+        const latestLedger = await server.getLatestLedger();
+        const txPage = await server.getTransactions({
+          startLedger: latestLedger.sequence,
+          limit: 1,
+        });
+        if (txPage.latestLedgerCloseTimestamp) {
+          nowMs = txPage.latestLedgerCloseTimestamp * 1000;
+        }
+      } catch (err) {
+        logger.warn("Failed to fetch ledger close time, falling back to server clock", { err });
+      }
       const thresholdMs = nowMs + windowHours * 60 * 60 * 1000;
 
       const expiring = allMeters.filter((m: any) => {
@@ -243,6 +425,7 @@ export function createMeterRouter(stellar: StellarService) {
    * GET /api/meters/:id — get meter status with ETag support.
    * Sets ETag header based on a hash of the meter JSON so clients can make
    * conditional requests with If-None-Match to avoid redundant downloads.
+   * Includes the latest 5 admin notes from SQLite.
    *
    * Closes #462.
    */
@@ -253,7 +436,8 @@ export function createMeterRouter(stellar: StellarService) {
       const result = await stellar.query("get_meter", [
         StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
       ]);
-      const data = { meter: StellarSdk.scValToNative(result) };
+      const notes = getLatestMeterNotes(req.params.id, 5);
+      const data = { meter: StellarSdk.scValToNative(result), notes };
       const etag = etagFor(data);
 
       res.setHeader("ETag", etag);
@@ -263,6 +447,31 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       res.json(data);
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/note — admin free-text annotation persisted in SQLite.
+   *
+   * Closes #591.
+   */
+  meterRouter.post(
+    "/:id/note",
+    requireAdminKey,
+    validateRequest({ body: MeterNoteSchema }),
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const note = addMeterNote(meterId, req.body.text);
+      invalidateCache(`/api/meters/${meterId}`);
+      res.status(201).json(note);
     }),
   );
 
@@ -597,25 +806,29 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
-      const results: Array<{ meter_id: string; hash?: string; error?: string }> = [];
+      // Issue #597: each meter registration is a separate on-chain tx, so a
+      // single failure must not fail the whole batch or return a hard 500 —
+      // report per-meter success/failure instead.
+      const succeeded: Array<{ meterId: string; hash: string }> = [];
+      const failed: Array<{ meterId: string; reason: string }> = [];
 
       for (const item of meters) {
         const meterId = item?.meter_id;
         const owner = item?.owner;
 
         if (!meterId || typeof meterId !== "string" || meterId.trim().length === 0) {
-          results.push({ meter_id: String(meterId ?? ""), error: "meter_id is required" });
+          failed.push({ meterId: String(meterId ?? ""), reason: "meter_id is required" });
           continue;
         }
 
         const trimmedId = meterId.trim();
         if (trimmedId.length > 12) {
-          results.push({ meter_id: trimmedId, error: "meter_id must be at most 12 characters" });
+          failed.push({ meterId: trimmedId, reason: "meter_id must be at most 12 characters" });
           continue;
         }
 
         if (!owner || typeof owner !== "string" || !STELLAR_ACCOUNT_REGEX.test(owner)) {
-          results.push({ meter_id: trimmedId, error: "Invalid Stellar account address format" });
+          failed.push({ meterId: trimmedId, reason: "Invalid Stellar account address format" });
           continue;
         }
 
@@ -624,13 +837,13 @@ export function createMeterRouter(stellar: StellarService) {
             StellarSdk.nativeToScVal(trimmedId, { type: "symbol" }),
             StellarSdk.nativeToScVal(owner, { type: "address" }),
           ]);
-          results.push({ meter_id: trimmedId, hash });
+          succeeded.push({ meterId: trimmedId, hash });
         } catch (err: any) {
-          results.push({ meter_id: trimmedId, error: err.message ?? "Registration failed" });
+          failed.push({ meterId: trimmedId, reason: err.message ?? "Registration failed" });
         }
       }
 
-      res.json({ results });
+      res.json({ succeeded, failed });
     }),
   );
 

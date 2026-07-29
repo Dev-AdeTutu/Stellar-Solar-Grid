@@ -15,21 +15,22 @@ interface WalletState {
   connectError: string | null;
   networkError: string | null;
   isConnecting: boolean;
+  lastTopUpPerMeter: Record<string, bigint>;
   connect: () => Promise<void>;
   disconnect: () => void;
   clearConnectError: () => void;
   signTransaction: (xdr: string) => Promise<string>;
+  recordTopUp: (meterId: string, amount: bigint) => void;
 }
 
 const EXPECTED_NETWORK_PASSPHRASE =
-  import.meta.env.VITE_NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
+  process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? "Test SDF Network ; September 2015";
 const EXPECTED_NETWORK_NAME = EXPECTED_NETWORK_PASSPHRASE.includes("Test")
   ? "Testnet"
   : "Public";
 
 function buildKit(): StellarWalletsKit {
   return new StellarWalletsKit({
-    network: env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     network: EXPECTED_NETWORK_PASSPHRASE.includes("Test")
       ? WalletNetwork.TESTNET
       : WalletNetwork.PUBLIC,
@@ -72,6 +73,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   connectError: null,
   networkError: null,
   isConnecting: false,
+  lastTopUpPerMeter: {},
 
   connect: async () => {
     set({ connectError: null, networkError: null, isConnecting: true });
@@ -114,9 +116,19 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     if (!kit || !address) throw new Error("Wallet not connected");
     const { signedTxXdr } = await kit.signTransaction(xdr, {
       address,
+      networkPassphrase: process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
       networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
+  },
+
+  recordTopUp: (meterId: string, amount: bigint) => {
+    set((state) => ({
+      lastTopUpPerMeter: {
+        ...state.lastTopUpPerMeter,
+        [meterId]: amount,
+      },
+    }));
   },
 }));
 

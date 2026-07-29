@@ -1,4 +1,5 @@
 #![no_std]
+extern crate alloc;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
@@ -273,6 +274,10 @@ impl SolarGridContract {
     /// Transfer meter ownership from the current owner to a new owner.
     /// Both the current owner and the new owner must authorize this call.
     /// The new owner must already be on the allowlist.
+    ///
+    /// Emits `mtr_xfr` with topics `(EVT_NS, mtr_xfr, meter_id)` and data
+    /// `(old_owner, new_owner)` so the bridge can detect ownership changes
+    /// without polling every meter.
     pub fn transfer_meter_ownership(
         env: Env,
         meter_id: String,
@@ -289,8 +294,10 @@ impl SolarGridContract {
             return Err(ContractError::OwnerNotAllowlisted);
         }
 
+        let old_owner = meter.owner.clone();
+
         // Remove meter_id from old owner's index
-        let old_key = DataKey::OwnerMeters(meter.owner.clone());
+        let old_key = DataKey::OwnerMeters(old_owner.clone());
         let old_list: Vec<String> = env
             .storage()
             .persistent()
@@ -478,6 +485,20 @@ impl SolarGridContract {
     /// Emits: `contract_unfrozen { }`
     pub fn unfreeze_contract(env: Env) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
+        if !env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractNotFrozen);
+        }
+        let oracle: Address = env
+            .storage()
+            .instance()
+            .get(&ORACLE)
+            .ok_or(ContractError::OracleNotSet)?;
+        oracle.require_auth();
         env.storage().instance().remove(&FROZEN);
         env.events().publish((EVT_NS, symbol_short!("frz_off")), ());
         Ok(())
@@ -844,6 +865,47 @@ impl SolarGridContract {
         Ok(())
     }
 
+    /// Remove a collaborator from COLLABS and SHARES.
+    /// Remaining total basis points must not exceed 10 000 (100%).
+    /// Returns `Unauthorized` if the caller is not the admin.
+    /// Returns `CollaboratorNotFound` if the address is not a registered collaborator.
+    pub fn remove_collaborator(env: Env, collaborator: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        let collabs: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&COLLABS)
+            .unwrap_or(Vec::new(&env));
+        let mut shares: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&SHARES)
+            .unwrap_or(Map::new(&env));
+
+        if !shares.contains_key(collaborator.clone()) {
+            return Err(ContractError::CollaboratorNotFound);
+        }
+
+        let mut new_collabs: Vec<Address> = Vec::new(&env);
+        for addr in collabs.iter() {
+            if addr != collaborator {
+                new_collabs.push_back(addr);
+            }
+        }
+        shares.remove(collaborator);
+
+        // Guard: remaining total must not exceed 100%
+        let total: u32 = shares.values().iter().sum();
+        if total > 10_000 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        env.storage().instance().set(&COLLABS, &new_collabs);
+        env.storage().instance().set(&SHARES, &shares);
+        Ok(())
+    }
+
     /// Returns collaborator addresses in insertion order.
     pub fn get_collaborators(env: Env) -> Vec<Address> {
         env.storage()
@@ -1179,6 +1241,7 @@ impl SolarGridContract {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use super::*;
     use soroban_sdk::{
         symbol_short,
@@ -1205,9 +1268,11 @@ mod tests {
     }
 
     /// Helper: allowlist + register a meter in one call.
-    fn allowlist_and_register(client: &SolarGridContractClient, meter_id: &String, user: &Address) {
+    fn allowlist_and_register(client: &SolarGridContractClient, meter_id: impl ToString, user: &Address) {
+        let env = Env::default();
+        let meter_id = String::from_str(&env, &meter_id.to_string());
         client.allowlist_add(user);
-        client.register_meter(meter_id, user);
+        client.register_meter(&meter_id, user);
     }
 
     /// Setup with a specific token registered in initialize.
@@ -1253,7 +1318,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER1");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert!(!client.check_access(&meter_id));
 
         token_admin_client.mint(&user, &5_000_000_i128);
@@ -1270,7 +1335,7 @@ mod tests {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER2");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
             client.try_register_meter(&meter_id, &user),
             Err(Ok(ContractError::MeterAlreadyExists))
@@ -1291,7 +1356,7 @@ mod tests {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER3");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
             client.try_make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily),
             Err(Ok(ContractError::InvalidAmount))
@@ -1303,7 +1368,7 @@ mod tests {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER4");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
             client.try_make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily),
             Err(Ok(ContractError::InvalidAmount))
@@ -1319,7 +1384,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER5");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_000_i128);
         client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::UsageBased);
 
@@ -1346,7 +1411,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("INACT");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
 
         // Meter is registered but no payment made, so it's inactive
         client.update_usage(&meter_id, &50_u64, &100_000_i128);
@@ -1361,7 +1426,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER9");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &100_i128);
         client.make_payment(&meter_id, &user, &100_i128, &PaymentPlan::UsageBased);
 
@@ -1380,7 +1445,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER7");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert!(!client.check_access(&meter_id));
 
         token_admin_client.mint(&user, &2_000_000_i128);
@@ -1403,7 +1468,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER9");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &2_000_000_i128);
         client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily);
         assert!(client.check_access(&meter_id));
@@ -1423,7 +1488,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("WK_EXP");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &5_000_000_i128);
         client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Weekly);
         assert!(client.check_access(&meter_id));
@@ -1443,7 +1508,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("UB_EXP");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
 
@@ -1462,7 +1527,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("RENEW");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &4_000_000_i128);
         client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily);
 
@@ -1535,7 +1600,7 @@ mod tests {
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METER9");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
 
         token_admin_client.mint(&user, &5_000_000_i128);
         client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily);
@@ -1554,7 +1619,7 @@ mod tests {
         let (env, client, admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("METR10");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
             client.try_withdraw_revenue(&admin, &1_i128),
             Err(Ok(ContractError::InsufficientBalance))
@@ -1604,7 +1669,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EXACT");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &5_000_000_i128);
         client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::UsageBased);
 
@@ -1627,7 +1692,7 @@ mod tests {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("ZERO_BAL");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
             client.try_set_active(&meter_id, &true),
             Err(Ok(ContractError::CannotActivateWithoutBalance))
@@ -1660,7 +1725,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EV_PMT");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_000_i128);
         client.make_payment(&meter_id, &user, &1_000_000_i128, &PaymentPlan::Daily);
 
@@ -1689,7 +1754,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EV_USG");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &500_i128);
         client.make_payment(&meter_id, &user, &500_i128, &PaymentPlan::UsageBased);
 
@@ -1719,7 +1784,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EV_SET");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
 
@@ -1736,6 +1801,35 @@ mod tests {
             has_deact,
             "mtr_deact event not emitted by set_active(false)"
         );
+    }
+
+    #[test]
+    fn test_event_meter_ownership_transferred() {
+        let (env, client, _admin) = setup();
+        let old_owner = Address::generate(&env);
+        let new_owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "EV_XFR");
+
+        allowlist_and_register(&client, &meter_id, &old_owner);
+        client.allowlist_add(&new_owner);
+        client.transfer_meter_ownership(&meter_id, &new_owner);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            let topics_ok = topics.len() >= 3
+                && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("mtr_xfr"))
+                && topics.get(2) == Some(meter_id.clone().into());
+            if !topics_ok {
+                return false;
+            }
+            let Ok(payload) = <(Address, Address)>::try_from_val(&env, &data) else {
+                return false;
+            };
+            payload.0 == old_owner && payload.1 == new_owner
+        });
+        assert!(found, "mtr_xfr event with old and new owner not emitted");
+        assert_eq!(client.get_meter(&meter_id).owner, new_owner);
     }
 
     /// register 3 meters for the same owner — get_meters_by_owner returns all 3.
@@ -1909,6 +2003,26 @@ mod tests {
         assert_eq!(page.len(), 0);
     }
 
+    /// Snapshot: offset=9999 on a 3-meter contract must return an empty page, not panic.
+    #[test]
+    fn test_get_all_meters_paginated_offset_9999_empty_page() {
+        let (env, client, _admin) = setup();
+        let user = Address::generate(&env);
+        let ids = [
+            String::from_str(&env, "O999_1"),
+            String::from_str(&env, "O999_2"),
+            String::from_str(&env, "O999_3"),
+        ];
+
+        client.allowlist_add(&user);
+        for id in ids.iter() {
+            client.register_meter(id, &user);
+        }
+
+        let page = client.get_all_meters_paginated(&9999_u32, &10_u32);
+        assert_eq!(page.len(), 0);
+    }
+
     /// get_all_meters_paginated caps limit at 100 to prevent overruns.
     #[test]
     fn test_get_all_meters_paginated_limit_capped_at_100() {
@@ -1991,7 +2105,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EV_ON");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
         client.set_active(&meter_id, &false);
@@ -2248,15 +2362,15 @@ mod tests {
         let user2 = Address::generate(&env);
         let user3 = Address::generate(&env);
 
-        allowlist_and_register(&client, &meter_valid1, &user1);
+        allowlist_and_register(&client, meter_valid1.clone(), &user1);
         token_admin_client.mint(&user1, &5_000_i128);
         client.make_payment(&meter_valid1, &user1, &5_000_i128, &PaymentPlan::UsageBased);
 
-        allowlist_and_register(&client, &meter_valid2, &user2);
+        allowlist_and_register(&client, meter_valid2.clone(), &user2);
         token_admin_client.mint(&user2, &5_000_i128);
         client.make_payment(&meter_valid2, &user2, &5_000_i128, &PaymentPlan::UsageBased);
 
-        allowlist_and_register(&client, &meter_valid3, &user3);
+        allowlist_and_register(&client, meter_valid3.clone(), &user3);
         token_admin_client.mint(&user3, &1_000_i128);
         client.make_payment(&meter_valid3, &user3, &1_000_i128, &PaymentPlan::UsageBased);
 
@@ -2335,7 +2449,7 @@ mod tests {
         let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
         let user = Address::generate(&env);
         let meter_id = symbol_short!("ORC_NS");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
 
@@ -2351,7 +2465,7 @@ mod tests {
         setup_oracle(&env, &client);
         let user = Address::generate(&env);
         let meter_id = symbol_short!("ORC_OK");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
 
@@ -2378,7 +2492,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EXISTING");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
 
         // Existing meter should return Some
         let existing = client.get_meter(&meter_id);
@@ -2505,7 +2619,7 @@ mod tests {
         let meter_id = symbol_short!("MIG_IDP");
 
         // Register creates a v2 meter.
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         let before = client.get_meter(&meter_id);
         assert_eq!(before.version, 2);
 
@@ -2584,7 +2698,7 @@ mod tests {
         let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
         let user = Address::generate(&env);
         let meter_id = symbol_short!("PD_DAY");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
 
         let before = env.ledger().timestamp();
@@ -2600,7 +2714,7 @@ mod tests {
         let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
         let user = Address::generate(&env);
         let meter_id = symbol_short!("PD_WEEK");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
 
         let before = env.ledger().timestamp();
@@ -2616,7 +2730,7 @@ mod tests {
         let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
         let user = Address::generate(&env);
         let meter_id = symbol_short!("PD_UB");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
 
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
@@ -2635,7 +2749,7 @@ mod tests {
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("DL_HIT");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
         client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
 
@@ -2660,7 +2774,7 @@ mod tests {
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("DL_RST");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
         client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
 
@@ -2689,7 +2803,7 @@ mod tests {
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("DL_UNL");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &100_000_i128);
         client.make_payment(&meter_id, &user, &100_000_i128, &PaymentPlan::UsageBased);
 
@@ -2711,7 +2825,7 @@ mod tests {
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("UA_DEACT");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
         client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
 
@@ -2741,13 +2855,13 @@ mod tests {
 
         let user1 = Address::generate(&env);
         let meter_id1 = String::from_slice(&env, "BM1".as_bytes());
-        allowlist_and_register(&client, &meter_id1, &user1);
+        allowlist_and_register(&client, meter_id1.clone(), &user1);
         token_admin_client.mint(&user1, &10_000_i128);
         client.make_payment(&meter_id1, &user1, &10_000_i128, &PaymentPlan::UsageBased);
 
         let user2 = Address::generate(&env);
         let meter_id2 = String::from_slice(&env, "BM2".as_bytes());
-        allowlist_and_register(&client, &meter_id2, &user2);
+        allowlist_and_register(&client, meter_id2.clone(), &user2);
         token_admin_client.mint(&user2, &10_000_i128);
         client.make_payment(&meter_id2, &user2, &10_000_i128, &PaymentPlan::UsageBased);
 
@@ -2784,7 +2898,7 @@ mod tests {
 
         let user = Address::generate(&env);
         let meter_id = symbol_short!("DL_DEACT");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
         client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
 
@@ -2803,13 +2917,28 @@ mod tests {
         assert_eq!(meter.day_spent, 0);
     }
 
+    #[test]
+    fn test_unfreeze_requires_frozen_state() {
+        let (_env, client, _admin, _token_address) = setup_with_token();
+        let result = client.try_unfreeze_contract();
+        assert_eq!(result, Err(Ok(ContractError::ContractNotFrozen)));
+    }
+
+    #[test]
+    fn test_unfreeze_requires_oracle_configured() {
+        let (_env, client, _admin, _token_address) = setup_with_token();
+        client.freeze_contract();
+        let result = client.try_unfreeze_contract();
+        assert_eq!(result, Err(Ok(ContractError::OracleNotSet)));
+    }
+
     /// set_daily_limit with negative value returns InvalidAmount.
     #[test]
     fn test_set_daily_limit_negative_returns_invalid_amount() {
         let (env, client, _admin, _token_address) = setup_with_token();
         let user = Address::generate(&env);
         let meter_id = symbol_short!("DL_NEG");
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
 
         let result = client.try_set_daily_limit(&meter_id, &-1_i128);
         assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
@@ -2918,6 +3047,42 @@ mod tests {
         assert_eq!(client.get_collaborator_share(&unknown), None);
     }
 
+    // ── Issue #589: remove_collaborator ───────────────────────────────────────
+
+    /// Happy path: remove deletes the address from COLLABS and SHARES and leaves
+    /// remaining total within the 10 000 basis-point cap.
+    #[test]
+    fn test_remove_collaborator_happy_path() {
+        let (env, client, _admin) = setup();
+        let alice = Address::generate(&env);
+        let bob = Address::generate(&env);
+
+        client.add_collaborator(&alice, &6_000_u32);
+        client.add_collaborator(&bob, &3_000_u32);
+
+        client.remove_collaborator(&alice);
+
+        let collabs = client.get_collaborators();
+        assert_eq!(collabs.len(), 1);
+        assert_eq!(collabs.get(0).unwrap(), bob);
+
+        let shares = client.get_all_shares();
+        assert_eq!(shares.get(alice.clone()), None);
+        assert_eq!(shares.get(bob.clone()).unwrap(), 3_000);
+
+        let total: u32 = shares.values().iter().sum();
+        assert!(total <= 10_000);
+    }
+
+    /// Removing an address that is not a collaborator returns CollaboratorNotFound.
+    #[test]
+    fn test_remove_collaborator_missing_address() {
+        let (env, client, _admin) = setup();
+        let unknown = Address::generate(&env);
+        let result = client.try_remove_collaborator(&unknown);
+        assert_eq!(result, Err(Ok(ContractError::CollaboratorNotFound)));
+    }
+
     // ── Issue #415: freeze_contract / emergency_withdraw ──────────────────────
 
     #[test]
@@ -2961,7 +3126,7 @@ mod tests {
         let user = Address::generate(&env);
         let meter_id = symbol_short!("EXP_MTR");
 
-        allowlist_and_register(&client, &meter_id, &user);
+        allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly);
         assert!(client.get_meter(&meter_id).active);
@@ -2980,5 +3145,3 @@ mod tests {
         assert_eq!(result, Err(Ok(ContractError::MeterNotFound)));
     }
 }
-
-mod test;

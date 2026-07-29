@@ -103,6 +103,27 @@ services:
     networks:
       - app-network
 
+  frontend-https:
+    profiles:
+      - https
+    build:
+      context: ./frontend
+      args:
+        - VITE_CONTRACT_ID=${VITE_CONTRACT_ID}
+        - VITE_BACKEND_URL=${VITE_BACKEND_URL}
+        - VITE_RPC_URL=${VITE_RPC_URL}
+        - VITE_NETWORK_PASSPHRASE=${VITE_NETWORK_PASSPHRASE}
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./certs:/etc/nginx/certs:ro
+      - ./frontend/nginx-https.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
 networks:
   app-network:
     driver: bridge

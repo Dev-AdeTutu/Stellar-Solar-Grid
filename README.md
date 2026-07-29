@@ -1,6 +1,7 @@
 # Stellar SolarGrid
 
 [![CI](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/ci.yml/badge.svg)](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/ci.yml)
+[![Backend Tests](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/backend-test.yml/badge.svg)](https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/actions/workflows/backend-test.yml)
 
 > Powering Africa with affordable, pay-as-you-go solar energy on blockchain.
 

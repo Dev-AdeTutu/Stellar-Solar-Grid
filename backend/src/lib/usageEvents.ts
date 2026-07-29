@@ -261,6 +261,35 @@ export async function retryQueuedUsageEvents() {
   }
 }
 
+export type TopConsumer = {
+  meterId: string;
+  totalUnits: number;
+  rank: number;
+};
+
+/** Top consumers by total units used over the last `days` days. */
+export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `
+        SELECT meter_id AS meterId, SUM(units) AS totalUnits
+        FROM usage_events
+        WHERE received_at >= ?
+        GROUP BY meter_id
+        ORDER BY totalUnits DESC
+        LIMIT ?
+      `
+    )
+    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
+
+  return rows.map((row, index) => ({
+    meterId: row.meterId,
+    totalUnits: row.totalUnits,
+    rank: index + 1,
+  }));
+}
+
 function getUsageEventById(id: number): UsageEventRecord | undefined {
   return db
     .prepare("SELECT * FROM usage_events WHERE id = ?")
@@ -385,4 +414,51 @@ export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined
     return undefined;
   }
   return getUsageEventById(id);
+}
+
+// ── Health check ─────────────────────────────────────────────────────────────
+
+/**
+ * #531 — Returns a lightweight health snapshot for the usage-event store.
+ *
+ * - `reachable`: false only if the SQLite DB itself throws (e.g. file locked /
+ *   corrupted), which would mean events are being silently dropped.
+ * - `retryWorkerRunning`: true when startUsageEventRetryWorker() has been
+ *   called and the interval is still live.
+ * - `pendingCount`: events waiting to be submitted — a proxy for "retry backlog".
+ * - `failedCount`: events that exhausted all retry attempts. Accumulation here
+ *   warrants operator attention.
+ */
+export type UsageEventStoreHealth = {
+  reachable: boolean;
+  retryWorkerRunning: boolean;
+  pendingCount: number;
+  failedCount: number;
+};
+
+export function getUsageEventStoreHealth(): UsageEventStoreHealth {
+  let reachable = false;
+  let pendingCount = 0;
+  let failedCount = 0;
+
+  try {
+    const pending = db
+      .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'pending'")
+      .get() as { count: number };
+    const failed = db
+      .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'")
+      .get() as { count: number };
+    pendingCount = pending.count;
+    failedCount = failed.count;
+    reachable = true;
+  } catch {
+    // reachable stays false
+  }
+
+  return {
+    reachable,
+    retryWorkerRunning: retryTimer !== undefined,
+    pendingCount,
+    failedCount,
+  };
 }
