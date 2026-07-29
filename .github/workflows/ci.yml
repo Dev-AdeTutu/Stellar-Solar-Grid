@@ -6,6 +6,22 @@ on:
   pull_request:
 
 jobs:
+  # Closes #538: guard against duplicate package.json keys.
+  # Standard JSON.parse() silently keeps the last occurrence, so npm install
+  # succeeding is NOT sufficient proof a package.json is duplicate-free.
+  check-pkg-duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check for duplicate keys in package.json files
+        run: |
+          node scripts/check-duplicate-pkg-keys.js \
+            backend/package.json \
+            frontend/package.json
+
   contract:
     runs-on: ubuntu-latest
     steps:

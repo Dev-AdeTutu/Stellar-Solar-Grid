@@ -41,6 +41,11 @@ export const UsageUpdateSchema = z
   })
   .strict();
 
+/** MQTT payload schema — extends UsageUpdateSchema with meterId from the topic. */
+export const MqttPayloadSchema = UsageUpdateSchema.extend({
+  meterId: z.string().min(1),
+});
+
 export const MeterNoteSchema = z
   .object({
     text: z

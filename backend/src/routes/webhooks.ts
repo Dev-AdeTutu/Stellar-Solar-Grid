@@ -108,23 +108,6 @@ webhookRouter.post(
     }),
   }),
   asyncHandler(async (req, res) => {
-    const { webhook_url, secret } = req.body as {
-      webhook_url: string;
-      secret?: string;
-    };
-
-    // For now, store in environment variables (in production, use a database).
-    process.env.PROVIDER_WEBHOOK_URL = webhook_url;
-
-    let secretHash: string | undefined;
-    if (secret) {
-      process.env.PROVIDER_WEBHOOK_SECRET = secret;
-      secretHash = crypto.createHash("sha256").update(secret).digest("hex");
-    }
-
-    logger.info("Low-balance webhook registered", {
-      webhook_url,
-      secretHash,
     const providerId = getProviderId(req);
     if (!providerId) {
       return res.status(400).json({
@@ -133,13 +116,23 @@ webhookRouter.post(
       });
     }
 
-    const { webhook_url } = req.body;
+    const { webhook_url, secret } = req.body as {
+      webhook_url: string;
+      secret?: string;
+    };
+
+    let secretHash: string | undefined;
+    if (secret) {
+      process.env.PROVIDER_WEBHOOK_SECRET = secret;
+      secretHash = crypto.createHash("sha256").update(secret).digest("hex");
+    }
 
     const record = registerWebhook(providerId, webhook_url);
 
     logger.info("Low-balance webhook registered", {
       provider_id: providerId,
       webhook_url,
+      secretHash,
     });
 
     return res.status(200).json({

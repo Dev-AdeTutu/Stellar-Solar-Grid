@@ -86,6 +86,7 @@ A Makefile is provided at the repository root to simplify common development and
 - **Invoke functions**:
   - `make invoke-register CONTRACT_ID=<id> ADMIN_SECRET_KEY=<key> METER_ID=<meter_id> OWNER=<owner>` registers a new meter.
   - `make invoke-allowlist CONTRACT_ID=<id> ADMIN_SECRET_KEY=<key> OWNER=<owner>` adds an owner to the allowlist.
+- **Bulk migrate all meters**: `make migrate-all CONTRACT_ID=<id> ADMIN_SECRET_KEY=<key>` — see [Contract Upgrades](#contract-upgrades) below.
 - **Backend Logs**: `make logs` streams Docker Compose logs for the backend.
 
 ### Smart Contracts Deployment CI/CD
@@ -127,8 +128,25 @@ You can run the Prometheus and Grafana observability stack alongside the backend
 docker compose --profile observability up --build
 ```
 
-- **Prometheus** scrapes the backend metrics (`/metrics`) every 15 seconds, and is accessible at `http://localhost:9090`.
+- **Prometheus** scrapes the backend metrics endpoint (`GET /metrics`) every 15 seconds via `infra/prometheus.yml`, and is accessible at `http://localhost:9090`.
 - **Grafana** is preconfigured with the Prometheus datasource and is accessible at `http://localhost:3000` (default credentials: `admin` / `admin`). It features dashboard panels for MQTT messages/min, contract calls by method/status, and error rates.
+
+#### `/metrics` — intentionally public (closes #537)
+
+The `GET /metrics` endpoint exposes Prometheus text-format data with **no authentication**. This is by design: Prometheus's pull model requires unauthenticated HTTP GET access to scrape metrics from a target.
+
+**Why this is safe in the default deployment:** the backend container port `3001` is attached only to the internal Docker `app-network` and is not forwarded to a public interface. The Prometheus container scrapes it from within that private network. External traffic never reaches `/metrics`.
+
+**If you expose the backend on a public port** (e.g. via a reverse proxy or `ports: "3001:3001"` in `docker-compose.override.yml`), you should restrict access to `/metrics` at the proxy layer — for example:
+
+```nginx
+# nginx — deny external access to /metrics
+location /metrics {
+    deny all;
+}
+```
+
+Or allow only the Prometheus container's IP via a firewall rule. A `METRICS_ALLOWED_CIDRS` env-var-driven IP-allowlist middleware can also be added to `backend/src/index.ts` in a future hardening pass.
 
 ## Smart Contract Overview
 
@@ -180,18 +198,34 @@ The `Meter` struct carries a `version: u32` field (currently `1`). When the stru
 ### Migration flow
 
 1. Deploy the new contract WASM (the old entries remain in persistent storage).
-2. For each registered meter, call the admin-only `migrate_meter(meter_id)` function.  
-   It reads the entry as the previous schema (`LegacyMeter`) and writes it back as the current `Meter` v1.
-3. Once all entries are migrated, the `LegacyMeter` type and `migrate_meter_v0` helper can be removed in a subsequent release.
+2. Run the bulk migration helper to migrate every registered meter in one pass:
 
-```bash
-# Example: migrate a single meter via Stellar CLI
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source <ADMIN_SECRET> \
-  --network testnet \
-  -- migrate_meter --meter_id METER1
-```
+   ```bash
+   # Recommended: migrate all meters at once (closes #536)
+   make migrate-all CONTRACT_ID=<id> ADMIN_SECRET_KEY=<key> NETWORK=testnet
+   ```
+
+   The script calls `get_all_meters` to fetch every registered meter ID, then
+   calls `migrate_meter(meter_id)` for each one, logging per-meter
+   success/failure and printing a final summary.  Exit code is `0` only when
+   all meters succeed, so it integrates cleanly into CI pipelines.
+
+   ```bash
+   # Dry-run: list meters without sending any transactions
+   make migrate-all CONTRACT_ID=<id> ADMIN_SECRET_KEY=<key> DRY_RUN=true
+   ```
+
+3. Alternatively, migrate a single meter manually via the Stellar CLI:
+
+   ```bash
+   stellar contract invoke \
+     --id <CONTRACT_ID> \
+     --source <ADMIN_SECRET> \
+     --network testnet \
+     -- migrate_meter --meter_id METER1
+   ```
+
+4. Once all entries are migrated, the `LegacyMeter` type and `migrate_meter_v0` helper can be removed in a subsequent release.
 
 > **Note:** `migrate_meter` is idempotent per entry — calling it on an already-migrated meter will overwrite with the same data. Always test migrations on testnet before mainnet.
 

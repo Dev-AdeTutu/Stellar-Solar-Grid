@@ -84,7 +84,7 @@ async function getPriority(meterId: string): Promise<number> {
 async function checkAndNotifyLowBalance(meterId: string) {
   // Read fresh each call — /api/webhooks/low-balance may register a URL
   // after this module was first loaded.
-  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL ?? WEBHOOK_URL;
+  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
   if (!webhookUrl) return;
   const urls = getWebhookUrls();
   if (urls.size === 0) return;
