@@ -13,7 +13,7 @@ import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
-import { UsageUpdateSchema, MqttPayloadSchema } from "../lib/validation.js";
+import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
   contractQuery,
@@ -84,7 +84,7 @@ async function getPriority(meterId: string): Promise<number> {
 async function checkAndNotifyLowBalance(meterId: string) {
   // Read fresh each call — /api/webhooks/low-balance may register a URL
   // after this module was first loaded.
-  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL ?? WEBHOOK_URL;
+  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
   if (!webhookUrl) return;
   const urls = getWebhookUrls();
   if (urls.size === 0) return;
@@ -164,7 +164,7 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
   }
 
   // Merge meterId from the topic so the full { meterId, units, cost } triple is validated together
-  const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
+  const parsed = UsageUpdateSchema.safeParse(raw as object);
   if (!parsed.success) {
     logger.error("Invalid MQTT payload (schema validation failed)", {
       event: "mqtt_payload_invalid",
@@ -309,7 +309,7 @@ function startMqttBridge() {
         return;
       }
 
-      const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
+      const parsed = UsageUpdateSchema.safeParse(raw as object);
       if (!parsed.success) {
         logger.error("Invalid MQTT payload (schema validation failed)", {
           event: "mqtt_payload_invalid",
