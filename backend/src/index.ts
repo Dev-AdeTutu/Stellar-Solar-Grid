@@ -16,30 +16,23 @@ import { deadLettersRouter } from "./routes/deadLetters.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
 import { startIoTBridge } from "./iot/bridge.js";
-import { requestLogger } from "./middleware/requestLogger.js";
 import { logger } from "./lib/logger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter } from "./middleware/rateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
-import rateLimit from "express-rate-limit";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
   countDeadLetterEvents,
 } from "./lib/usageEvents.js";
-
-const _require = createRequire(import.meta.url);
-const { version } = _require("../../package.json") as { version: string };
-
-const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
-if (missing.length > 0) {
-  logger.fatal(
-    { missing },
-    "Missing required environment variables. Copy backend/.env.example to backend/.env.",
-  );
-  process.exit(1);
-}
+import { adminLoginRouter } from "./routes/adminLogin.js";
+import { allowlistRouter } from "./routes/allowlist.js";
+import { collaboratorRouter } from "./routes/collaborators.js";
+import { smsConfigRouter } from "./routes/smsConfig.js";
+import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { getReqId } from "./lib/requestContext.js";
+import { initMeterNotesStore } from "./lib/meterNotes.js";
 
 const PORT = process.env.PORT ?? 3001;
 // #423: configurable body size limit
@@ -83,29 +76,13 @@ app.use((req: any, _res: any, next: any) => {
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
-app.use("/api/meters", meterRouter);
-app.use("/api/payments", paymentsRouter);
-app.use("/api/webhooks", webhookRouter);
-app.use("/api/config", configRouter);
-app.use("/api/stats", statsRouter);
-// ── Routes ──────────────────────────────────────────────────────────────────────────────
-
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", paymentsLimiter, paymentsRouter);
+app.use("/api/payments", writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
-app.use("/api/payments", paymentsRouter);
-app.use("/api/webhooks", webhookRouter);
 app.use("/api/stats", statsRouter);
-
-app.get('/health', async (_req, res) => {
-  const checks: Record<string, string> = {};
-});
 app.use("/api/collaborators", collaboratorRouter);
-app.use("/api/allowlist", allowlistRouter);
-app.use("/api/collaborators", collaboratorRouter);
-app.use("/api/stats", statsRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
@@ -189,10 +166,10 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   if ((err as any).status === 404) {
     return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND", requestId });
   }
-  if (e.code === "VALIDATION_ERROR" && e.details) {
+  if (err.code === "VALIDATION_ERROR" && err.details) {
     return res
       .status(400)
-      .json({ error: "Validation failed", code: "VALIDATION_ERROR", details: e.details });
+      .json({ error: "Validation failed", code: "VALIDATION_ERROR", details: err.details, requestId });
   }
   res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR", requestId });
 });

@@ -126,6 +126,11 @@ async function testOpenAPIValidation() {
     { path: "/api/webhooks/sms-payment", methods: ["POST"] },
     { path: "/api/webhooks/low-balance", methods: ["POST", "DELETE"] },
     { path: "/api/webhooks", methods: ["GET"] },
+    { path: "/api/webhooks/:id/deliveries", methods: ["GET"] },
+
+    // Solar
+    { path: "/api/solar/forecast", methods: ["GET"] },
+    { path: "/api/solar/irradiance-zones", methods: ["GET"] },
 
     // Allowlist
     { path: "/api/allowlist", methods: ["GET", "POST"] },
