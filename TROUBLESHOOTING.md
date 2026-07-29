@@ -312,12 +312,28 @@ Restart the backend after changing this value.
 
 **Symptom**
 ```json
-{"status":"degraded","dependencies":{"stellarRpc":"unreachable","mqtt":"unreachable"}}
+{
+  "status": "degraded",
+  "dependencies": {
+    "stellarRpc": "unreachable",
+    "mqtt": "unreachable",
+    "usageEventStore": "unreachable"
+  },
+  "usageEventStore": {
+    "reachable": false,
+    "retryWorkerRunning": false,
+    "pendingCount": 0,
+    "failedCount": 0
+  }
+}
 ```
 
 **Fix**
 - **stellarRpc unreachable:** Check `STELLAR_RPC_URL` is correct and the endpoint is up.
 - **mqtt unreachable:** Ensure the MQTT broker container is running and `MQTT_BROKER` uses the correct host/port.
+- **usageEventStore unreachable:** The SQLite database file is inaccessible (permissions issue, disk full, or corrupted WAL). Check `USAGE_EVENTS_DB_PATH` and the permissions of `backend/data/`.
+- **usageEventStore degraded (reachable but retryWorkerRunning: false):** The retry worker was not started. This should not happen in normal operation — check `docker compose logs backend` for startup errors.
+- **failedCount > 0:** Usage events have permanently failed after exhausting retries. Use `GET /api/usage-events?status=failed` to inspect them and `POST /api/usage-events/:id/replay` to retry manually.
 
 ---
 
@@ -329,19 +345,29 @@ Restart the backend after changing this value.
 Backend logs:
 ```
 ERROR Max MQTT reconnect attempts reached. IoT bridge stopped.
+FATAL Exiting process after MQTT reconnect exhaustion — expecting Docker/supervisor restart
 ```
 
 **Cause**  
 The broker was unreachable for longer than `MQTT_MAX_RECONNECT_ATTEMPTS` attempts (default: 10).
 
-**Fix**
-```bash
-# Restart the backend service (or the full stack)
-docker compose restart backend
+**Recovery (automatic)**  
+The bridge now calls `process.exit(1)` when reconnect attempts are exhausted so Docker's restart policy (`restart: unless-stopped` or `on-failure`) automatically brings it back.  No manual `docker compose restart backend` is needed when the broker comes back online.
 
-# Optionally increase the retry limit in backend/.env:
+The Prometheus gauge `solargrid_mqtt_reconnect_exhausted` flips to `1` at the moment of exhaustion — the **MQTT Reconnect Exhausted** panel in the SolarGrid Observability Grafana dashboard shows this and can be used to fire an alert.
+
+**Manual override / tuning**  
+```bash
+# Increase the attempt limit before exit (optional)
+# backend/.env
 MQTT_MAX_RECONNECT_ATTEMPTS=20
+
+# Then restart
+docker compose restart backend
 ```
+
+**Grafana alert (recommended)**  
+Create an alert rule on `solargrid_mqtt_reconnect_exhausted >= 1` to page on-call when the bridge exhausts its reconnect budget.
 
 ---
 

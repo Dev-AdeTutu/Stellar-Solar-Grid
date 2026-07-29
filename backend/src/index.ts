@@ -1,6 +1,16 @@
 import "dotenv/config";
+import express from "express";
+import { NextFunction, Request, Response } from "express";
+import { meterRouter } from "./routes/meters.js";
+import { paymentsRouter } from "./routes/payments.js";
+import { webhookRouter } from "./routes/webhooks.js";
+import { configRouter } from "./routes/config.js";
+import { statsRouter } from "./routes/stats.js";
+import { startIoTBridge } from "./iot/bridge.js";
+import { register } from "./lib/metrics.js";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
+import compression from "compression";
 import timeout from "connect-timeout";
 import mqtt from "mqtt";
 import helmet from "helmet";
@@ -32,7 +42,9 @@ import rateLimit from "express-rate-limit";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
+  getUsageEventStoreHealth,
 } from "./lib/usageEvents.js";
+import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
 import { createRequire } from "module";
 
@@ -66,6 +78,12 @@ app.use(helmet({
   },
   hsts: { maxAge: 31536000, includeSubDomains: true },
 }));
+
+// #599: gzip/brotli-compress responses over 1 KB (e.g. large meter-list
+// payloads). `compression` negotiates the best encoding the client
+// advertises via Accept-Encoding (br when supported, else gzip/deflate)
+// and leaves small responses untouched below the threshold.
+app.use(compression({ threshold: 1024 }));
 
 const allowedOrigins = (process.env.CORS_ORIGIN ?? '*').split(',').map(o => o.trim());
 
@@ -146,6 +164,11 @@ app.use((req, _res, next) => {
   next();
 });
 
+app.use("/api/meters", meterRouter);
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
+app.use("/api/config", configRouter);
+app.use("/api/stats", statsRouter);
 // ── Routes ──────────────────────────────────────────────────────────────────────────────
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
@@ -193,7 +216,11 @@ app.get("/api/health", async (_req, res) => {
     logger.warn("MQTT health check failed");
   }
 
-  const healthy = rpcOk && mqttOk;
+  // #531: Check usage-event store (SQLite reachability + retry-worker liveness)
+  const usageStore = getUsageEventStoreHealth();
+  const usageStoreOk = usageStore.reachable && usageStore.retryWorkerRunning;
+
+  const healthy = rpcOk && mqttOk && usageStoreOk;
   res.status(healthy ? 200 : 503).json({
     status: healthy ? "ok" : "degraded",
     version,
@@ -201,6 +228,17 @@ app.get("/api/health", async (_req, res) => {
     dependencies: {
       stellarRpc: rpcOk ? "ok" : "unreachable",
       mqtt: mqttOk ? "ok" : "unreachable",
+      usageEventStore: usageStoreOk
+        ? "ok"
+        : !usageStore.reachable
+          ? "unreachable"
+          : "degraded",
+    },
+    usageEventStore: {
+      reachable: usageStore.reachable,
+      retryWorkerRunning: usageStore.retryWorkerRunning,
+      pendingCount: usageStore.pendingCount,
+      failedCount: usageStore.failedCount,
     },
   });
 });
@@ -252,6 +290,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
+  initMeterNotesStore();
   startUsageEventRetryWorker();
   logger.info("SolarGrid backend listening", { port: PORT });
   startLimitWatcher(stellarService);

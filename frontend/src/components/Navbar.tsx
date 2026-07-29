@@ -2,20 +2,25 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useTranslations } from "next-intl";
 import { useWalletStore } from "@/store/walletStore";
 import { WalletConnectButton } from "@/components/WalletConnectButton";
-
-const NAV_LINKS = [
-  { href: "/dashboard/user", label: "My Meter" },
-  { href: "/pay", label: "Pay" },
-  { href: "/dashboard/provider", label: "Provider" },
-  { href: "/history", label: "History" },
-];
+import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
+import { useLocale } from "@/components/I18nProvider";
 
 export default function Navbar() {
   const { connectError, clearConnectError } = useWalletStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setTheme] = useState("dark");
+  const t = useTranslations("nav");
+  const { toggleLocale } = useLocale();
+
+  const NAV_LINKS = [
+    { href: "/dashboard/user", label: t("myMeter") },
+    { href: "/pay", label: t("pay") },
+    { href: "/dashboard/provider", label: t("provider") },
+    { href: "/history", label: t("history") },
+  ];
 
   useEffect(() => {
     const savedTheme = localStorage.getItem("theme") ?? "dark";
@@ -39,7 +44,7 @@ export default function Navbar() {
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
         <Link href="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>
-          ☀️ SolarGrid
+          ☀️ {t("brand")}
         </Link>
 
         {/* Desktop links */}
@@ -53,21 +58,38 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label="Toggle theme">
+          {/* Language toggle */}
+          <button
+            onClick={toggleLocale}
+            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+            aria-label={t("languageLabel")}
+            title={t("languageLabel")}
+          >
+            {t("languageToggle")}
+          </button>
+          <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
           <WalletConnectButton />
         </div>
 
-        {/* Mobile: wallet button + hamburger */}
+        {/* Mobile: language toggle + wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label="Toggle theme">
+          <button
+            onClick={toggleLocale}
+            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+            aria-label={t("languageLabel")}
+            title={t("languageLabel")}
+          >
+            {t("languageToggle")}
+          </button>
+          <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
           <WalletConnectButton compact />
           <button
             onClick={() => setMenuOpen((o) => !o)}
-            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            aria-label={menuOpen ? t("closeMenu") : t("openMenu")}
             aria-expanded={menuOpen}
             className="rounded-lg border border-white/10 p-2 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
           >
@@ -128,6 +150,9 @@ export default function Navbar() {
           ))}
         </div>
       )}
+
+      {/* Network mismatch banner — shown below nav when wallet is on the wrong network */}
+      <NetworkMismatchBanner />
     </nav>
   );
 }

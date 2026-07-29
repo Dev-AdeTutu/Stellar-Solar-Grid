@@ -171,3 +171,50 @@ input, select, textarea {
   border-radius: 999px;
   vertical-align: middle;
 }
+
+/* ── Print styles for /meters/[id]/report ───────────────────────────────── */
+@media print {
+  /* Hide all navigation, buttons, and interactive elements */
+  nav,
+  .no-print,
+  button:not(.print-btn) {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+    font-size: 12pt;
+  }
+
+  /* Remove decorative backgrounds on print */
+  .print-report * {
+    background: transparent !important;
+    color: black !important;
+    box-shadow: none !important;
+  }
+
+  .print-report .border,
+  .print-report [class*="border-"] {
+    border-color: #333 !important;
+  }
+
+  /* Ensure QR code prints correctly */
+  .print-report canvas {
+    background: white !important;
+  }
+
+  /* Remove Tailwind dark text overrides for print */
+  .print-report .text-white,
+  .print-report .text-gray-300,
+  .print-report .text-gray-400,
+  .print-report .text-gray-500 {
+    color: black !important;
+  }
+
+  .print-report .text-solar-yellow,
+  .print-report .text-green-400,
+  .print-report .text-red-400 {
+    color: black !important;
+  }
+}
