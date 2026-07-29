@@ -1222,6 +1222,10 @@ impl SolarGridContract {
             meter.day_start = now;
         }
         if meter.daily_limit > 0 && meter.day_spent.saturating_add(cost) > meter.daily_limit {
+            env.events().publish(
+                (EVT_NS, symbol_short!("limit_hit"), meter_id.clone()),
+                (meter.daily_limit, meter.day_spent, cost),
+            );
             return Err(ContractError::DailyLimitReached);
         }
         meter.day_spent = meter.day_spent.saturating_add(cost);
@@ -2824,6 +2828,32 @@ mod tests {
         // Second call would push day_spent (400 + 200 = 600) over the 500 cap.
         let result = client.try_update_usage(&meter_id, &1_u64, &200_i128);
         assert_eq!(result, Err(Ok(ContractError::DailyLimitReached)));
+    }
+
+    #[test]
+    fn test_daily_limit_hit_emits_limit_hit_event() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("DL_EVT");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.set_daily_limit(&meter_id, &500_i128);
+
+        let result = client.try_update_usage(&meter_id, &1_u64, &600_i128);
+        assert_eq!(result, Err(Ok(ContractError::DailyLimitReached)));
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, _)| {
+            topics.len() >= 3
+                && topics.get(0) == Some(EVT_NS.into())
+                && topics.get(1) == Some(symbol_short!("limit_hit").into())
+                && topics.get(2) == Some(meter_id.clone().into())
+        });
+        assert!(found, "limit_hit event not emitted");
     }
 
     /// After 24 h the window resets and spending is allowed again.

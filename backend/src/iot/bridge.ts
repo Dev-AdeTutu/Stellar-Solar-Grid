@@ -397,7 +397,7 @@ async function pollContractEvents() {
   }
 }
 
-async function handleContractEvent(
+export async function handleContractEvent(
   event: StellarSdk.SorobanRpc.Api.EventResponse,
 ) {
   try {
@@ -462,6 +462,13 @@ async function handleContractEvent(
       case "solargrid:mtr_deact": {
         const meterId = subject;
         logger.info("meter_deactivated contract event", { meterId });
+        await onMeterDeactivated(meterId);
+        break;
+      }
+
+      case "solargrid:limit_hit": {
+        const meterId = subject;
+        logger.info("limit_hit contract event received", { meterId });
         await onMeterDeactivated(meterId);
         break;
       }
