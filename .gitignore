@@ -4,6 +4,9 @@ target/
 .env
 .env.local
 .env.*.local
+
+# mkcert-generated certificates (never commit private keys)
+certs/
 *.wasm
 .DS_Store
 logs/

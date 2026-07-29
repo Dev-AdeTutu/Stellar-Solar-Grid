@@ -13,7 +13,7 @@ import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
-import { UsageUpdateSchema } from "../lib/validation.js";
+import { UsageUpdateSchema, MqttPayloadSchema } from "../lib/validation.js";
 import {
   adminInvoke,
   contractQuery,
@@ -21,7 +21,7 @@ import {
   CONTRACT_ID,
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { mqttMessages, activeMeters, paymentVolume } from "../lib/metrics.js";
+import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted } from "../lib/metrics.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -29,10 +29,7 @@ const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
 export function getMqttClient() { return mqttClient; }
-export function setMqttClientForTests(client: mqtt.MqttClient | null) {
-  mqttClient = client;
-}
-const FLUSH_INTERVAL_MS = Number(process.env.BATCH_FLUSH_MS ?? 5_000);
+const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
 );
@@ -166,9 +163,11 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
-  const parsed = UsageUpdateSchema.safeParse(raw);
+  // Merge meterId from the topic so the full { meterId, units, cost } triple is validated together
+  const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
   if (!parsed.success) {
     logger.error("Invalid MQTT payload (schema validation failed)", {
+      event: "mqtt_payload_invalid",
       topic,
       raw: rawStr,
       errors: parsed.error.flatten().fieldErrors,
@@ -230,8 +229,16 @@ function startMqttBridge() {
   client.on('reconnect', () => {
     reconnectAttempts++;
     if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      logger.error('MQTT reconnect attempts exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
-      client.end(); // stop reconnecting
+      logger.error('Max MQTT reconnect attempts reached. IoT bridge stopped.', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
+      // #528: flip the Prometheus gauge so Grafana alerting can page on-call
+      mqttReconnectExhausted.set(1);
+      client.end(true, () => {
+        // Exit the process so Docker's restart policy (restart: unless-stopped /
+        // on-failure) can bring the service back cleanly rather than leaving it
+        // in a permanently-broken, non-recovering state.
+        logger.fatal('Exiting process after MQTT reconnect exhaustion — expecting Docker/supervisor restart');
+        process.exit(1);
+      });
       return;
     }
     const delay = Math.min(1000 * 2 ** reconnectAttempts, 30_000);
@@ -302,9 +309,10 @@ function startMqttBridge() {
         return;
       }
 
-      const parsed = UsageUpdateSchema.safeParse(raw);
+      const parsed = MqttPayloadSchema.safeParse({ meterId, ...(raw as object) });
       if (!parsed.success) {
         logger.error("Invalid MQTT payload (schema validation failed)", {
+          event: "mqtt_payload_invalid",
           topic,
           errors: parsed.error.flatten().fieldErrors,
         });
@@ -530,22 +538,38 @@ async function onPaymentReceived(meterId: string, amountStroops: number) {
 }
 
 async function onMeterActivated(meterId: string) {
-  logger.info({ meterId }, 'Sending ON signal to meter relay');
+  const topic = `solargrid/meters/${meterId}/control`;
+  const command = 'ON';
+  logger.info({
+    event: 'relay_command',
+    meterId,
+    command,
+    topic,
+    ts: new Date().toISOString(),
+  }, 'Sending ON signal to meter relay');
   activeMeters.set({ meter_id: meterId }, 1);
   mqttClient?.publish(
-    `solargrid/meters/${meterId}/control`,
-    JSON.stringify({ cmd: 'ON', timestamp: new Date().toISOString() }),
+    topic,
+    JSON.stringify({ cmd: command, timestamp: new Date().toISOString() }),
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish ON command'); },
   );
 }
 
 async function onMeterDeactivated(meterId: string) {
-  logger.info({ meterId }, 'Sending OFF signal to meter relay');
+  const topic = `solargrid/meters/${meterId}/control`;
+  const command = 'OFF';
+  logger.warn({
+    event: 'relay_command',
+    meterId,
+    command,
+    topic,
+    ts: new Date().toISOString(),
+  }, 'Sending OFF signal to meter relay');
   activeMeters.set({ meter_id: meterId }, 0);
   mqttClient?.publish(
-    `solargrid/meters/${meterId}/control`,
-    JSON.stringify({ cmd: 'OFF', timestamp: new Date().toISOString() }),
+    topic,
+    JSON.stringify({ cmd: command, timestamp: new Date().toISOString() }),
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish OFF command'); },
   );

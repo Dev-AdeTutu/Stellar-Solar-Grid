@@ -37,6 +37,7 @@ const ALLOWLIST: Symbol = symbol_short!("ALLOWLIST");
 const TOKEN: Symbol = symbol_short!("TOKEN");
 const ORACLE: Symbol = symbol_short!("ORACLE");
 const METER_LIST: Symbol = symbol_short!("MLIST");
+const METER_COUNT: Symbol = symbol_short!("MCNT");
 const COLLABS: Symbol = symbol_short!("COLLABS");
 const SHARES: Symbol = symbol_short!("SHARES");
 const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
@@ -255,6 +256,11 @@ impl SolarGridContract {
         global_list.push_back(meter_id.clone());
         env.storage().instance().set(&METER_LIST, &global_list);
 
+        let count: u32 = env.storage().instance().get(&METER_COUNT).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&METER_COUNT, &(count.saturating_add(1)));
+
         // meter_registered
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_reg"), meter_id), owner);
@@ -269,6 +275,61 @@ impl SolarGridContract {
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env]))
+    }
+
+    /// Deregister an existing meter. Admin-only.
+    pub fn deregister_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let key = DataKey::Meter(meter_id.clone());
+        let meter = Self::get_meter_or_error(&env, &key)?;
+        env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::MeterBalance(meter_id.clone()));
+
+        let owner_key = DataKey::OwnerMeters(meter.owner);
+        let owner_list: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&owner_key)
+            .unwrap_or_else(|| vec![&env]);
+        let mut filtered_owner_list: Vec<String> = vec![&env];
+        for id in owner_list.iter() {
+            if id != meter_id {
+                filtered_owner_list.push_back(id);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&owner_key, &filtered_owner_list);
+
+        let global_list: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+        let mut filtered_global_list: Vec<String> = vec![&env];
+        for id in global_list.iter() {
+            if id != meter_id {
+                filtered_global_list.push_back(id);
+            }
+        }
+        env.storage().instance().set(&METER_LIST, &filtered_global_list);
+
+        let count: u32 = env.storage().instance().get(&METER_COUNT).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&METER_COUNT, &(count.saturating_sub(1)));
+
+        env.events()
+            .publish((EVT_NS, symbol_short!("mtr_dereg"), meter_id), ());
+        Ok(())
+    }
+
+    /// Return the number of registered meters.
+    pub fn get_meter_count(env: Env) -> Result<u32, ContractError> {
+        Self::require_initialized(&env)?;
+        Ok(env.storage().instance().get(&METER_COUNT).unwrap_or(0))
     }
 
     /// Transfer meter ownership from the current owner to a new owner.
