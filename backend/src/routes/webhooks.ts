@@ -2,9 +2,15 @@ import { Router } from "express";
 import * as crypto from "crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { stellarService } from "../lib/stellar.js";
-import { registerWebhook, getWebhookUrls } from "../lib/webhookRegistry.js";
+import {
+  registerWebhook,
+  unregisterWebhook,
+  getWebhookUrls,
+  getWebhooksByProvider,
+} from "../lib/webhookRegistry.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest } from "../lib/validation.js";
+import { requireAdminKey } from "../middleware/adminAuth.js";
 import { logger } from "../lib/logger.js";
 import { activeMeters, paymentVolume } from "../lib/metrics.js";
 import { z } from "zod";
@@ -23,6 +29,13 @@ function verifySignature(rawBody: Buffer, signature: string): boolean {
     "sha256=" +
     crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+}
+
+/**
+ * Extract provider_id from request. Requires X-Provider-ID header.
+ */
+function getProviderId(req: any): string | null {
+  return (req.headers["x-provider-id"] as string) || null;
 }
 
 /**
@@ -45,7 +58,7 @@ webhookRouter.post(
         signature,
       )
     ) {
-      return res.status(401).json({ error: "Invalid webhook signature" });
+      return res.status(401).json({ error: "Invalid webhook signature", code: "UNAUTHORIZED" });
     }
 
     const { meter_id, amount_xlm, plan } = req.body;
@@ -70,11 +83,88 @@ webhookRouter.post(
  * Register webhook URL for low-balance notifications.
  * Providers can configure their webhook endpoint to receive alerts
  * when a customer's meter balance drops below the threshold.
+ * Requires X-Admin-Key header.
+ *
+ * Requires X-Provider-ID header to scope webhooks per provider.
+ *
+ * Payload:
+ *   { "webhook_url": "https://example.com/webhook", "secret": "optional-signing-secret" }
+ *
+ * When a secret is provided, outbound low-balance webhook calls are signed
+ * with X-SolarGrid-Signature: sha256=HMAC-SHA256(secret, body). Only a hash
+ * of the secret is kept in the registry response/logs; the raw secret is
+ * held only in-process to sign outbound requests.
+ *   { "webhook_url": "https://example.com/webhook" }
+ *
+ * Closes #516.
+ */
+webhookRouter.post(
+  "/low-balance",
+  requireAdminKey,
+  validateRequest({
+    body: z.object({
+      webhook_url: z.string().url("Invalid webhook URL format"),
+      secret: z.string().min(1).optional(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { webhook_url, secret } = req.body as {
+      webhook_url: string;
+      secret?: string;
+    };
+
+    // For now, store in environment variables (in production, use a database).
+    process.env.PROVIDER_WEBHOOK_URL = webhook_url;
+
+    let secretHash: string | undefined;
+    if (secret) {
+      process.env.PROVIDER_WEBHOOK_SECRET = secret;
+      secretHash = crypto.createHash("sha256").update(secret).digest("hex");
+    }
+
+    logger.info("Low-balance webhook registered", {
+      webhook_url,
+      secretHash,
+    const providerId = getProviderId(req);
+    if (!providerId) {
+      return res.status(400).json({
+        error: "X-Provider-ID header is required",
+        code: "MISSING_PROVIDER_ID",
+      });
+    }
+
+    const { webhook_url } = req.body;
+
+    const record = registerWebhook(providerId, webhook_url);
+
+    logger.info("Low-balance webhook registered", {
+      provider_id: providerId,
+      webhook_url,
+    });
+
+    return res.status(200).json({
+      message: "Webhook registered successfully",
+      webhook_url,
+      secretHash,
+      provider_id: providerId,
+      id: record.id,
+      created_at: record.created_at,
+    });
+  }),
+);
+
+/**
+ * DELETE /api/webhooks/low-balance
+ *
+ * Unregister a webhook URL for low-balance notifications.
+ * Requires X-Provider-ID header.
  *
  * Payload:
  *   { "webhook_url": "https://example.com/webhook" }
+ *
+ * Closes #516.
  */
-webhookRouter.post(
+webhookRouter.delete(
   "/low-balance",
   validateRequest({
     body: z.object({
@@ -82,15 +172,33 @@ webhookRouter.post(
     }),
   }),
   asyncHandler(async (req, res) => {
+    const providerId = getProviderId(req);
+    if (!providerId) {
+      return res.status(400).json({
+        error: "X-Provider-ID header is required",
+        code: "MISSING_PROVIDER_ID",
+      });
+    }
+
     const { webhook_url } = req.body;
 
-    registerWebhook(webhook_url);
+    const deleted = unregisterWebhook(providerId, webhook_url);
+    if (!deleted) {
+      return res.status(404).json({
+        error: "Webhook not found for this provider",
+        code: "NOT_FOUND",
+      });
+    }
 
-    logger.info("Low-balance webhook registered", { webhook_url });
+    logger.info("Low-balance webhook unregistered", {
+      provider_id: providerId,
+      webhook_url,
+    });
 
     return res.status(200).json({
-      message: "Webhook registered successfully",
+      message: "Webhook unregistered successfully",
       webhook_url,
+      provider_id: providerId,
     });
   }),
 );
@@ -99,14 +207,27 @@ webhookRouter.post(
  * GET /api/webhooks
  *
  * List all registered low-balance webhook URLs.
+ * If X-Provider-ID header is provided, only return webhooks for that provider.
  */
 webhookRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const urls = Array.from(getWebhookUrls());
-    return res.status(200).json({
-      webhooks: urls,
-      count: urls.length,
-    });
+    const providerId = getProviderId(req);
+
+    if (providerId) {
+      const records = getWebhooksByProvider(providerId);
+      return res.status(200).json({
+        webhooks: records.map((r) => r.url),
+        provider_id: providerId,
+        count: records.length,
+        records,
+      });
+    } else {
+      const urls = Array.from(getWebhookUrls());
+      return res.status(200).json({
+        webhooks: urls,
+        count: urls.length,
+      });
+    }
   }),
 );

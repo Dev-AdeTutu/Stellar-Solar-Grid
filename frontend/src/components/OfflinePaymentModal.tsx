@@ -2,13 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { useOffline } from "@/hooks/useOffline";
+import { env } from "@/lib/env";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
-const FALLBACK_SHORTCODE = process.env.NEXT_PUBLIC_SMS_SHORTCODE ?? "20880";
+const SMS_SHORTCODE = env.NEXT_PUBLIC_SMS_SHORTCODE;
+const SMS_WEBHOOK_DOCS = env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS;
+const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 const SMS_CONFIG_CACHE_KEY = "sms-provider-config";
-const SMS_WEBHOOK_DOCS =
-  process.env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS ??
-  "https://github.com/damiedee96/Stellar-Solar-Grid/blob/main/backend/README.md";
 
 interface SmsProviderConfig {
   shortcode: string;

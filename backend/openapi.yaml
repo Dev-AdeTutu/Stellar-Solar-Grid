@@ -14,18 +14,51 @@ components:
       type: apiKey
       in: header
       name: X-Admin-Key
+    BearerAuth:
+      type: http
+      scheme: bearer
 
   schemas:
     Error:
       type: object
+      description: |
+        Standard error envelope returned by every endpoint on non-2xx responses.
+
+        All error responses share this shape:
+        ```json
+        { "error": "Human-readable message", "code": "MACHINE_READABLE_CODE" }
+        ```
+
+        Common `code` values:
+        | Code | HTTP status | Meaning |
+        |------|-------------|---------|
+        | `VALIDATION_ERROR` | 400 | Request body / query / params failed validation |
+        | `UNAUTHORIZED` | 401 | Missing or invalid credential (admin key, JWT, webhook signature) |
+        | `NOT_FOUND` | 404 | Requested resource does not exist |
+        | `IDEMPOTENCY_CONFLICT` | 409 | Concurrent request with the same Idempotency-Key is in-flight |
+        | `BATCH_SIZE_EXCEEDED` | 400 | Batch request exceeds the allowed limit |
+        | `MISSING_PROVIDER_ID` | 400 | X-Provider-ID header is required but absent |
+        | `RPC_ERROR` | 502 | Soroban RPC node is unreachable or returned an error |
+        | `CONTRACT_ERROR` | 500 | Smart-contract call failed |
+        | `INTERNAL_ERROR` | 500 | Unexpected server error |
+        | `SERVER_MISCONFIGURATION` | 503 | Required environment variable is not set |
+        | `PAYLOAD_TOO_LARGE` | 413 | Request body exceeds the 100 kb limit |
+        | `INVALID_JSON` | 400 | Request body is not valid JSON |
+        | `TIMEOUT` | 504 | Request exceeded the server-side timeout |
       required: [error, code]
       properties:
         error:
           type: string
+          description: Human-readable error message.
         code:
           type: string
+          description: Machine-readable error code (see table above).
         hint:
           type: string
+          description: Optional additional guidance for the caller.
+        details:
+          type: object
+          description: Optional structured validation details (present on VALIDATION_ERROR responses).
 
     ValidationError:
       allOf:
@@ -89,6 +122,20 @@ components:
           type: integer
         daily_limit:
           type: integer
+
+    MeterNote:
+      type: object
+      required: [id, meter_id, text, created_at]
+      properties:
+        id:
+          type: integer
+        meter_id:
+          type: string
+        text:
+          type: string
+        created_at:
+          type: string
+          format: date-time
 
     PaymentRecord:
       type: object
@@ -325,7 +372,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Meter data
+          description: Meter data with latest admin notes
           content:
             application/json:
               schema:
@@ -333,6 +380,52 @@ paths:
                 properties:
                   meter:
                     $ref: '#/components/schemas/Meter'
+                  notes:
+                    type: array
+                    maxItems: 5
+                    items:
+                      $ref: '#/components/schemas/MeterNote'
+                    description: Latest 5 admin notes, newest first
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/meters/{id}/note:
+    post:
+      operationId: addMeterNote
+      summary: Add a free-text admin annotation for a meter
+      tags: [Meters]
+      security:
+        - AdminKey: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  minLength: 1
+                  maxLength: 2000
+                  description: Free-text admin annotation
+      responses:
+        '201':
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeterNote'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
 
@@ -764,6 +857,8 @@ paths:
     post:
       operationId: registerLowBalanceWebhook
       summary: Register a webhook URL for low-balance notifications
+      security:
+        - AdminKey: []
       tags: [Webhooks]
       requestBody:
         required: true
@@ -790,6 +885,189 @@ paths:
                     type: string
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    delete:
+      operationId: unregisterLowBalanceWebhook
+      summary: Unregister a webhook URL for low-balance notifications
+      description: Removes a previously registered webhook URL for this provider.
+      tags: [Webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [webhook_url]
+              properties:
+                webhook_url:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Webhook unregistered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  webhook_url:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/webhooks:
+    get:
+      operationId: listWebhooks
+      summary: List registered low-balance webhooks
+      description: Returns webhooks registered by this provider (if X-Provider-ID header provided) or all webhooks.
+      tags: [Webhooks]
+      responses:
+        '200':
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      type: string
+                  count:
+                    type: integer
+
+  /api/payments:
+    post:
+      operationId: submitPayment
+      summary: Submit a payment
+      description: |
+        Submit a payment on-chain for a meter.
+
+        Supports the `Idempotency-Key` request header. Supply a unique,
+        client-generated key (UUID v4 recommended) per logical payment attempt.
+        The server caches the response for 24 hours; any retry carrying the
+        same key within that window receives the original response without
+        re-invoking the contract. A repeated key returns `X-Idempotent-Replayed: true`.
+        A concurrent duplicate (same key, first request still in-flight) returns
+        `409 IDEMPOTENCY_CONFLICT`. 5xx responses are not cached and are safe
+        to retry with the same key.
+      tags: [Payments]
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+          description: >
+            Client-generated unique key per payment attempt. Repeated requests
+            with the same key within 24 h return the cached response without
+            re-invoking the contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, amount, payer]
+              properties:
+                meterId:
+                  type: string
+                amount:
+                  type: integer
+                  minimum: 1
+                payer:
+                  type: string
+                  length: 56
+      responses:
+        '200':
+          description: Payment submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hash:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Concurrent request with the same Idempotency-Key is already in-flight
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: "A request with this Idempotency-Key is already being processed"
+                code: "IDEMPOTENCY_CONFLICT"
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/payments/history/{address}:
+    get:
+      operationId: getPaymentHistory
+      summary: Payment history for a Stellar address with date range filtering
+      tags: [Payments]
+      parameters:
+        - in: path
+          name: address
+          required: true
+          schema:
+            type: string
+          description: Stellar Ed25519 public key
+        - in: query
+          name: from
+          schema:
+            type: integer
+          description: Start timestamp (UNIX time)
+        - in: query
+          name: to
+          schema:
+            type: integer
+          description: End timestamp (UNIX time)
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: Payment history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PaymentRecord'
+                  address:
+                    type: string
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  total:
+                    type: integer
+                  pages:
+                    type: integer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   # ── Allowlist ────────────────────────────────────────────────────────────────
   /api/allowlist:
@@ -951,6 +1229,63 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/collaborators/total-shares:
+    get:
+      operationId: getTotalCollaboratorShares
+      summary: Get total basis points allocated to collaborators
+      description: Returns sum of all collaborator basis points and remaining available. Cached for 5 seconds.
+      tags: [Collaborators]
+      responses:
+        '200':
+          description: Total shares info
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total_basis_points, remaining]
+                properties:
+                  total_basis_points:
+                    type: integer
+                  remaining:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/collaborators/meter/{meterId}:
+    get:
+      operationId: getMeterCollaborators
+      summary: List collaborators for a specific meter
+      tags: [Collaborators]
+      parameters:
+        - in: path
+          name: meterId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Meter collaborators
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meterId:
+                    type: string
+                  collaborators:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        address:
+                          type: string
+                        sharePercent:
+                          type: number
+                  count:
+                    type: integer
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   # ── Stats ────────────────────────────────────────────────────────────────────
   /api/stats:
     get:
@@ -1018,3 +1353,108 @@ paths:
                     type: number
                   paymentVolumeXlm:
                     type: number
+
+  # ── Usage Events ─────────────────────────────────────────────────────────────
+  /api/usage-events:
+    delete:
+      operationId: purgeUsageEvents
+      summary: Purge submitted usage events older than N days
+      tags: [Usage Events]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: olderThanDays
+          required: false
+          schema:
+            type: integer
+            default: 90
+      responses:
+        '200':
+          description: Events purged successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletedCount:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/usage-events/failed:
+    get:
+      operationId: getFailedUsageEvents
+      summary: List all dead-lettered/failed usage events with pagination
+      tags: [Usage Events]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: pageSize
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Paginated list of failed usage events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                  pagination:
+                    type: object
+                    properties:
+                      page:
+                        type: integer
+                      pageSize:
+                        type: integer
+                      total:
+                        type: integer
+                      pages:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/usage-events/{id}/replay:
+    post:
+      operationId: replayFailedUsageEvent
+      summary: Replay a failed usage event by setting status to pending
+      tags: [Usage Events]
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Usage event replayed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'

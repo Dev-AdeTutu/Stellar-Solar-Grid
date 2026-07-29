@@ -4,6 +4,7 @@ import { z } from "zod";
 import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { idempotency } from "../middleware/idempotency.js";
 
 export const paymentsRouter = Router();
 
@@ -13,8 +14,42 @@ const PaymentSchema = z.object({
   payer: z.string().length(56),
 });
 
+interface IdempotencyRecord {
+  hash: string;
+  createdAt: number;
+}
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const idempotencyCache = new Map<string, IdempotencyRecord>();
+
+function cleanExpiredIdempotencyKeys() {
+  const now = Date.now();
+  for (const [key, record] of idempotencyCache.entries()) {
+    if (now - record.createdAt > IDEMPOTENCY_TTL_MS) {
+      idempotencyCache.delete(key);
+    }
+  }
+}
+
 paymentsRouter.post(
   "/",
+  asyncHandler(async (req, res) => {
+    cleanExpiredIdempotencyKeys();
+
+    const idempotencyKey = (
+      req.headers["idempotency-key"] ?? req.headers["x-idempotency-key"]
+    ) as string | undefined;
+
+    if (idempotencyKey && typeof idempotencyKey === "string" && idempotencyKey.trim().length > 0) {
+      const cached = idempotencyCache.get(idempotencyKey.trim());
+      if (cached && Date.now() - cached.createdAt <= IDEMPOTENCY_TTL_MS) {
+        return res.json({ hash: cached.hash });
+      }
+    }
+
+paymentsRouter.post(
+  "/",
+  idempotency(),
   asyncHandler(async (req, res) => {
     const parsed = PaymentSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -30,6 +65,11 @@ paymentsRouter.post(
       StellarSdk.nativeToScVal(BigInt(amount), { type: "i128" }),
       StellarSdk.nativeToScVal(payer, { type: "address" }),
     ]);
+
+    if (idempotencyKey && typeof idempotencyKey === "string" && idempotencyKey.trim().length > 0) {
+      idempotencyCache.set(idempotencyKey.trim(), { hash, createdAt: Date.now() });
+    }
+
     return res.json({ hash });
   }),
 );
@@ -153,6 +193,96 @@ paymentsRouter.get(
       });
     } catch (err: any) {
       console.error("payments history route error:", err);
+      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
+    }
+  }),
+);
+
+
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(address);
+    } catch {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+
+    try {
+      const records = await fetchPaymentEvents(address, sort, days);
+      const total = records.length;
+      const start = (page - 1) * limit;
+      const paginated = records.slice(start, start + limit);
+
+      return res.json({
+        payments: paginated,
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+      });
+    } catch (err: any) {
+      logger.error("payments route error:", err);
+      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
+    }
+  }),
+);
+
+/**
+ * GET /api/payments/history/:address?from=<unix_ts>&to=<unix_ts>&limit=50&page=1
+ *
+ * Returns payment history for a given address with optional date range filtering.
+ * from/to are UNIX timestamps converted to ledger numbers.
+ * limit is capped at 200 per page.
+ * address must be a valid 56-char Stellar public key.
+ */
+paymentsRouter.get(
+  "/history/:address",
+  asyncHandler(async (req, res) => {
+    const rawAddress = req.params.address;
+    const address = Array.isArray(rawAddress) ? rawAddress[0] : rawAddress;
+
+    // Validate address format (56 chars, Stellar public key)
+    if (typeof address !== "string" || address.length !== 56 || !address.startsWith("G")) {
+      return res.status(400).json({ error: "Invalid Stellar address format" });
+    }
+
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(address);
+    } catch {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+
+    const from = req.query.from ? Number(req.query.from) : undefined;
+    const to = req.query.to ? Number(req.query.to) : undefined;
+    const limit = Math.min(200, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
+    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
+
+    // Validate timestamps
+    if ((from && !Number.isFinite(from)) || (to && !Number.isFinite(to))) {
+      return res.status(400).json({ error: "Invalid from/to timestamps" });
+    }
+
+    try {
+      const fromLedger = from ? await stellarService.timestampToLedger(from) : undefined;
+      const toLedger = to ? await stellarService.timestampToLedger(to) : undefined;
+
+      const events = await fetchPaymentEventsWithDateRange(address, fromLedger, toLedger);
+      
+      const total = events.length;
+      const start = (page - 1) * limit;
+      const paginated = events.slice(start, start + limit);
+
+      return res.json({
+        data: paginated,
+        address,
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      });
+    } catch (err: any) {
+      logger.error("payments history route error:", err);
       if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
         return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
       }

@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
+import { usageEvents } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -76,6 +77,9 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_retry
       ON usage_events (status, attempt_count, received_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+      ON usage_events (status, submitted_at);
   `);
   return database;
 }
@@ -114,6 +118,8 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     receivedAt,
     input.sourceTopic ?? null
   );
+
+  usageEvents.inc({ status: "pending" });
 
   return getUsageEventById(Number(result.lastInsertRowid))!;
 }
@@ -200,6 +206,7 @@ export function insertSubmittedUsageEvents(
         txHash,
         now,
       );
+      usageEvents.inc({ status: "submitted" });
     }
   });
 
@@ -254,6 +261,35 @@ export async function retryQueuedUsageEvents() {
   }
 }
 
+export type TopConsumer = {
+  meterId: string;
+  totalUnits: number;
+  rank: number;
+};
+
+/** Top consumers by total units used over the last `days` days. */
+export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `
+        SELECT meter_id AS meterId, SUM(units) AS totalUnits
+        FROM usage_events
+        WHERE received_at >= ?
+        GROUP BY meter_id
+        ORDER BY totalUnits DESC
+        LIMIT ?
+      `
+    )
+    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
+
+  return rows.map((row, index) => ({
+    meterId: row.meterId,
+    totalUnits: row.totalUnits,
+    rank: index + 1,
+  }));
+}
+
 function getUsageEventById(id: number): UsageEventRecord | undefined {
   return db
     .prepare("SELECT * FROM usage_events WHERE id = ?")
@@ -293,6 +329,8 @@ async function submitUsageEvent(id: number) {
       `
     ).run(attemptedAt, hash, attemptedAt, id);
 
+    usageEvents.inc({ status: "submitted" });
+
     return getUsageEventById(id);
   } catch (error) {
     const nextAttemptCount = event.attempt_count + 1;
@@ -300,7 +338,14 @@ async function submitUsageEvent(id: number) {
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
 
     if (finalStatus === "failed") {
-      logger.warn({ eventId: id, meterId: event.meter_id, attempts: nextAttemptCount }, 'Usage event dead-lettered after max retries');
+      logger.error(
+        {
+          meter_id: event.meter_id,
+          units: event.units,
+          last_error: error instanceof Error ? error.message : String(error),
+        },
+        "Usage event transitioned to failed"
+      );
     }
 
     db.prepare(
@@ -321,8 +366,99 @@ async function submitUsageEvent(id: number) {
       id
     );
 
+    usageEvents.inc({ status: finalStatus });
+
     throw error;
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+export function purgeSubmittedUsageEvents(olderThanDays: number): number {
+  const cutoffDate = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  const stmt = db.prepare(
+    "DELETE FROM usage_events WHERE status = 'submitted' AND submitted_at < ?"
+  );
+  const result = stmt.run(cutoffDate);
+  return result.changes;
+}
+
+export function getFailedUsageEvents(
+  page: number,
+  pageSize: number
+): { events: UsageEventRecord[]; total: number } {
+  const offset = (page - 1) * pageSize;
+
+  const events = db
+    .prepare(
+      "SELECT * FROM usage_events WHERE status = 'failed' AND attempt_count >= ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
+    )
+    .all(MAX_RETRIES, pageSize, offset) as UsageEventRecord[];
+
+  const { count } = db
+    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed' AND attempt_count >= ?")
+    .get(MAX_RETRIES) as { count: number };
+
+  return {
+    events,
+    total: count,
+  };
+}
+
+export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined {
+  const stmt = db.prepare(
+    "UPDATE usage_events SET status = 'pending', attempt_count = 0, last_error = NULL WHERE id = ? AND status = 'failed'"
+  );
+  const result = stmt.run(id);
+  if (result.changes === 0) {
+    return undefined;
+  }
+  return getUsageEventById(id);
+}
+
+// ── Health check ─────────────────────────────────────────────────────────────
+
+/**
+ * #531 — Returns a lightweight health snapshot for the usage-event store.
+ *
+ * - `reachable`: false only if the SQLite DB itself throws (e.g. file locked /
+ *   corrupted), which would mean events are being silently dropped.
+ * - `retryWorkerRunning`: true when startUsageEventRetryWorker() has been
+ *   called and the interval is still live.
+ * - `pendingCount`: events waiting to be submitted — a proxy for "retry backlog".
+ * - `failedCount`: events that exhausted all retry attempts. Accumulation here
+ *   warrants operator attention.
+ */
+export type UsageEventStoreHealth = {
+  reachable: boolean;
+  retryWorkerRunning: boolean;
+  pendingCount: number;
+  failedCount: number;
+};
+
+export function getUsageEventStoreHealth(): UsageEventStoreHealth {
+  let reachable = false;
+  let pendingCount = 0;
+  let failedCount = 0;
+
+  try {
+    const pending = db
+      .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'pending'")
+      .get() as { count: number };
+    const failed = db
+      .prepare("SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'")
+      .get() as { count: number };
+    pendingCount = pending.count;
+    failedCount = failed.count;
+    reachable = true;
+  } catch {
+    // reachable stays false
+  }
+
+  return {
+    reachable,
+    retryWorkerRunning: retryTimer !== undefined,
+    pendingCount,
+    failedCount,
+  };
 }

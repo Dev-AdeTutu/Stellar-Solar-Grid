@@ -9,6 +9,7 @@ import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
 import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
+import { env } from "@/lib/env";
 
 type Plan = "Daily" | "Weekly" | "Usage";
 type Status = "idle" | "loading";
@@ -75,6 +76,7 @@ export default function PayPage() {
   };
 
   const EXPLORER_BASE = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE?.includes("Test")
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 

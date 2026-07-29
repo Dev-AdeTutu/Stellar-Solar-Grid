@@ -15,9 +15,12 @@
     "@creit.tech/stellar-wallets-kit": "^1.0.0",
     "@stellar/stellar-sdk": "^12.0.0",
     "next": "^14.2.3",
+    "next-intl": "^3.26.5",
+    "qrcode.react": "^3.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.15.4",
+    "zod": "^3.25.76",
     "zustand": "^4.5.2"
   },
   "devDependencies": {
