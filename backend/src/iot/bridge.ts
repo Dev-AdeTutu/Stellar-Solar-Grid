@@ -21,7 +21,7 @@ import {
   CONTRACT_ID,
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted } from "../lib/metrics.js";
+import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, contractEventsProcessed } from "../lib/metrics.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -36,6 +36,58 @@ const EVENT_POLL_INTERVAL_MS = Number(
 
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
+
+// Module-scope batch state so shutdown and flush share the same buffer
+let pending: Reading[] = [];
+let flushIntervalHandle: ReturnType<typeof setInterval> | null = null;
+
+async function flush() {
+  if (pending.length === 0) return;
+  const batch = pending.splice(0);
+  batch.sort((a, b) => a.priority - b.priority);
+  logger.info(`Flushing batch of ${batch.length} meter update(s)`);
+  try {
+    const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
+    logger.info(`Batch recorded on-chain: ${hash}`);
+    try {
+      insertSubmittedUsageEvents(
+        batch.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
+        hash,
+      );
+    } catch (err) {
+      logger.error("Failed to persist batch usage events to local DB", { err });
+    }
+    for (const reading of batch) {
+      checkAndNotifyLowBalance(reading.meterId).catch((err) => {
+        logger.error("Low balance check failed", { meterId: reading.meterId, err });
+      });
+    }
+  } catch (err) {
+    logger.error("Batch submission error", { err });
+  }
+}
+
+export async function stopIoTBridge(): Promise<void> {
+  const pendingCount = pending.length;
+  if (flushIntervalHandle !== null) {
+    clearInterval(flushIntervalHandle);
+    flushIntervalHandle = null;
+  }
+  let flushed = false;
+  if (pendingCount > 0) {
+    await flush();
+    flushed = true;
+  }
+  logger.info("IoT bridge shutting down", { pendingCount, flushed });
+  mqttClient?.end(true);
+}
+
+process.on("SIGTERM", () => {
+  stopIoTBridge().catch((err) => logger.error("Shutdown error on SIGTERM", { err }));
+});
+process.on("SIGINT", () => {
+  stopIoTBridge().catch((err) => logger.error("Shutdown error on SIGINT", { err }));
+});
 
 const LOW_BALANCE_THRESHOLD = parseInt(
   process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
@@ -246,44 +298,8 @@ function startMqttBridge() {
     logger.warn({ attempt: reconnectAttempts, nextDelayMs: delay }, 'MQTT reconnecting');
   });
 
-  let pending: Reading[] = [];
-
-  const flush = async () => {
-    if (pending.length === 0) return;
-    const batch = pending.splice(0);
-    // Issue #601: submit near-zero-balance meters (lowest balance/daily_limit
-    // ratio) first within the batch.
-    batch.sort((a, b) => a.priority - b.priority);
-    logger.info(`Flushing batch of ${batch.length} meter update(s)`);
-    try {
-      const hash = await adminInvoke("batch_update_usage", [
-        encodeBatch(batch),
-      ]);
-      logger.info(`Batch recorded on-chain: ${hash}`);
-
-      // Persist each reading locally with the on-chain tx hash for historical reporting
-      try {
-        insertSubmittedUsageEvents(
-          batch.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
-          hash,
-        );
-      } catch (err) {
-        logger.error("Failed to persist batch usage events to local DB", { err });
-      }
-
-      // Low-balance webhooks fire post-batch now that submission is batched
-      // rather than per-reading.
-      for (const reading of batch) {
-        checkAndNotifyLowBalance(reading.meterId).catch((err) => {
-          logger.error("Low balance check failed", { meterId: reading.meterId, err });
-        });
-      }
-    } catch (err) {
-      logger.error("Batch submission error", { err });
-    }
-  };
-
-  setInterval(flush, FLUSH_INTERVAL_MS);
+  // Issue #601: submit near-zero-balance meters first within the batch.
+  flushIntervalHandle = setInterval(flush, FLUSH_INTERVAL_MS);
 
   client.on("connect", () => {
     reconnectAttempts = 0;
@@ -448,6 +464,7 @@ export async function handleContractEvent(
         // Increment XLM payment volume with plan label
         paymentVolume.inc({ plan: planName }, amountXlm);
 
+        contractEventsProcessed.inc({ topic: eventKey });
         await onPaymentReceived(meterId, amountXlm * 10_000_000);
         break;
       }
@@ -455,6 +472,7 @@ export async function handleContractEvent(
       case "solargrid:mtr_actv": {
         const meterId = subject;
         logger.info("meter_activated contract event", { meterId });
+        contractEventsProcessed.inc({ topic: eventKey });
         await onMeterActivated(meterId);
         break;
       }
@@ -462,6 +480,7 @@ export async function handleContractEvent(
       case "solargrid:mtr_deact": {
         const meterId = subject;
         logger.info("meter_deactivated contract event", { meterId });
+        contractEventsProcessed.inc({ topic: eventKey });
         await onMeterDeactivated(meterId);
         break;
       }
@@ -469,6 +488,7 @@ export async function handleContractEvent(
       case "solargrid:limit_hit": {
         const meterId = subject;
         logger.info("limit_hit contract event received", { meterId });
+        contractEventsProcessed.inc({ topic: eventKey });
         await onMeterDeactivated(meterId);
         break;
       }
@@ -477,6 +497,7 @@ export async function handleContractEvent(
         const owner = String(StellarSdk.scValToNative(event.value));
         const meterId = subject;
         logger.info("meter_registered contract event", { meterId, owner });
+        contractEventsProcessed.inc({ topic: eventKey });
         mqttClient?.publish(
           "meters/new",
           JSON.stringify({ meterId, owner }),
@@ -486,25 +507,68 @@ export async function handleContractEvent(
         break;
       }
 
-      case "solargrid:mtr_xfr": {
-        const [oldOwner, newOwner] = StellarSdk.scValToNative(event.value) as [
-          string,
-          string,
-        ];
+      case "solargrid:mtr_xfer": {
+        const newOwner = String(StellarSdk.scValToNative(event.value));
         const meterId = subject;
-        logger.info("meter_ownership_transferred contract event", {
-          meterId,
-          oldOwner,
-          newOwner,
-        });
+        logger.info("meter_ownership_transferred contract event", { meterId, newOwner });
+        contractEventsProcessed.inc({ topic: eventKey });
         mqttClient?.publish(
-          "meters/transfer",
-          JSON.stringify({ meterId, oldOwner, newOwner }),
+          `meters/${meterId}/owner-changed`,
+          JSON.stringify({ meterId, newOwner }),
           { qos: 1 },
           (err) => {
-            if (err) logger.error({ meterId, err }, "Failed to publish meters/transfer");
+            if (err) logger.error({ meterId, err }, "Failed to publish owner-changed");
           },
         );
+        break;
+      }
+
+      case "solargrid:frz_on": {
+        logger.info("CONTRACT_FROZEN — freeze event received");
+        contractEventsProcessed.inc({ topic: eventKey });
+        mqttClient?.publish(
+          "control/contract",
+          JSON.stringify({ cmd: "FREEZE", timestamp: new Date().toISOString() }),
+          { qos: 1 },
+          (err) => { if (err) logger.error({ err }, "Failed to publish FREEZE command"); },
+        );
+        break;
+      }
+
+      case "solargrid:frz_off": {
+        logger.info("CONTRACT_UNFROZEN — unfreeze event received");
+        contractEventsProcessed.inc({ topic: eventKey });
+        mqttClient?.publish(
+          "control/contract",
+          JSON.stringify({ cmd: "UNFREEZE", timestamp: new Date().toISOString() }),
+          { qos: 1 },
+          (err) => { if (err) logger.error({ err }, "Failed to publish UNFREEZE command"); },
+        );
+        break;
+      }
+
+      case "solargrid:rev_wdrl": {
+        const [tokenAddress, amount] = StellarSdk.scValToNative(event.value) as [string, bigint];
+        logger.info("revenue_withdrawal contract event", {
+          provider: subject,
+          tokenAddress,
+          amount: amount.toString(),
+        });
+        contractEventsProcessed.inc({ topic: eventKey });
+        break;
+      }
+
+      case "solargrid:adm_prop": {
+        const proposed = String(StellarSdk.scValToNative(event.value));
+        logger.info("admin_transfer_proposed contract event", { proposedAdmin: proposed });
+        contractEventsProcessed.inc({ topic: eventKey });
+        break;
+      }
+
+      case "solargrid:adm_acc": {
+        const accepted = String(StellarSdk.scValToNative(event.value));
+        logger.info("admin_transfer_accepted contract event", { newAdmin: accepted });
+        contractEventsProcessed.inc({ topic: eventKey });
         break;
       }
 
@@ -515,6 +579,7 @@ export async function handleContractEvent(
           oldLimit: Number(oldLimit),
           newLimit: Number(newLimit),
         });
+        contractEventsProcessed.inc({ topic: eventKey });
         break;
       }
 
