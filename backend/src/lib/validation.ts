@@ -1,5 +1,4 @@
-
-import type { RequestHandler } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { z, type ZodTypeAny } from "zod";
 
 const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
@@ -100,7 +99,7 @@ type RequestSchemaSet = {
 };
 
 export function validateRequest(schemas: RequestSchemaSet): RequestHandler {
-  return (req, res, next) => {
+  return (req: Request, res: Response, next: NextFunction) => {
     const details: Record<string, unknown> = {};
 
     if (schemas.body) {

@@ -18,13 +18,9 @@ import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
 import { adminLoginRouter } from "./routes/adminLogin.js";
 import { metricsRouter } from "./routes/metrics.js";
-import { smsConfigRouter } from "./routes/smsConfig.js";
-import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { providerRouter } from "./routes/provider.js";
-import { solarRouter } from "./routes/solar.js";
-import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
-import { startLimitWatcher } from "./iot/limitWatcher.js";
+import { requestLogger } from "./middleware/requestLogger.js";
 import { logger } from "./lib/logger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter } from "./middleware/rateLimit.js";
@@ -33,6 +29,7 @@ import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
+  countDeadLetterEvents,
 } from "./lib/usageEvents.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
@@ -226,36 +223,39 @@ app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/provider", providerRouter);
 
-// #420: GET /api/health — version, uptime, dependency status
-app.get("/api/health", async (_req, res) => {
-  const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+// ── Health ────────────────────────────────────────────────────────────────────
+
+app.get("/health", async (_req, res) => {
+  const checks: Record<string, string> = {};
 
   let rpcOk = false;
   try {
     await server.getLatestLedger();
-    rpcOk = true;
-  } catch {
-    logger.warn("Stellar RPC health check failed");
+    checks.stellar = "ok";
+  } catch (err) {
+    logger.error("Stellar health check failed", { err });
+    checks.stellar = "error";
   }
 
   let mqttOk = false;
   try {
-    const { getMqttClient } = await import("./iot/bridge.js");
-    const client = getMqttClient();
-    mqttOk = client?.connected ?? false;
-  } catch {
-    logger.warn("MQTT health check failed");
+    const client = mqtt.connect(broker, { reconnectPeriod: 0, connectTimeout: 3000 });
+    const ok = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => { client.end(true); resolve(false); }, 3000);
+      client.once("connect", () => { clearTimeout(timer); client.end(true); resolve(true); });
+      client.once("error", () => { clearTimeout(timer); client.end(true); resolve(false); });
+    });
+    checks.mqtt = ok ? "ok" : "error";
+  } catch (err) {
+    logger.error("MQTT health check failed", { err });
+    checks.mqtt = "error";
   }
 
-  const healthy = rpcOk && mqttOk;
+  const healthy = Object.values(checks).every((v) => v === "ok");
   res.status(healthy ? 200 : 503).json({
     status: healthy ? "ok" : "degraded",
-    version,
-    uptimeSec,
-    dependencies: {
-      stellarRpc: rpcOk ? "ok" : "unreachable",
-      mqtt: mqttOk ? "ok" : "unreachable",
-    },
+    checks,
+    deadLetterEvents: countDeadLetterEvents(),
   });
 });
 

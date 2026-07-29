@@ -279,77 +279,236 @@ When a meter's balance drops below the threshold after a usage update, the bridg
 - Webhook timeouts can be configured via your HTTP client settings
 - Consider idempotency keys on your webhook endpoint to handle retries
 
-## Usage Events Lifecycle Management
+---
 
-All usage event endpoints require a valid `Authorization: Bearer <ADMIN_API_KEY>` header.
+## Statistics
 
-### `DELETE /api/usage-events`
+### `GET /api/stats`
 
-Purges submitted usage events older than `N` days.
+Returns contract-derived aggregate statistics for all meters.
 
-**Query Parameters**
-- `olderThanDays` (optional): Default `90`. Must be a non-negative integer.
+Response is cached for **30 seconds** to reduce RPC load.
 
 **Response**
 
 ```json
 {
-  "deletedCount": 5
+  "totalMeters": 42,
+  "activeMeters": 37,
+  "totalUnits": 182400,
+  "totalRevenue": 12500000
 }
 ```
 
-### `GET /api/usage-events/failed`
+| Field | Type | Description |
+|---|---|---|
+| `totalMeters` | number | Total registered meters on-chain |
+| `activeMeters` | number | Meters currently active |
+| `totalUnits` | number | Total energy units consumed across all meters |
+| `totalRevenue` | number | Provider revenue in stroops |
 
-Returns a paginated list of dead-lettered/failed usage events.
+| Status | Description |
+|---|---|
+| 200 | Returns aggregate stats |
+| 500 | RPC or contract error |
 
-**Query Parameters**
-- `page` (optional): Default `1`.
-- `pageSize` (optional): Default `10`.
+---
+
+### `GET /api/stats/summary`
+
+Returns a JSON snapshot of the four core Prometheus counters/gauges for the admin dashboard.
+Does **not** require Prometheus or Grafana to be running.
+
+Response is cached for **15 seconds**.
 
 **Response**
 
 ```json
 {
+  "mqttMessages": 1024,
+  "contractCalls": 256,
+  "activeMeters": 37,
+  "paymentVolumeXlm": 5.25
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `mqttMessages` | number | Total MQTT messages received since process start |
+| `contractCalls` | number | Total Soroban contract invocations since process start |
+| `activeMeters` | number | Current active meter gauge |
+| `paymentVolumeXlm` | number | Cumulative payment volume in XLM |
+
+| Status | Description |
+|---|---|
+| 200 | Returns metrics snapshot |
+
+---
+
+## Energy Provider
+
+These endpoints expose provider-specific data and are all protected by the
+`X-Admin-Key` header.
+
+### `GET /api/provider`
+
+Returns the energy provider's on-chain revenue and an aggregate summary of all meters.
+
+Response is cached for **30 seconds**.
+
+**Headers**
+
+| Header | Required | Description |
+|---|---|---|
+| `X-Admin-Key` | Yes | Admin API key |
+
+**Response**
+
+```json
+{
+  "provider": "GADMIN...",
+  "totalRevenue": 12500000,
+  "totalMeters": 42,
+  "activeMeters": 37,
+  "totalUnitsUsed": 182400
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `provider` | string\|null | Admin address (`ADMIN_ADDRESS` env var) |
+| `totalRevenue` | number | Revenue in stroops |
+| `totalMeters` | number | Total registered meters |
+| `activeMeters` | number | Currently active meters |
+| `totalUnitsUsed` | number | Total units consumed |
+
+| Status | Description |
+|---|---|
+| 200 | Returns provider summary |
+| 401 | Missing or invalid `X-Admin-Key` |
+| 500 | RPC or contract error |
+
+---
+
+### `POST /api/provider/webhook`
+
+Register or replace the low-balance webhook URL for this provider.
+When a meter's balance drops below `LOW_BALANCE_THRESHOLD`, the IoT bridge
+fires a POST to this URL.
+
+This is a named alias for `POST /api/webhooks/low-balance` in the
+provider-facing namespace.
+
+**Headers**
+
+| Header | Required | Description |
+|---|---|---|
+| `X-Admin-Key` | Yes | Admin API key |
+| `Content-Type` | Yes | `application/json` |
+
+**Body**
+
+```json
+{
+  "webhook_url": "https://your-service.example.com/hooks/low-balance"
+}
+```
+
+**Response**
+
+```json
+{
+  "message": "Webhook registered",
+  "webhook_url": "https://your-service.example.com/hooks/low-balance"
+}
+```
+
+| Status | Description |
+|---|---|
+| 200 | Webhook registered |
+| 400 | Invalid URL format |
+| 401 | Missing or invalid `X-Admin-Key` |
+
+---
+
+## Admin: Dead-letter Events
+
+Usage events that fail every retry attempt are moved to a **dead-letter** state
+(`status = 'failed'`).  They are excluded from the automatic retry worker and
+must be manually reprocessed or discarded.
+
+The current dead-letter count is also surfaced in the `/health` response under
+the `deadLetterEvents` field.
+
+### `GET /api/admin/dead-letters`
+
+Lists all dead-lettered usage events.
+
+**Headers**
+
+| Header | Required | Description |
+|---|---|---|
+| `X-Admin-Key` | Yes | Admin API key |
+
+**Query Parameters**
+
+| Param | Default | Description |
+|---|---|---|
+| `limit` | 50 | Maximum results (max 200) |
+| `offset` | 0 | Pagination offset |
+
+**Response**
+
+```json
+{
+  "total": 3,
+  "limit": 50,
+  "offset": 0,
   "events": [
     {
-      "id": 42,
+      "id": 7,
       "meter_id": "METER1",
-      "units": 100,
-      "cost": "500000",
-      "received_at": "2026-07-26T12:00:00.000Z",
+      "units": 150,
+      "cost": "750000",
       "status": "failed",
       "attempt_count": 5,
-      "last_error": "Stellar RPC error"
+      "last_error": "RPC timeout",
+      ...
     }
-  ],
-  "pagination": {
-    "page": 1,
-    "pageSize": 10,
-    "total": 1,
-    "pages": 1
-  }
+  ]
 }
 ```
 
-### `POST /api/usage-events/:id/replay`
+| Status | Description |
+|---|---|
+| 200 | Returns dead-letter list |
+| 401 | Missing or invalid `X-Admin-Key` |
 
-Resets a failed usage event back to `pending` status and `attempt_count` to `0` so it can be retried.
+---
+
+### `POST /api/admin/dead-letters/:id/reprocess`
+
+Requeues a single dead-lettered event for retry. Resets its status to `pending`
+and zeroes the attempt counter so the retry worker picks it up on its next tick.
+
+**Headers**
+
+| Header | Required | Description |
+|---|---|---|
+| `X-Admin-Key` | Yes | Admin API key |
 
 **Response**
 
-Returns the updated event record:
-
 ```json
 {
-  "id": 42,
-  "meter_id": "METER1",
-  "units": 100,
-  "cost": "500000",
-  "received_at": "2026-07-26T12:00:00.000Z",
-  "status": "pending",
-  "attempt_count": 0,
-  "last_error": null
+  "message": "Event requeued",
+  "event": { "id": 7, "status": "pending", ... }
 }
 ```
 
-If the event is not found or not in `failed` status, returns `404 Not Found`.
+| Status | Description |
+|---|---|
+| 200 | Event requeued |
+| 400 | Invalid event id |
+| 401 | Missing or invalid `X-Admin-Key` |
+| 404 | Event not found or not in dead-letter state |
