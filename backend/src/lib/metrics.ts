@@ -57,4 +57,10 @@ export const mqttReconnectExhausted = new Gauge({
   help: "1 when MQTT reconnect attempts have been exhausted and the bridge has stopped, 0 otherwise",
 });
 
+export const deadLetterEvents = new Counter({
+  name: "solargrid_dead_letter_events_total",
+  help: "Usage events moved to dead-letter state after exhausting all retries",
+  labelNames: ["meter_id"] as const,
+});
+
 export { register };

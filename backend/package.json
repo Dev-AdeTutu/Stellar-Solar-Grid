@@ -14,7 +14,7 @@
     "test:e2e": "tsx ../tests/e2e/payment-flow.ts",
     "test:scrub": "tsx tests/scrub.test.ts",
     "test:cors": "tsx tests/cors.test.ts",
-    "test:openapi": "tsx tests/openapi-validation.test.ts"
+    "test:integration": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0",
@@ -53,6 +53,6 @@
     "eslint": "^10.4.1",
     "tsx": "^4.15.1",
     "typescript": "^5.4.5",
-    "vitest": "^2.0.0"
+    "vitest": "^1.6.1"
   }
 }

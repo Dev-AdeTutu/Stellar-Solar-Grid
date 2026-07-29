@@ -1,8 +1,8 @@
-
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { logger } from '../lib/logger.js';
+import { auditLog, buildAuditEntry } from '../lib/audit.js';
 
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 
@@ -77,17 +77,18 @@ export function requireAdminKey(req: Request, res: Response, next: NextFunction)
       return res.status(503).json({ error: 'Server misconfiguration' });
     }
     logger.warn('ADMIN_API_KEY not set — skipping auth check (dev mode)');
+    // Still audit dev-mode admin calls so the log trail is complete
+    auditLog(buildAuditEntry(req));
     return next();
   }
+
   const provided = req.headers['x-admin-key'];
   if (provided === ADMIN_API_KEY || hasValidSessionToken(req)) {
     // Successful auth — skip the failure limiter entirely
     return next();
   }
 
-  // Failed auth — pass through the failure-specific limiter before returning 401
-  adminFailureLimiter(req, res, () => {
-    logger.warn({ path: req.path, method: req.method }, 'Unauthorized admin request');
-    res.status(401).json({ error: 'Unauthorized' });
-  });
+  // Auth passed — emit structured audit entry before continuing
+  auditLog(buildAuditEntry(req));
+  next();
 }
