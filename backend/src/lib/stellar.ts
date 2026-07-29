@@ -18,9 +18,6 @@ export const HORIZON_URL =
     ? "https://horizon.stellar.org"
     : "https://horizon-testnet.stellar.org");
 
-export const CONTRACT_ID = process.env.CONTRACT_ID!;
-export const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
-
 // Load keypair once at module init. The raw secret string is never referenced again.
 const adminKeypair = StellarSdk.Keypair.fromSecret(process.env.ADMIN_SECRET_KEY!);
 

@@ -33,22 +33,6 @@ function cleanExpiredIdempotencyKeys() {
 
 paymentsRouter.post(
   "/",
-  asyncHandler(async (req, res) => {
-    cleanExpiredIdempotencyKeys();
-
-    const idempotencyKey = (
-      req.headers["idempotency-key"] ?? req.headers["x-idempotency-key"]
-    ) as string | undefined;
-
-    if (idempotencyKey && typeof idempotencyKey === "string" && idempotencyKey.trim().length > 0) {
-      const cached = idempotencyCache.get(idempotencyKey.trim());
-      if (cached && Date.now() - cached.createdAt <= IDEMPOTENCY_TTL_MS) {
-        return res.json({ hash: cached.hash });
-      }
-    }
-
-paymentsRouter.post(
-  "/",
   idempotency(),
   asyncHandler(async (req, res) => {
     const parsed = PaymentSchema.safeParse(req.body);
@@ -65,10 +49,6 @@ paymentsRouter.post(
       StellarSdk.nativeToScVal(BigInt(amount), { type: "i128" }),
       StellarSdk.nativeToScVal(payer, { type: "address" }),
     ]);
-
-    if (idempotencyKey && typeof idempotencyKey === "string" && idempotencyKey.trim().length > 0) {
-      idempotencyCache.set(idempotencyKey.trim(), { hash, createdAt: Date.now() });
-    }
 
     return res.json({ hash });
   }),
@@ -201,32 +181,6 @@ paymentsRouter.get(
   }),
 );
 
-
-    try {
-      StellarSdk.StrKey.decodeEd25519PublicKey(address);
-    } catch {
-      return res.status(400).json({ error: "Invalid Stellar address" });
-    }
-
-    try {
-      const records = await fetchPaymentEvents(address, sort, days);
-      const total = records.length;
-      const start = (page - 1) * limit;
-      const paginated = records.slice(start, start + limit);
-
-      return res.json({
-        payments: paginated,
-        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-      });
-    } catch (err: any) {
-      logger.error("payments route error:", err);
-      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
-        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
-      }
-      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
-    }
-  }),
-);
 
 /**
  * GET /api/payments/history/:address?from=<unix_ts>&to=<unix_ts>&limit=50&page=1
