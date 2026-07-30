@@ -110,7 +110,7 @@ providerRouter.post(
   }),
   asyncHandler(async (req, res) => {
     const { webhook_url } = req.body;
-    registerWebhook("provider", webhook_url);
+    registerWebhook(process.env.ADMIN_ADDRESS ?? "system", webhook_url);
     logger.info("Provider webhook registered", { webhook_url });
     return res.json({ message: "Webhook registered", webhook_url });
   }),

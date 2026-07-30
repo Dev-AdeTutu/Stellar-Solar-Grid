@@ -1,6 +1,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { contractCalls } from "./metrics.js";
 import { getReqId } from "./requestContext.js";
+import { logger } from "./logger.js";
 
 const NETWORK = process.env.STELLAR_NETWORK ?? "testnet";
 
@@ -91,6 +92,7 @@ export class StellarService {
     pollIntervalMs = Number(process.env.TX_POLL_INTERVAL_MS ?? 2_000),
   ): Promise<string> {
     const requestId = getReqId();
+    logger.debug({ method, requestId }, "Stellar invoke");
     try {
       const account = await this.server.getAccount(this.adminKeypair.publicKey());
       const contract = new StellarSdk.Contract(this.contractId);
@@ -125,6 +127,7 @@ export class StellarService {
 
   async query(method: string, args: StellarSdk.xdr.ScVal[]) {
     const requestId = getReqId();
+    logger.debug({ method, requestId }, "Stellar query");
     try {
       const account = await this.server.getAccount(this.adminKeypair.publicKey());
       const contract = new StellarSdk.Contract(this.contractId);

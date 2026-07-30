@@ -211,6 +211,51 @@ components:
           items:
             $ref: "#/components/schemas/UsageEvent"
 
+    # ── Webhook ───────────────────────────────────────────────────────────────
+
+    WebhookRecord:
+      type: object
+      required: [id, provider_id, url, created_at, failure_count]
+      properties:
+        id:
+          type: integer
+        provider_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        last_triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+        failure_count:
+          type: integer
+          description: Total failed delivery attempts
+
+    WebhookDelivery:
+      type: object
+      required: [id, webhook_id, attempted_at, status]
+      properties:
+        id:
+          type: integer
+        webhook_id:
+          type: integer
+        attempted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [success, failed]
+        http_status:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
     # ── Collaborator ──────────────────────────────────────────────────────────
 
     CollaboratorShare:
@@ -369,7 +414,7 @@ paths:
 
   /api/meters:
     get:
-      summary: List all meters (paginated)
+      summary: List all meters (paginated, filterable)
       operationId: listMeters
       parameters:
         - name: page
@@ -378,6 +423,22 @@ paths:
         - name: pageSize
           in: query
           schema: { type: integer, default: 25, maximum: 100 }
+        - name: owner
+          in: query
+          description: Filter to meters belonging to a specific owner address
+          schema: { type: string }
+        - name: active
+          in: query
+          description: Filter by activation status
+          schema: { type: string, enum: ["true", "false"] }
+        - name: plan
+          in: query
+          description: Filter by payment plan
+          schema: { type: string, enum: [daily, weekly, usage_based] }
+        - name: expiresBefore
+          in: query
+          description: Filter meters whose expires_at is before this ISO 8601 timestamp
+          schema: { type: string, format: date-time }
       responses:
         "200":
           description: Paginated meter list
@@ -391,6 +452,8 @@ paths:
                     items: {}
                   pagination:
                     type: object
+        "400":
+          $ref: "#/components/responses/ValidationError"
     post:
       summary: Register a new meter (admin only)
       operationId: registerMeter
@@ -601,6 +664,60 @@ paths:
           $ref: "#/components/responses/NotFound"
 
   # ── Webhooks ──────────────────────────────────────────────────────────────────
+
+  /api/webhooks:
+    get:
+      summary: List all registered webhooks (admin only)
+      description: |
+        Returns all registered webhooks with audit fields: id, provider_id, url,
+        created_at, last_triggered_at, and failure_count. Requires admin authentication.
+      operationId: listWebhooks
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks, count]
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookRecord"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/webhooks/{id}/deliveries:
+    get:
+      summary: Last 50 delivery attempts for a webhook
+      operationId: getWebhookDeliveries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Delivery history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveries, count]
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+                  count:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
   /api/webhooks/low-balance:
     post:
@@ -958,6 +1075,100 @@ paths:
       responses:
         "200":
           description: Prometheus metrics text
+
+  # ── Solar ─────────────────────────────────────────────────────────────────────
+
+  /api/solar/forecast:
+    get:
+      summary: Estimate solar energy production and revenue
+      description: |
+        Returns per-period (daily/weekly/monthly/yearly) kWh production estimates
+        and revenue projections for a given panel setup. All calculations are
+        server-side; no external data sources are used.
+      operationId: getSolarForecast
+      tags: [solar]
+      parameters:
+        - name: capacityKw
+          in: query
+          required: true
+          description: Total panel capacity in kilowatts (e.g. 5)
+          schema: { type: number, exclusiveMinimum: 0, maximum: 10000 }
+        - name: peakSunHours
+          in: query
+          required: true
+          description: Average daily peak sun hours for the location
+          schema: { type: number, exclusiveMinimum: 0, maximum: 24 }
+        - name: efficiency
+          in: query
+          description: Panel efficiency 0–1 (default 0.20)
+          schema: { type: number, exclusiveMinimum: 0, maximum: 1, default: 0.20 }
+        - name: panelAgeYears
+          in: query
+          description: Age of panels in years for degradation calculation (default 0)
+          schema: { type: number, minimum: 0, default: 0 }
+        - name: ratePerKwh
+          in: query
+          description: Local electricity rate in XLM/kWh (default 0.12)
+          schema: { type: number, minimum: 0, default: 0.12 }
+      responses:
+        "200":
+          description: Solar production forecast
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [panelCapacityKw, peakSunHours, efficiency, panelAgeYears, effectiveDegradation, dailyKwh, forecast, assumptions]
+                properties:
+                  panelCapacityKw: { type: number }
+                  peakSunHours: { type: number }
+                  efficiency: { type: number }
+                  panelAgeYears: { type: number }
+                  effectiveDegradation: { type: number }
+                  dailyKwh: { type: number }
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      required: [period, days, estimatedKwh, estimatedRevenue]
+                      properties:
+                        period: { type: string }
+                        days: { type: integer }
+                        estimatedKwh: { type: number }
+                        estimatedRevenue: { type: number }
+                  assumptions:
+                    type: object
+                    properties:
+                      systemLoss: { type: number }
+                      degradationRatePerYear: { type: number }
+                      ratePerKwh: { type: number }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/solar/irradiance-zones:
+    get:
+      summary: Reference peak sun hours by climate zone
+      description: |
+        Returns a static list of common climate zones with their reference peak
+        sun-hour values. Useful for populating dropdowns on the frontend.
+      operationId: getSolarIrradianceZones
+      tags: [solar]
+      responses:
+        "200":
+          description: Irradiance zone list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zones]
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, peakSunHours]
+                      properties:
+                        name: { type: string }
+                        peakSunHours: { type: number }
 
 # ── Shared response components ────────────────────────────────────────────────
 

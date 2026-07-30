@@ -29,27 +29,13 @@ import {
   startUsageEventRetryWorker,
   countDeadLetterEvents,
 } from "./lib/usageEvents.js";
+import { adminLoginRouter } from "./routes/adminLogin.js";
+import { allowlistRouter } from "./routes/allowlist.js";
+import { collaboratorRouter } from "./routes/collaborators.js";
+import { smsConfigRouter } from "./routes/smsConfig.js";
+import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { getReqId } from "./lib/requestContext.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
-
-const _require = createRequire(import.meta.url);
-
-const REQUIRED_ENV = [
-  "STELLAR_NETWORK",
-  "STELLAR_RPC_URL",
-  "CONTRACT_ID",
-  "ADMIN_SECRET_KEY",
-  "MQTT_BROKER",
-  "ADMIN_API_KEY",
-];
-
-const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
-if (missing.length > 0) {
-  logger.fatal(
-    { missing },
-    "Missing required environment variables. Copy backend/.env.example to backend/.env.",
-  );
-  process.exit(1);
-}
 
 const PORT = process.env.PORT ?? 3001;
 const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
@@ -88,11 +74,11 @@ app.use((req: any, _res: any, next: any) => {
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", paymentsLimiter, paymentsRouter);
+app.use("/api/payments", writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
-app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/stats", statsRouter);
+app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
@@ -164,7 +150,9 @@ app.use((err: any, req: any, res: Response, _next: NextFunction) => {
     return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND" });
   }
   if (err.code === "VALIDATION_ERROR" && err.details) {
-    return res.status(400).json({ error: "Validation failed", code: "VALIDATION_ERROR", details: err.details });
+    return res
+      .status(400)
+      .json({ error: "Validation failed", code: "VALIDATION_ERROR", details: err.details, requestId });
   }
   res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR" });
 });

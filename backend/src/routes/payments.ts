@@ -182,69 +182,6 @@ paymentsRouter.get(
 );
 
 
-/**
- * GET /api/payments/history/:address?from=<unix_ts>&to=<unix_ts>&limit=50&page=1
- *
- * Returns payment history for a given address with optional date range filtering.
- * from/to are UNIX timestamps converted to ledger numbers.
- * limit is capped at 200 per page.
- * address must be a valid 56-char Stellar public key.
- */
-paymentsRouter.get(
-  "/history/:address",
-  asyncHandler(async (req, res) => {
-    const rawAddress = req.params.address;
-    const address = Array.isArray(rawAddress) ? rawAddress[0] : rawAddress;
-
-    // Validate address format (56 chars, Stellar public key)
-    if (typeof address !== "string" || address.length !== 56 || !address.startsWith("G")) {
-      return res.status(400).json({ error: "Invalid Stellar address format" });
-    }
-
-    try {
-      StellarSdk.StrKey.decodeEd25519PublicKey(address);
-    } catch {
-      return res.status(400).json({ error: "Invalid Stellar address" });
-    }
-
-    const from = req.query.from ? Number(req.query.from) : undefined;
-    const to = req.query.to ? Number(req.query.to) : undefined;
-    const limit = Math.min(200, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
-    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
-
-    // Validate timestamps
-    if ((from && !Number.isFinite(from)) || (to && !Number.isFinite(to))) {
-      return res.status(400).json({ error: "Invalid from/to timestamps" });
-    }
-
-    try {
-      const fromLedger = from ? await stellarService.timestampToLedger(from) : undefined;
-      const toLedger = to ? await stellarService.timestampToLedger(to) : undefined;
-
-      const events = await fetchPaymentEventsWithDateRange(address, fromLedger, toLedger);
-      
-      const total = events.length;
-      const start = (page - 1) * limit;
-      const paginated = events.slice(start, start + limit);
-
-      return res.json({
-        data: paginated,
-        address,
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-      });
-    } catch (err: any) {
-      logger.error("payments history route error:", err);
-      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
-        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
-      }
-      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
-    }
-  }),
-);
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function fetchPaymentEventsWithDateRange(

@@ -7,6 +7,8 @@ import {
   unregisterWebhook,
   getWebhookUrls,
   getWebhooksByProvider,
+  getAllWebhooks,
+  getWebhookDeliveries,
 } from "../lib/webhookRegistry.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { validateRequest } from "../lib/validation.js";
@@ -104,15 +106,9 @@ webhookRouter.post(
   validateRequest({
     body: z.object({
       webhook_url: z.string().url("Invalid webhook URL format"),
-      secret: z.string().min(1).optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
-    const { webhook_url, secret } = req.body as {
-      webhook_url: string;
-      secret?: string;
-    };
-
     const providerId = getProviderId(req);
     if (!providerId) {
       return res.status(400).json({
@@ -199,30 +195,28 @@ webhookRouter.delete(
 );
 
 /**
- * GET /api/webhooks
- *
- * List all registered low-balance webhook URLs.
- * If X-Provider-ID header is provided, only return webhooks for that provider.
+ * GET /api/webhooks — admin-only; returns all registered webhooks with audit fields.
  */
 webhookRouter.get(
   "/",
-  asyncHandler(async (req, res) => {
-    const providerId = getProviderId(req);
+  requireAdminKey,
+  asyncHandler(async (_req, res) => {
+    const records = getAllWebhooks();
+    return res.status(200).json({ webhooks: records, count: records.length });
+  }),
+);
 
-    if (providerId) {
-      const records = getWebhooksByProvider(providerId);
-      return res.status(200).json({
-        webhooks: records.map((r) => r.url),
-        provider_id: providerId,
-        count: records.length,
-        records,
-      });
-    } else {
-      const urls = Array.from(getWebhookUrls());
-      return res.status(200).json({
-        webhooks: urls,
-        count: urls.length,
-      });
+/**
+ * GET /api/webhooks/:id/deliveries — last 50 delivery attempts for a webhook.
+ */
+webhookRouter.get(
+  "/:id/deliveries",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ error: "Invalid webhook id", code: "VALIDATION_ERROR" });
     }
+    const deliveries = getWebhookDeliveries(id);
+    return res.status(200).json({ deliveries, count: deliveries.length });
   }),
 );

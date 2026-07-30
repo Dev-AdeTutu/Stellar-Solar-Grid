@@ -419,53 +419,26 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
   return getUsageEventById(id);
 }
 
-/**
- * Hard-delete submitted events older than N days. Returns the count deleted.
- */
+/** Purge submitted events older than N days. Returns deleted row count. */
 export function purgeSubmittedUsageEvents(olderThanDays: number): number {
   const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
   const result = db
-    .prepare(
-      `DELETE FROM usage_events WHERE status = 'submitted' AND submitted_at < ?`,
-    )
+    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
     .run(cutoff);
-  return result.changes as number;
+  return result.changes;
 }
 
-/**
- * Return failed (dead-lettered) events with pagination, newest first.
- */
+/** Alias for getDeadLetterEvents with page/pageSize convention. */
 export function getFailedUsageEvents(
   page: number,
   pageSize: number,
 ): { events: UsageEventRecord[]; total: number } {
-  const offset = (page - 1) * pageSize;
-  const events = db
-    .prepare(
-      `SELECT * FROM usage_events WHERE status = 'failed'
-       ORDER BY last_attempt_at DESC, id DESC LIMIT ? OFFSET ?`,
-    )
-    .all(pageSize, offset) as UsageEventRecord[];
-  const { count } = db
-    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
-    .get() as { count: number };
-  return { events, total: count };
+  return getDeadLetterEvents(pageSize, (page - 1) * pageSize);
 }
 
-/**
- * Reset a single failed event back to pending so the retry worker picks it up.
- * Returns the updated record, or undefined if not found / wrong state.
- */
+/** Alias for requeueDeadLetterEvent. */
 export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined {
-  const event = getUsageEventById(id);
-  if (!event || event.status !== 'failed') return undefined;
-  db.prepare(
-    `UPDATE usage_events
-     SET status = 'pending', attempt_count = 0, last_error = NULL, last_attempt_at = NULL
-     WHERE id = ?`,
-  ).run(id);
-  logger.info({ eventId: id, meterId: event.meter_id }, 'Failed event reset to pending for replay');
-  return getUsageEventById(id);
+  return requeueDeadLetterEvent(id);
 }
 
 /** Count of events currently in dead-letter state (used by /health). */
