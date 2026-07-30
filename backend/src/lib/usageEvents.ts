@@ -338,7 +338,12 @@ async function submitUsageEvent(id: number) {
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
 
     if (finalStatus === "failed") {
-      logger.warn({ eventId: id, meterId: event.meter_id, attempts: nextAttemptCount }, 'Usage event dead-lettered after max retries');
+      logger.error({
+        eventId: id,
+        meter_id: event.meter_id,
+        units: event.units,
+        last_error: error instanceof Error ? error.message : String(error),
+      }, 'Usage event transitioned to failed state after max retries');
       deadLetterEvents.inc({ meter_id: event.meter_id });
     }
 

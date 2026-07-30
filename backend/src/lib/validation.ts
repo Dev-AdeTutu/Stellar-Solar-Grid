@@ -40,13 +40,19 @@ export const UsageUpdateSchema = z
   })
   .strict();
 
+export const MqttPayloadSchema = z.object({
+  meterId: MeterIdSchema,
+  units: z.number().int("units must be an integer").positive("units must be positive"),
+  cost: z.number().int("cost must be an integer").positive("cost must be positive"),
+});
+
 export const MeterNoteSchema = z
   .object({
     text: z
       .string()
       .trim()
       .min(1, "text is required")
-      .max(2000, "text must be at most 2000 characters"),
+      .max(1000, "text must be at most 1000 characters"),
   })
   .strict();
 

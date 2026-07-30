@@ -31,6 +31,6 @@ export function adminAuth(req: Request, res: Response, next: NextFunction) {
     return next();
   }
 
-  logger.warn({ path: req.path, method: req.method }, 'Unauthorized admin request');
+  logger.warn({ ip: req.ip, path: req.path, method: req.method }, 'Unauthorized admin request');
   return res.status(401).json({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
 }

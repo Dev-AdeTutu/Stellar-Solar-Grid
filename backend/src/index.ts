@@ -1,12 +1,9 @@
 import "dotenv/config";
+import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
-import compression from "compression";
 import timeout from "connect-timeout";
 import mqtt from "mqtt";
-import helmet from "helmet";
-import swaggerUi from "swagger-ui-express";
-import YAML from "yamljs";
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
@@ -15,10 +12,16 @@ import { statsRouter } from "./routes/stats.js";
 import { deadLettersRouter } from "./routes/deadLetters.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
+import { adminLoginRouter } from "./routes/adminLogin.js";
+import { allowlistRouter } from "./routes/allowlist.js";
+import { collaboratorRouter } from "./routes/collaborators.js";
+import { smsConfigRouter } from "./routes/smsConfig.js";
+import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
 import { register } from "./lib/metrics.js";
-import { writeLimiter } from "./middleware/rateLimit.js";
+import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
@@ -35,11 +38,9 @@ import { getReqId } from "./lib/requestContext.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 
 const PORT = process.env.PORT ?? 3001;
-// #423: configurable body size limit
 const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
 
 const app = express();
-const startTime = Date.now();
 
 app.use(
   cors({
@@ -50,9 +51,6 @@ app.use(
   }),
 );
 
-// Capture raw body for webhook signature verification before JSON parsing
-// Capture raw body for webhook signature verification before JSON parsing.
-// #423: apply body size limit
 app.use(
   express.json({
     limit: BODY_LIMIT,
@@ -62,11 +60,9 @@ app.use(
   }),
 );
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
-
 app.use(sanitiseBody);
 app.use(requestLoggerMiddleware);
 
-// Request timeout — configurable via REQUEST_TIMEOUT env var (default 15s)
 const requestTimeout = process.env.REQUEST_TIMEOUT ?? "15s";
 app.use(timeout(requestTimeout));
 
@@ -88,14 +84,13 @@ app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/admin/dead-letters", deadLettersRouter);
 app.use("/api/provider", providerRouter);
+app.use("/api/usage-events", usageEventsRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
 app.get("/health", async (_req, res) => {
   const checks: Record<string, string> = {};
 
-  // Check Stellar RPC
-  let rpcOk = false;
   try {
     await server.getLatestLedger();
     checks.stellar = "ok";
@@ -104,7 +99,6 @@ app.get("/health", async (_req, res) => {
     checks.stellar = "error";
   }
 
-  // Check MQTT by attempting a short-lived connection
   const broker = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
   try {
     const client = mqtt.connect(broker, { reconnectPeriod: 0, connectTimeout: 3000 });
@@ -134,53 +128,39 @@ app.get("/metrics", async (_req, res) => {
 
 // ── Error handlers ────────────────────────────────────────────────────────────
 
-// 404 catch-all — must come after all routes
 app.use((_req: Request, res: Response) =>
   res.status(404).json({ error: "Route not found", code: "NOT_FOUND" }),
 );
 
-// Timeout error handler
-app.use((err: any, req: any, res: any, next: any) => {
+app.use((err: any, req: any, res: Response, _next: NextFunction) => {
   if (req.timedout) {
-    logger.error("Request timed out", {
-      method: req.method,
-      path: req.path,
-      timeout: requestTimeout,
-    });
+    logger.error("Request timed out", { method: req.method, path: req.path, timeout: requestTimeout });
     return res.status(504).json({ error: "Request timed out", code: "TIMEOUT" });
   }
-  next(err);
-});
 
-// #423: 413 payload too large handler + global error handler (#418)
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   logger.error({ error: err.message, stack: err.stack }, "Unhandled error");
-  const requestId = getReqId();
 
   if (err.type === "entity.too.large") {
-    return res.status(413).json({ error: "Request body too large", code: "PAYLOAD_TOO_LARGE", requestId });
+    return res.status(413).json({ error: "Request body too large", code: "PAYLOAD_TOO_LARGE" });
   }
   if (err.type === "entity.parse.failed" || (err instanceof SyntaxError && (err as any).body !== undefined)) {
-    return res.status(400).json({ error: "Invalid JSON body", code: "INVALID_JSON", requestId });
+    return res.status(400).json({ error: "Invalid JSON body", code: "INVALID_JSON" });
   }
   if ((err as any).status === 404) {
-    return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND", requestId });
+    return res.status(404).json({ error: "Resource not found", code: "NOT_FOUND" });
   }
   if (err.code === "VALIDATION_ERROR" && err.details) {
     return res
       .status(400)
       .json({ error: "Validation failed", code: "VALIDATION_ERROR", details: err.details, requestId });
   }
-  res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR", requestId });
+  res.status(500).json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR" });
 });
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
-  logger.info(
-    { port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" },
-    "SolarGrid backend started",
-  );
+  logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   initMeterNotesStore();
   startUsageEventRetryWorker();

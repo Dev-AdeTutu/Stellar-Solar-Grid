@@ -160,6 +160,42 @@ components:
 
     # ── Dead-letter ───────────────────────────────────────────────────────────
 
+    MeterNote:
+      type: object
+      required: [id, meter_id, text, created_at]
+      properties:
+        id:
+          type: integer
+        meter_id:
+          type: string
+        author_ip:
+          type: string
+          nullable: true
+          description: IP address of the admin who created the note
+        text:
+          type: string
+          maxLength: 1000
+        created_at:
+          type: string
+          format: date-time
+
+    MeterNoteList:
+      type: object
+      required: [notes, total, page, pageSize, hasMore]
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeterNote"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
+
     DeadLetterList:
       type: object
       required: [total, limit, offset, events]
@@ -514,10 +550,12 @@ paths:
           schema: { type: string }
         - name: page
           in: query
-          schema: { type: integer, default: 1 }
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based)
         - name: pageSize
           in: query
-          schema: { type: integer, default: 25, maximum: 100 }
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Events per page (default 20, max 100)
       responses:
         "200":
           description: Usage history
@@ -525,6 +563,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [events, page, pageSize, total, hasMore]
                 properties:
                   events:
                     type: array
@@ -534,6 +573,95 @@ paths:
                   pageSize: { type: integer }
                   total: { type: integer }
                   hasMore: { type: boolean }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/meters/{id}/notes:
+    get:
+      summary: List all notes for a meter
+      operationId: getMeterNotes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated notes list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterNoteList"
+    post:
+      summary: Create a note for a meter (admin only)
+      operationId: createMeterNote
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "201":
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterNote"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/notes/{noteId}:
+    delete:
+      summary: Delete a meter note (admin only)
+      operationId: deleteMeterNote
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: noteId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Note deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  noteId: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # ── Webhooks ──────────────────────────────────────────────────────────────────
 
@@ -760,6 +888,101 @@ paths:
           description: Invalid Stellar address
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  # ── Usage Events ─────────────────────────────────────────────────────────────
+
+  /api/usage-events:
+    delete:
+      summary: Purge submitted usage events older than N days (admin only)
+      description: |
+        Hard-deletes usage events with `status = submitted` older than `olderThanDays` days.
+        Defaults to 90 days. Only submitted events are deleted — pending and failed events
+        are never purged.
+      operationId: purgeUsageEvents
+      security:
+        - AdminKey: []
+      parameters:
+        - name: olderThanDays
+          in: query
+          schema: { type: integer, default: 90, minimum: 0 }
+      responses:
+        "200":
+          description: Deleted count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletedCount: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/usage-events/failed:
+    get:
+      summary: List dead-lettered usage events (admin only)
+      description: |
+        Returns events with `status = failed` (exhausted all retry attempts) with pagination.
+      operationId: getFailedUsageEvents
+      security:
+        - AdminKey: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 10, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated failed events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UsageEvent"
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      pageSize: { type: integer }
+                      total: { type: integer }
+                      pages: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/usage-events/{id}/replay:
+    post:
+      summary: Replay a failed usage event (admin only)
+      description: |
+        Resets a failed event back to `pending` with `attempt_count = 0` so
+        the retry worker picks it up on its next tick.
+      operationId: replayUsageEvent
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Updated event record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageEvent"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # ── Admin: Dead-letter ────────────────────────────────────────────────────────
 

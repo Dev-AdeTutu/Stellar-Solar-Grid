@@ -14,8 +14,6 @@ const CACHE_TTL_MS = 60_000;
 
 // Cache for the contract-based stats endpoint (30s TTL)
 let contractCache: { data: object; expiresAt: number } | null = null;
-
-// Cache for the prom-client metrics summary endpoint (15s TTL)
 let metricsCache: { data: object; expiresAt: number } | null = null;
 
 // Cache for meter counts grouped by plan (30s TTL)
@@ -54,19 +52,15 @@ const emptyPlanBreakdown = (): MeterPlanBreakdown => ({
 
 const normalizePlan = (plan: unknown): keyof Omit<MeterPlanBreakdown, "total"> | null => {
   const raw =
-    typeof plan === "string"
-      ? plan
-      : typeof plan === "symbol"
-        ? plan.toString()
-        : plan && typeof plan === "object"
-          ? String(
-              (plan as { tag?: unknown; name?: unknown; variant?: unknown }).tag ??
-                (plan as { tag?: unknown; name?: unknown; variant?: unknown }).name ??
-                (plan as { tag?: unknown; name?: unknown; variant?: unknown }).variant ??
-                "",
-            )
-          : "";
-
+    typeof plan === "string" ? plan
+    : typeof plan === "symbol" ? plan.toString()
+    : plan && typeof plan === "object"
+      ? String(
+          (plan as { tag?: unknown; name?: unknown; variant?: unknown }).tag ??
+          (plan as { tag?: unknown; name?: unknown; variant?: unknown }).name ??
+          (plan as { tag?: unknown; name?: unknown; variant?: unknown }).variant ?? "",
+        )
+    : "";
   const normalized = raw.toLowerCase().replace(/[^a-z]/g, "");
   if (normalized === "daily") return "Daily";
   if (normalized === "weekly") return "Weekly";
@@ -166,15 +160,8 @@ statsRouter.get("/", asyncHandler(async (_req, res) => {
   const avgUnitsPerMeter = total > 0 ? units / total : 0;
   const avgRevenue = total > 0 ? revenue / total : 0;
 
-  const data = {
-    totalMeters: total,
-    activeMeters: active,
-    inactiveMeters: total - active,
-    totalUnits: units,
-    avgUnitsPerMeter,
-    totalRevenue: revenue,
-    avgRevenue,
-  };
+  const data = { totalMeters: total, activeMeters: active, inactiveMeters: total - active,
+    totalUnits: units, avgUnitsPerMeter, totalRevenue: revenue, avgRevenue };
   contractCache = { data, expiresAt: Date.now() + 30_000 };
   res.json(data);
 }));
@@ -188,7 +175,6 @@ statsRouter.get("/summary", asyncHandler(async (_req, res) => {
   }
 
   const metrics = await register.getMetricsAsJSON();
-
   const find = (name: string): number => {
     const metric = metrics.find((m: any) => m.name === name);
     if (!metric?.values) return 0;
@@ -201,7 +187,6 @@ statsRouter.get("/summary", asyncHandler(async (_req, res) => {
     activeMeters: find("solargrid_active_meters"),
     paymentVolumeXlm: find("solargrid_payment_volume_xlm"),
   };
-
   metricsCache = { data, expiresAt: Date.now() + 15_000 };
   res.json(data);
 }));

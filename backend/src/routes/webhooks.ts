@@ -117,13 +117,21 @@ webhookRouter.post(
       });
     }
 
-    const { webhook_url } = req.body;
+    // Store in environment for legacy bridge compatibility
+    process.env.PROVIDER_WEBHOOK_URL = webhook_url;
+
+    let secretHash: string | undefined;
+    if (secret) {
+      process.env.PROVIDER_WEBHOOK_SECRET = secret;
+      secretHash = crypto.createHash("sha256").update(secret).digest("hex");
+    }
 
     const record = registerWebhook(providerId, webhook_url);
 
     logger.info("Low-balance webhook registered", {
       provider_id: providerId,
       webhook_url,
+      secretHash,
     });
 
     return res.status(200).json({
