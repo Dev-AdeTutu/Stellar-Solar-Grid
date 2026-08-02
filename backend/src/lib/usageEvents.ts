@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
-import { deadLetterEvents } from "./metrics.js";
+import { deadLetterEvents, usageEvents } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -338,7 +338,12 @@ async function submitUsageEvent(id: number) {
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
 
     if (finalStatus === "failed") {
-      logger.warn({ eventId: id, meterId: event.meter_id, attempts: nextAttemptCount }, 'Usage event dead-lettered after max retries');
+      logger.error({
+        eventId: id,
+        meter_id: event.meter_id,
+        units: event.units,
+        last_error: error instanceof Error ? error.message : String(error),
+      }, 'Usage event transitioned to failed state after max retries');
       deadLetterEvents.inc({ meter_id: event.meter_id });
     }
 
@@ -412,6 +417,28 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
 
   logger.info({ eventId: id, meterId: event.meter_id }, 'Dead-lettered event requeued for retry');
   return getUsageEventById(id);
+}
+
+/** Purge submitted events older than N days. Returns deleted row count. */
+export function purgeSubmittedUsageEvents(olderThanDays: number): number {
+  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db
+    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+    .run(cutoff);
+  return result.changes;
+}
+
+/** Alias for getDeadLetterEvents with page/pageSize convention. */
+export function getFailedUsageEvents(
+  page: number,
+  pageSize: number,
+): { events: UsageEventRecord[]; total: number } {
+  return getDeadLetterEvents(pageSize, (page - 1) * pageSize);
+}
+
+/** Alias for requeueDeadLetterEvent. */
+export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined {
+  return requeueDeadLetterEvent(id);
 }
 
 /** Count of events currently in dead-letter state (used by /health). */

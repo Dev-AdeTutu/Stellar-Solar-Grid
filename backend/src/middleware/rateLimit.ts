@@ -51,3 +51,11 @@ export const readLimiter = rateLimit({
     res.status(429).json({ error: RATE_LIMIT_MESSAGE, code: "RATE_LIMITED" });
   },
 });
+
+export const paymentsLimiter = rateLimit({
+  windowMs,
+  max: parseInt(process.env.PAYMENTS_RATE_LIMIT_MAX ?? '10', 10),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many payment requests', code: 'RATE_LIMITED' },
+});

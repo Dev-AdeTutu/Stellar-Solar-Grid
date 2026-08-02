@@ -28,6 +28,7 @@ pub enum ContractError {
     MeterNotActive = 15,
     ContractNotFrozen = 16,
     ContractFrozen = 17,
+    CollaboratorNotFound = 18,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -850,15 +851,11 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         if active {
-            env.events().publish(
-                (EVT_NS, symbol_short!("mtr_actv"), meter_id.clone()),
-                (symbol_short!("access"), true),
-            );
+            env.events()
+                .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id.clone()), ());
         } else {
-            env.events().publish(
-                (EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()),
-                (symbol_short!("access"), false),
-            );
+            env.events()
+                .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()), ());
         }
         Ok(())
     }
@@ -876,8 +873,6 @@ impl SolarGridContract {
         meter.active = false;
         env.storage().persistent().set(&key, &meter);
 
-        env.events()
-            .publish((EVT_NS, symbol_short!("access"), meter_id.clone()), false);
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id), ());
         Ok(())
@@ -1881,19 +1876,13 @@ mod tests {
 
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, data)| {
-            let topics_ok = topics.len() >= 3
+            topics.len() >= 3
                 && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
-                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("mtr_xfr"))
-                && topics.get(2) == Some(meter_id.clone().into());
-            if !topics_ok {
-                return false;
-            }
-            let Ok(payload) = <(Address, Address)>::try_from_val(&env, &data) else {
-                return false;
-            };
-            payload.0 == old_owner && payload.1 == new_owner
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("mtr_xfer"))
+                && topics.get(2) == Some(meter_id.clone().into())
+                && Address::try_from_val(&env, &data).ok() == Some(new_owner.clone())
         });
-        assert!(found, "mtr_xfr event with old and new owner not emitted");
+        assert!(found, "mtr_xfer event with new owner not emitted");
         assert_eq!(client.get_meter(&meter_id).owner, new_owner);
     }
 
@@ -2536,7 +2525,7 @@ mod tests {
 
         client.update_usage(&meter_id, &5_u64, &200_i128);
         assert_eq!(client.get_meter_balance(&meter_id), 800);
-        assert_eq!(client.get_meter(&meter_id).unwrap().units_used, 5);
+        assert_eq!(client.get_meter(&meter_id).units_used, 5);
     }
 
     /// batch_update_usage panics with OracleNotSet when no oracle is registered.
@@ -2559,15 +2548,12 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
 
-        // Existing meter should return Some
         let existing = client.get_meter(&meter_id);
-        assert!(existing.is_some());
-        assert_eq!(existing.unwrap().owner, user);
+        assert_eq!(existing.owner, user);
 
-        // Missing meter should return None
         let missing_id = symbol_short!("MISSING");
-        let missing = client.get_meter(&missing_id);
-        assert!(missing.is_none());
+        let result = client.try_get_meter(&missing_id);
+        assert_eq!(result, Err(Ok(ContractError::MeterNotFound)));
     }
 
     // ── NotInitialized guard tests ────────────────────────────────────────────
@@ -3234,5 +3220,142 @@ mod tests {
         let (_env, client, _admin) = setup();
         let result = client.try_expire_meter(&symbol_short!("NO_METER"));
         assert_eq!(result, Err(Ok(ContractError::MeterNotFound)));
+    }
+
+    // ── Issue #657: set_active and deactivate_meter snapshot tests ────────────
+
+    #[test]
+    fn test_snapshot_set_active_true_emits_mtr_actv() {
+        use soroban_sdk::IntoVal;
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SA_TRUE");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.set_active(&meter_id, &false);
+        // set_active(true) is the last invocation — events().all() returns only its events
+        client.set_active(&meter_id, &true);
+
+        assert_eq!(
+            env.events().all(),
+            vec![&env,
+                (
+                    client.address.clone(),
+                    (EVT_NS, symbol_short!("mtr_actv"), meter_id.clone()).into_val(&env),
+                    ().into_val(&env),
+                ),
+            ]
+        );
+        assert!(client.get_meter(&meter_id).active);
+    }
+
+    #[test]
+    fn test_snapshot_set_active_false_emits_mtr_deact() {
+        use soroban_sdk::IntoVal;
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SA_FALS");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        // set_active(false) is the last invocation — events().all() returns only its events
+        client.set_active(&meter_id, &false);
+
+        assert_eq!(
+            env.events().all(),
+            vec![&env,
+                (
+                    client.address.clone(),
+                    (EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()).into_val(&env),
+                    ().into_val(&env),
+                ),
+            ]
+        );
+        assert!(!client.get_meter(&meter_id).active);
+    }
+
+    #[test]
+    fn test_snapshot_deactivate_meter_with_string_id() {
+        use soroban_sdk::IntoVal;
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "STR_DM");
+
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        // deactivate_meter is the last invocation
+        client.deactivate_meter(&meter_id);
+
+        assert_eq!(
+            env.events().all(),
+            vec![&env,
+                (
+                    client.address.clone(),
+                    (EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()).into_val(&env),
+                    ().into_val(&env),
+                ),
+            ]
+        );
+        assert!(!client.get_meter(&meter_id).active);
+    }
+
+    // ── Issue #656: ContractFrozen guard tests ────────────────────────────────
+
+    #[test]
+    fn test_frozen_make_payment_returns_contract_frozen() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "FRZ_PMT");
+        allowlist_and_register(&client, &meter_id, &user);
+
+        client.freeze_contract();
+        let result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        assert_eq!(result, Err(Ok(ContractError::ContractFrozen)));
+    }
+
+    #[test]
+    fn test_frozen_update_usage_returns_contract_frozen() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "FRZ_USG");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+
+        client.freeze_contract();
+        let result = client.try_update_usage(&meter_id, &1_u64, &100_i128);
+        assert_eq!(result, Err(Ok(ContractError::ContractFrozen)));
+    }
+
+    #[test]
+    fn test_freeze_unfreeze_make_payment_round_trip() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "FRZ_RT");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &2_000_i128);
+
+        // Freeze: payment blocked
+        client.freeze_contract();
+        let frozen_result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        assert_eq!(frozen_result, Err(Ok(ContractError::ContractFrozen)));
+
+        // Unfreeze: payment succeeds
+        client.unfreeze_contract();
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        assert!(client.check_access(&meter_id));
     }
 }

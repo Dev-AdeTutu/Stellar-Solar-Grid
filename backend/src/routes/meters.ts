@@ -1,7 +1,6 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { contractQuery, adminInvoke } from "../lib/stellar.js";
-import { StellarService, stellarService, server } from "../lib/stellar.js";
+import { StellarService, server } from "../lib/stellar.js";
 import {
   getUsageHistory,
   persistAndSubmitUsageEvent,
@@ -10,6 +9,8 @@ import {
 import {
   addMeterNote,
   getLatestMeterNotes,
+  getAllMeterNotes,
+  deleteMeterNote,
 } from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import {
@@ -37,17 +38,40 @@ export function createMeterRouter(stellar: StellarService) {
    *
    * Fixes #268.
    */
+  /**
+   * GET /api/meters?page=1&pageSize=20 — list all meters with pagination
+   *
+   * Registered BEFORE /:id so the literal string "meters" is never matched
+   * as a meter ID parameter.
+   */
   meterRouter.get(
     "/",
     asyncHandler(async (req, res) => {
       const page = Math.max(1, Number(req.query.page ?? 1) || 1);
-      const pageSize = Math.min(
-        100,
-        Math.max(1, Number(req.query.pageSize ?? 25) || 25),
-      );
+      const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
 
       const result = await stellar.query("get_all_meters", []);
-      const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+      let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+
+      if (owner !== undefined) {
+        allMeters = allMeters.filter((m: any) => m.owner === String(owner));
+      }
+      if (active !== undefined) {
+        const activeVal = active === "true";
+        allMeters = allMeters.filter((m: any) => Boolean(m.active) === activeVal);
+      }
+      if (plan !== undefined) {
+        const planMap: Record<string, string> = { daily: "Daily", weekly: "Weekly", usage_based: "UsageBased" };
+        const contractPlan = planMap[String(plan)];
+        allMeters = allMeters.filter((m: any) => m.plan === contractPlan);
+      }
+      if (expiresBeforeMs !== undefined) {
+        const threshold = expiresBeforeMs;
+        allMeters = allMeters.filter((m: any) => {
+          if (!m.expires_at) return false;
+          return Number(m.expires_at) * 1000 < threshold;
+        });
+      }
 
       const total = allMeters.length;
       const start = (page - 1) * pageSize;
@@ -314,9 +338,57 @@ export function createMeterRouter(stellar: StellarService) {
         return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
       }
 
-      const note = addMeterNote(meterId, req.body.text);
+      const note = addMeterNote(meterId, req.body.text, req.ip);
       invalidateCache(`/api/meters/${meterId}`);
       res.status(201).json(note);
+    }),
+  );
+
+  /** GET /api/meters/:id/notes — all notes for a meter (paginated, no auth required) */
+  meterRouter.get(
+    "/:id/notes",
+    asyncHandler(async (req, res) => {
+      const page = Math.max(1, Number(req.query.page ?? 1) || 1);
+      const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 20) || 20));
+      const result = getAllMeterNotes(req.params.id, page, pageSize);
+      res.json(result);
+    }),
+  );
+
+  /** POST /api/meters/:id/notes — create a note (admin only) */
+  meterRouter.post(
+    "/:id/notes",
+    requireAdminKey,
+    validateRequest({ body: MeterNoteSchema }),
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+      const note = addMeterNote(meterId, req.body.text, req.ip);
+      invalidateCache(`/api/meters/${meterId}`);
+      res.status(201).json(note);
+    }),
+  );
+
+  /** DELETE /api/meters/:id/notes/:noteId — hard-delete a note (admin only) */
+  meterRouter.delete(
+    "/:id/notes/:noteId",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const noteId = Number(req.params.noteId);
+      if (!Number.isInteger(noteId) || noteId <= 0) {
+        return res.status(400).json({ error: "Invalid noteId", code: "VALIDATION_ERROR" });
+      }
+      const deleted = deleteMeterNote(noteId);
+      if (!deleted) {
+        return res.status(404).json({ error: "Note not found", code: "NOT_FOUND" });
+      }
+      res.json({ deleted: true, noteId });
     }),
   );
 
@@ -503,16 +575,20 @@ export function createMeterRouter(stellar: StellarService) {
     }),
   );
 
-  /** GET /api/meters/:id/history — paginated local usage history */
+  /** GET /api/meters/:id/history?page=1&pageSize=20 — paginated local usage history */
   meterRouter.get("/:id/history", (req, res) => {
-    const page = Math.max(1, Number(req.query.page ?? 1) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, Number(req.query.pageSize ?? 25) || 25),
-    );
+    const rawPage = Number(req.query.page ?? 1);
+    const rawPageSize = Number(req.query.pageSize ?? 20);
+
+    if (!Number.isInteger(rawPage) || rawPage < 1) {
+      return res.status(400).json({ error: "page must be a positive integer", code: "VALIDATION_ERROR" });
+    }
+    if (!Number.isInteger(rawPageSize) || rawPageSize < 1 || rawPageSize > 100) {
+      return res.status(400).json({ error: "pageSize must be between 1 and 100", code: "VALIDATION_ERROR" });
+    }
 
     try {
-      const history = getUsageHistory(req.params.id, page, pageSize);
+      const history = getUsageHistory(req.params.id, rawPage, rawPageSize);
       res.json(history);
     } catch (err: any) {
       res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });

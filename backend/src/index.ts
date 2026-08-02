@@ -1,7 +1,7 @@
 import "dotenv/config";
+import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
-import compression from "compression";
 import timeout from "connect-timeout";
 import helmet from "helmet";
 import swaggerUi from "swagger-ui-express";
@@ -19,11 +19,16 @@ import { allowlistRouter } from "./routes/allowlist.js";
 import { adminLoginRouter } from "./routes/adminLogin.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
+import { adminLoginRouter } from "./routes/adminLogin.js";
+import { allowlistRouter } from "./routes/allowlist.js";
+import { collaboratorRouter } from "./routes/collaborators.js";
+import { smsConfigRouter } from "./routes/smsConfig.js";
+import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
-import { requestLogger } from "./middleware/requestLogger.js";
 import { logger } from "./lib/logger.js";
 import { register } from "./lib/metrics.js";
-import { writeLimiter } from "./middleware/rateLimit.js";
+import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
@@ -66,11 +71,9 @@ if (missing.length > 0) {
 }
 
 const PORT = process.env.PORT ?? 3001;
-// #423: configurable body size limit
 const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
 
 const app = express();
-const startTime = Date.now();
 
 // ── Security headers ─────────────────────────────────────────────────────────
 app.use(
@@ -126,7 +129,6 @@ app.use(
   }),
 );
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
-
 app.use(sanitiseBody);
 app.use(requestLoggerMiddleware);
 
@@ -211,17 +213,17 @@ try {
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", paymentsLimiter, paymentsRouter);
+app.use("/api/payments", writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
-app.use("/api/stats", statsRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/provider", providerRouter);
+app.use("/api/usage-events", usageEventsRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 
@@ -279,13 +281,10 @@ app.use((err: any, req: any, res: any, next: any) => {
       .status(504)
       .json({ error: "Request timed out", code: "TIMEOUT", requestId: getReqId() });
   }
-  next(err);
-});
 
 // #423: 413 payload too large handler + global error handler (#418).
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   logger.error({ error: err.message, stack: err.stack }, "Unhandled error");
-  const requestId = getReqId();
 
   if (err.type === "entity.too.large") {
     return res
@@ -320,10 +319,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 // ── Server startup ───────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  logger.info(
-    { port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" },
-    "SolarGrid backend started",
-  );
+  logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   initMeterNotesStore();
   startUsageEventRetryWorker();

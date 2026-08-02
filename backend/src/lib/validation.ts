@@ -51,7 +51,7 @@ export const MeterNoteSchema = z
       .string()
       .trim()
       .min(1, "text is required")
-      .max(2000, "text must be at most 2000 characters"),
+      .max(1000, "text must be at most 1000 characters"),
   })
   .strict();
 

@@ -160,6 +160,42 @@ components:
 
     # ── Dead-letter ───────────────────────────────────────────────────────────
 
+    MeterNote:
+      type: object
+      required: [id, meter_id, text, created_at]
+      properties:
+        id:
+          type: integer
+        meter_id:
+          type: string
+        author_ip:
+          type: string
+          nullable: true
+          description: IP address of the admin who created the note
+        text:
+          type: string
+          maxLength: 1000
+        created_at:
+          type: string
+          format: date-time
+
+    MeterNoteList:
+      type: object
+      required: [notes, total, page, pageSize, hasMore]
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeterNote"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
+
     DeadLetterList:
       type: object
       required: [total, limit, offset, events]
@@ -174,6 +210,51 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/UsageEvent"
+
+    # ── Webhook ───────────────────────────────────────────────────────────────
+
+    WebhookRecord:
+      type: object
+      required: [id, provider_id, url, created_at, failure_count]
+      properties:
+        id:
+          type: integer
+        provider_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        last_triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+        failure_count:
+          type: integer
+          description: Total failed delivery attempts
+
+    WebhookDelivery:
+      type: object
+      required: [id, webhook_id, attempted_at, status]
+      properties:
+        id:
+          type: integer
+        webhook_id:
+          type: integer
+        attempted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [success, failed]
+        http_status:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
 
     # ── Collaborator ──────────────────────────────────────────────────────────
 
@@ -333,7 +414,7 @@ paths:
 
   /api/meters:
     get:
-      summary: List all meters (paginated)
+      summary: List all meters (paginated, filterable)
       operationId: listMeters
       parameters:
         - name: page
@@ -342,6 +423,22 @@ paths:
         - name: pageSize
           in: query
           schema: { type: integer, default: 25, maximum: 100 }
+        - name: owner
+          in: query
+          description: Filter to meters belonging to a specific owner address
+          schema: { type: string }
+        - name: active
+          in: query
+          description: Filter by activation status
+          schema: { type: string, enum: ["true", "false"] }
+        - name: plan
+          in: query
+          description: Filter by payment plan
+          schema: { type: string, enum: [daily, weekly, usage_based] }
+        - name: expiresBefore
+          in: query
+          description: Filter meters whose expires_at is before this ISO 8601 timestamp
+          schema: { type: string, format: date-time }
       responses:
         "200":
           description: Paginated meter list
@@ -355,6 +452,8 @@ paths:
                     items: {}
                   pagination:
                     type: object
+        "400":
+          $ref: "#/components/responses/ValidationError"
     post:
       summary: Register a new meter (admin only)
       operationId: registerMeter
@@ -451,10 +550,12 @@ paths:
           schema: { type: string }
         - name: page
           in: query
-          schema: { type: integer, default: 1 }
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based)
         - name: pageSize
           in: query
-          schema: { type: integer, default: 25, maximum: 100 }
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Events per page (default 20, max 100)
       responses:
         "200":
           description: Usage history
@@ -462,6 +563,7 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [events, page, pageSize, total, hasMore]
                 properties:
                   events:
                     type: array
@@ -471,8 +573,151 @@ paths:
                   pageSize: { type: integer }
                   total: { type: integer }
                   hasMore: { type: boolean }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/meters/{id}/notes:
+    get:
+      summary: List all notes for a meter
+      operationId: getMeterNotes
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated notes list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterNoteList"
+    post:
+      summary: Create a note for a meter (admin only)
+      operationId: createMeterNote
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "201":
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterNote"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/notes/{noteId}:
+    delete:
+      summary: Delete a meter note (admin only)
+      operationId: deleteMeterNote
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: noteId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Note deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean }
+                  noteId: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   # ── Webhooks ──────────────────────────────────────────────────────────────────
+
+  /api/webhooks:
+    get:
+      summary: List all registered webhooks (admin only)
+      description: |
+        Returns all registered webhooks with audit fields: id, provider_id, url,
+        created_at, last_triggered_at, and failure_count. Requires admin authentication.
+      operationId: listWebhooks
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks, count]
+                properties:
+                  webhooks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookRecord"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/webhooks/{id}/deliveries:
+    get:
+      summary: Last 50 delivery attempts for a webhook
+      operationId: getWebhookDeliveries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Delivery history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deliveries, count]
+                properties:
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+                  count:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
   /api/webhooks/low-balance:
     post:
@@ -644,6 +889,101 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  # ── Usage Events ─────────────────────────────────────────────────────────────
+
+  /api/usage-events:
+    delete:
+      summary: Purge submitted usage events older than N days (admin only)
+      description: |
+        Hard-deletes usage events with `status = submitted` older than `olderThanDays` days.
+        Defaults to 90 days. Only submitted events are deleted — pending and failed events
+        are never purged.
+      operationId: purgeUsageEvents
+      security:
+        - AdminKey: []
+      parameters:
+        - name: olderThanDays
+          in: query
+          schema: { type: integer, default: 90, minimum: 0 }
+      responses:
+        "200":
+          description: Deleted count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deletedCount: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/usage-events/failed:
+    get:
+      summary: List dead-lettered usage events (admin only)
+      description: |
+        Returns events with `status = failed` (exhausted all retry attempts) with pagination.
+      operationId: getFailedUsageEvents
+      security:
+        - AdminKey: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 10, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated failed events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UsageEvent"
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      pageSize: { type: integer }
+                      total: { type: integer }
+                      pages: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/usage-events/{id}/replay:
+    post:
+      summary: Replay a failed usage event (admin only)
+      description: |
+        Resets a failed event back to `pending` with `attempt_count = 0` so
+        the retry worker picks it up on its next tick.
+      operationId: replayUsageEvent
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Updated event record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageEvent"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   # ── Admin: Dead-letter ────────────────────────────────────────────────────────
 
   /api/admin/dead-letters:
@@ -735,6 +1075,100 @@ paths:
       responses:
         "200":
           description: Prometheus metrics text
+
+  # ── Solar ─────────────────────────────────────────────────────────────────────
+
+  /api/solar/forecast:
+    get:
+      summary: Estimate solar energy production and revenue
+      description: |
+        Returns per-period (daily/weekly/monthly/yearly) kWh production estimates
+        and revenue projections for a given panel setup. All calculations are
+        server-side; no external data sources are used.
+      operationId: getSolarForecast
+      tags: [solar]
+      parameters:
+        - name: capacityKw
+          in: query
+          required: true
+          description: Total panel capacity in kilowatts (e.g. 5)
+          schema: { type: number, exclusiveMinimum: 0, maximum: 10000 }
+        - name: peakSunHours
+          in: query
+          required: true
+          description: Average daily peak sun hours for the location
+          schema: { type: number, exclusiveMinimum: 0, maximum: 24 }
+        - name: efficiency
+          in: query
+          description: Panel efficiency 0–1 (default 0.20)
+          schema: { type: number, exclusiveMinimum: 0, maximum: 1, default: 0.20 }
+        - name: panelAgeYears
+          in: query
+          description: Age of panels in years for degradation calculation (default 0)
+          schema: { type: number, minimum: 0, default: 0 }
+        - name: ratePerKwh
+          in: query
+          description: Local electricity rate in XLM/kWh (default 0.12)
+          schema: { type: number, minimum: 0, default: 0.12 }
+      responses:
+        "200":
+          description: Solar production forecast
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [panelCapacityKw, peakSunHours, efficiency, panelAgeYears, effectiveDegradation, dailyKwh, forecast, assumptions]
+                properties:
+                  panelCapacityKw: { type: number }
+                  peakSunHours: { type: number }
+                  efficiency: { type: number }
+                  panelAgeYears: { type: number }
+                  effectiveDegradation: { type: number }
+                  dailyKwh: { type: number }
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      required: [period, days, estimatedKwh, estimatedRevenue]
+                      properties:
+                        period: { type: string }
+                        days: { type: integer }
+                        estimatedKwh: { type: number }
+                        estimatedRevenue: { type: number }
+                  assumptions:
+                    type: object
+                    properties:
+                      systemLoss: { type: number }
+                      degradationRatePerYear: { type: number }
+                      ratePerKwh: { type: number }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/solar/irradiance-zones:
+    get:
+      summary: Reference peak sun hours by climate zone
+      description: |
+        Returns a static list of common climate zones with their reference peak
+        sun-hour values. Useful for populating dropdowns on the frontend.
+      operationId: getSolarIrradianceZones
+      tags: [solar]
+      responses:
+        "200":
+          description: Irradiance zone list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zones]
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, peakSunHours]
+                      properties:
+                        name: { type: string }
+                        peakSunHours: { type: number }
 
 # ── Shared response components ────────────────────────────────────────────────
 

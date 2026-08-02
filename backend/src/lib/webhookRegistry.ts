@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import Database from "better-sqlite3";
 import { logger } from "./logger.js";
 import { webhookDeliveries, webhookDeliveryFailures } from "./metrics.js";
+import { getReqId } from "./requestContext.js";
 
 const DB_PATH =
   process.env.WEBHOOKS_DB_PATH ??
@@ -23,6 +24,17 @@ export interface WebhookRecord {
   provider_id: string;
   url: string;
   created_at: string;
+  last_triggered_at: string | null;
+  failure_count: number;
+}
+
+export interface WebhookDelivery {
+  id: number;
+  webhook_id: number;
+  attempted_at: string;
+  status: string;
+  http_status: number | null;
+  error: string | null;
 }
 
 const MAX_RETRIES = 5;
@@ -46,7 +58,29 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_webhooks_provider_id
       ON webhooks (provider_id);
+
+    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      webhook_id INTEGER NOT NULL,
+      attempted_at TEXT NOT NULL,
+      status TEXT NOT NULL,
+      http_status INTEGER,
+      error TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook_id
+      ON webhook_deliveries (webhook_id);
   `);
+
+  // Safe migration: add columns only if they don't exist yet
+  const cols = (database.pragma("table_info(webhooks)") as any[]).map((c: any) => c.name);
+  if (!cols.includes("last_triggered_at")) {
+    database.exec("ALTER TABLE webhooks ADD COLUMN last_triggered_at TEXT");
+  }
+  if (!cols.includes("failure_count")) {
+    database.exec("ALTER TABLE webhooks ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0");
+  }
+
   return database;
 }
 
@@ -61,16 +95,30 @@ export function registerWebhook(providerId: string, url: string): WebhookRecord 
   initDatabase();
   const createdAt = new Date().toISOString();
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO webhooks (provider_id, url, created_at)
-    VALUES (?, ?, ?)
+    INSERT OR IGNORE INTO webhooks (provider_id, url, created_at, failure_count)
+    VALUES (?, ?, ?, 0)
   `);
   stmt.run(providerId, url, createdAt);
 
   const result = db.prepare(
-    "SELECT id, provider_id, url, created_at FROM webhooks WHERE provider_id = ? AND url = ?"
+    "SELECT id, provider_id, url, created_at, last_triggered_at, failure_count FROM webhooks WHERE provider_id = ? AND url = ?"
   ).get(providerId, url) as WebhookRecord;
 
   return result;
+}
+
+export function getAllWebhooks(): WebhookRecord[] {
+  initDatabase();
+  return db.prepare(
+    "SELECT id, provider_id, url, created_at, last_triggered_at, failure_count FROM webhooks ORDER BY created_at DESC"
+  ).all() as WebhookRecord[];
+}
+
+export function getWebhookDeliveries(webhookId: number): WebhookDelivery[] {
+  initDatabase();
+  return db.prepare(
+    "SELECT id, webhook_id, attempted_at, status, http_status, error FROM webhook_deliveries WHERE webhook_id = ? ORDER BY attempted_at DESC LIMIT 50"
+  ).all(webhookId) as WebhookDelivery[];
 }
 
 export function unregisterWebhook(providerId: string, url: string): boolean {
@@ -102,7 +150,7 @@ export function getWebhookUrls(providerId?: string): ReadonlySet<string> {
 export function getWebhooksByProvider(providerId: string): WebhookRecord[] {
   initDatabase();
   return db.prepare(
-    "SELECT id, provider_id, url, created_at FROM webhooks WHERE provider_id = ? ORDER BY created_at DESC"
+    "SELECT id, provider_id, url, created_at, last_triggered_at, failure_count FROM webhooks WHERE provider_id = ? ORDER BY created_at DESC"
   ).all(providerId) as WebhookRecord[];
 }
 
@@ -122,66 +170,83 @@ async function fireWebhookInternal(
   attempt: number,
   correlationId?: string,
 ): Promise<void> {
-  // Build request headers — always include Content-Type; forward X-Request-ID when available
+  // Fall back to the current async context's request ID when not explicitly supplied
+  const effectiveCorrelationId = correlationId ?? getReqId();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (correlationId) {
-    headers["X-Request-ID"] = correlationId;
+  if (effectiveCorrelationId) {
+    headers["X-Request-ID"] = effectiveCorrelationId;
   }
+
+  const attemptedAt = new Date().toISOString();
+
+  // Resolve the registered webhook row so we can write delivery records
+  let webhookId: number | null = null;
+  if (db) {
+    const row = db.prepare("SELECT id FROM webhooks WHERE url = ?").get(url) as { id: number } | undefined;
+    webhookId = row?.id ?? null;
+  }
+
+  let httpStatus: number | null = null;
+  let deliveryError: string | null = null;
+  let succeeded = false;
 
   try {
     const response = await fetch(url, {
       method: "POST",
       headers,
       body: payload,
-      signal: AbortSignal.timeout(10_000), // 10 second timeout
+      signal: AbortSignal.timeout(10_000),
     });
+
+    httpStatus = response.status;
 
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
+    succeeded = true;
     webhookDeliveries.inc({ status: "success", attempt: String(attempt + 1) });
 
-    // Success - log if this was a retry
     if (attempt > 0) {
-      logger.info("Webhook delivery succeeded after retry", { url, attempt, correlationId });
+      logger.info("Webhook delivery succeeded after retry", { url, attempt, correlationId: effectiveCorrelationId });
     }
   } catch (err: any) {
+    deliveryError = err.message;
     webhookDeliveries.inc({ status: "failure", attempt: String(attempt + 1) });
-    // Log the failure
     logger.warn("Webhook delivery failed", {
       url,
       attempt: attempt + 1,
       maxRetries: MAX_RETRIES,
       error: err.message,
-      correlationId,
+      correlationId: effectiveCorrelationId,
     });
 
-    // Retry if we haven't exceeded max attempts
     if (attempt < MAX_RETRIES) {
-      const backoffMs = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s, 8s, 16s
+      const backoffMs = Math.pow(2, attempt) * 1000;
       const nextRetryAt = Date.now() + backoffMs;
-
-      retryQueue.push({
-        url,
-        payload,
-        attempt: attempt + 1,
-        nextRetryAt,
-        correlationId,
-      });
-
+      retryQueue.push({ url, payload, attempt: attempt + 1, nextRetryAt, correlationId: effectiveCorrelationId });
       scheduleRetryProcessor();
     } else {
-      // #529: increment the permanent-failure counter with a hashed URL so
-      // Grafana can alert on delivery failures without leaking full URLs
-      // (which may contain tokens or PII) into metric label cardinality.
       const urlHash = crypto.createHash("sha256").update(url).digest("hex").slice(0, 12);
       webhookDeliveryFailures.inc({ url_hash: urlHash });
       logger.error("Webhook delivery failed permanently after max retries", {
         url,
         attempts: MAX_RETRIES + 1,
-        correlationId,
+        correlationId: effectiveCorrelationId,
       });
+    }
+  }
+
+  // Persist delivery record and update webhook audit columns
+  if (webhookId !== null && db) {
+    db.prepare(
+      "INSERT INTO webhook_deliveries (webhook_id, attempted_at, status, http_status, error) VALUES (?, ?, ?, ?, ?)"
+    ).run(webhookId, attemptedAt, succeeded ? "success" : "failed", httpStatus, deliveryError);
+
+    db.prepare("UPDATE webhooks SET last_triggered_at = ? WHERE id = ?").run(attemptedAt, webhookId);
+
+    if (!succeeded) {
+      db.prepare("UPDATE webhooks SET failure_count = failure_count + 1 WHERE id = ?").run(webhookId);
     }
   }
 }
