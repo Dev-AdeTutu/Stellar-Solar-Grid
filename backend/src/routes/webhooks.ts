@@ -117,8 +117,10 @@ webhookRouter.post(
       });
     }
 
-    // Store in environment for legacy bridge compatibility
-    process.env.PROVIDER_WEBHOOK_URL = webhook_url;
+    const { webhook_url, secret } = req.body as {
+      webhook_url: string;
+      secret?: string;
+    };
 
     let secretHash: string | undefined;
     if (secret) {

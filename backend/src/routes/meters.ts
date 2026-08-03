@@ -50,32 +50,6 @@ export function createMeterRouter(stellar: StellarService) {
       const page = Math.max(1, Number(req.query.page ?? 1) || 1);
       const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
 
-      const { owner, active, plan, expiresBefore } = req.query;
-
-      if (plan !== undefined && !["daily", "weekly", "usage_based"].includes(String(plan))) {
-        return res.status(400).json({
-          error: "plan must be one of: daily, weekly, usage_based",
-          code: "VALIDATION_ERROR",
-        });
-      }
-      if (active !== undefined && !["true", "false"].includes(String(active))) {
-        return res.status(400).json({
-          error: "active must be 'true' or 'false'",
-          code: "VALIDATION_ERROR",
-        });
-      }
-      let expiresBeforeMs: number | undefined;
-      if (expiresBefore !== undefined) {
-        const d = new Date(String(expiresBefore));
-        if (isNaN(d.getTime())) {
-          return res.status(400).json({
-            error: "expiresBefore must be a valid ISO 8601 date string",
-            code: "VALIDATION_ERROR",
-          });
-        }
-        expiresBeforeMs = d.getTime();
-      }
-
       const result = await stellar.query("get_all_meters", []);
       let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 

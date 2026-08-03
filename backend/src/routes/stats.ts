@@ -1,10 +1,7 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { server, CONTRACT_ID, stellarService } from "../lib/stellar.js";
+import { server, CONTRACT_ID } from "../lib/stellar.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { getTopConsumers } from "../lib/usageEvents.js";
-import { register } from "../lib/metrics.js";
-import { logger } from "../lib/logger.js";
 
 export const statsRouter = Router();
 
@@ -12,79 +9,15 @@ const DEFAULT_DAYS = 30;
 const MAX_DAYS = 90;
 const CACHE_TTL_MS = 60_000;
 
-// Cache for the contract-based stats endpoint (30s TTL)
-let contractCache: { data: object; expiresAt: number } | null = null;
-let metricsCache: { data: object; expiresAt: number } | null = null;
-
-// Cache for meter counts grouped by plan (30s TTL)
-let meterPlanCache: { data: object; expiresAt: number } | null = null;
+interface RevenueHistoryEntry {
+  date: string; // YYYY-MM-DD
+  revenue_xlm: number;
+}
 
 const revenueHistoryCache = new Map<
   number,
   { data: RevenueHistoryEntry[]; ts: number }
 >();
-
-export function __resetStatsCache() {
-  contractCache = null;
-  metricsCache = null;
-  meterPlanCache = null;
-  revenueHistoryCache.clear();
-}
-
-interface RevenueHistoryEntry {
-  date: string;
-  revenue_xlm: number;
-}
-
-type MeterPlanBreakdown = {
-  Daily: number;
-  Weekly: number;
-  Usage: number;
-  total: number;
-};
-
-const emptyPlanBreakdown = (): MeterPlanBreakdown => ({
-  Daily: 0,
-  Weekly: 0,
-  Usage: 0,
-  total: 0,
-});
-
-const normalizePlan = (plan: unknown): keyof Omit<MeterPlanBreakdown, "total"> | null => {
-  const raw =
-    typeof plan === "string" ? plan
-    : typeof plan === "symbol" ? plan.toString()
-    : plan && typeof plan === "object"
-      ? String(
-          (plan as { tag?: unknown; name?: unknown; variant?: unknown }).tag ??
-          (plan as { tag?: unknown; name?: unknown; variant?: unknown }).name ??
-          (plan as { tag?: unknown; name?: unknown; variant?: unknown }).variant ?? "",
-        )
-    : "";
-  const normalized = raw.toLowerCase().replace(/[^a-z]/g, "");
-  if (normalized === "daily") return "Daily";
-  if (normalized === "weekly") return "Weekly";
-  if (normalized === "usage" || normalized === "usagebased") return "Usage";
-  return null;
-};
-
-function requireAdminKey(req: any, res: any, next: any) {
-  const adminKey = process.env.ADMIN_API_KEY;
-  const provided = req.headers["x-admin-key"];
-  if (!adminKey || provided !== adminKey) {
-    return res.status(401).json({ error: "Valid admin key required" });
-  }
-  return next();
-}
-
-/**
- * GET /api/stats/top-consumers?days=30
- */
-statsRouter.get("/top-consumers", requireAdminKey, (req, res) => {
-  const days = Math.max(1, Number(req.query.days ?? 30) || 30);
-  const consumers = getTopConsumers(days, 10);
-  res.json(consumers);
-});
 
 /**
  * GET /api/stats/revenue-history?days=30

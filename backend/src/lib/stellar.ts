@@ -19,28 +19,6 @@ export const HORIZON_URL =
     ? "https://horizon.stellar.org"
     : "https://horizon-testnet.stellar.org");
 
-// Load keypair once at module init. The raw secret string is never referenced again.
-const adminKeypair = StellarSdk.Keypair.fromSecret(process.env.ADMIN_SECRET_KEY!);
-
-/**
- * Poll until a submitted transaction reaches SUCCESS or FAILED.
- * Throws a descriptive error on FAILED status or when maxAttempts is exhausted.
- */
-export async function waitForConfirmation(
-  hash: string,
-  maxAttempts = 10,
-  pollIntervalMs = 2_000
-): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    const status = await server.getTransaction(hash);
-    if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.SUCCESS) return;
-    if (status.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.FAILED) {
-      throw new Error(`Transaction failed: ${hash}`);
-    }
-    await new Promise((r) => setTimeout(r, pollIntervalMs));
-  }
-  throw new Error(`Transaction timed out: ${hash}`);
-}
 const SECRET_ENV = process.env.ADMIN_SECRET_KEY ?? "";
 
 export const scrub = (msg: string | undefined): string => {

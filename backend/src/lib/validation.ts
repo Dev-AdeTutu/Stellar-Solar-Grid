@@ -40,10 +40,9 @@ export const UsageUpdateSchema = z
   })
   .strict();
 
-export const MqttPayloadSchema = z.object({
-  meterId: MeterIdSchema,
-  units: z.number().int("units must be an integer").positive("units must be positive"),
-  cost: z.number().int("cost must be an integer").positive("cost must be positive"),
+/** MQTT payload schema — extends UsageUpdateSchema with meterId from the topic. */
+export const MqttPayloadSchema = UsageUpdateSchema.extend({
+  meterId: z.string().min(1),
 });
 
 export const MeterNoteSchema = z
