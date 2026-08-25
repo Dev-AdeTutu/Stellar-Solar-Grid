@@ -29,6 +29,8 @@ pub enum ContractError {
     ContractNotFrozen = 16,
     ContractFrozen = 17,
     CollaboratorNotFound = 18,
+    RefundExceedsPayments = 19,
+    RefundLimitExceeded = 20,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -46,6 +48,9 @@ const FROZEN: Symbol = symbol_short!("FROZEN");
 const CONTRACT_VERSION: Symbol = symbol_short!("CTR_VER");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
+/// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
+const REFUND_LIMIT: Symbol = symbol_short!("RFND_LIM");
+const REFUND_WINDOW: Symbol = symbol_short!("RFND_WIN");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -152,6 +157,19 @@ pub enum DataKey {
     OwnerMeters(Address),
     ProviderRevenue(Address),
     MeterBalance(String),
+    /// Cumulative amount `payer` has paid towards `meter_id` (lifetime, not reduced by refunds).
+    PayerPaid(String, Address),
+    /// Cumulative amount already refunded to `payer` for `meter_id`.
+    PayerRefunded(String, Address),
+}
+
+/// Tracks admin-issued refunds within the current rolling window, used to cap
+/// total refunds per period and prevent contract balance drainage.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct RefundWindow {
+    pub window_start: u64,
+    pub window_spent: i128,
 }
 
 /// Combined view returned by get_meter_full — meter state plus its balance
@@ -617,6 +635,15 @@ impl SolarGridContract {
             .persistent()
             .set(&bal_key, &prev_bal.saturating_add(amount));
 
+        // Track lifetime payments per (meter, payer) so refunds can be capped
+        // to what that address has actually paid.
+        let payer_paid_key = DataKey::PayerPaid(meter_id.clone(), payer.clone());
+        let payer_paid: i128 = env.storage().persistent().get(&payer_paid_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&payer_paid_key, &payer_paid.saturating_add(amount));
+
+        let old_plan = meter.plan.clone();
         meter.active = true;
         meter.plan = plan.clone();
         meter.last_payment = now;
@@ -634,12 +661,173 @@ impl SolarGridContract {
         // payment_received
         env.events().publish(
             (EVT_NS, symbol_short!("payment"), meter_id.clone()),
-            (payer, token_address, amount, plan),
+            (payer, token_address, amount, plan.clone()),
         );
+        // plan_changed — emitted whenever a payment switches the meter's active plan,
+        // so off-chain services can track plan migrations (e.g. Daily -> Weekly).
+        if old_plan != plan {
+            env.events().publish(
+                (EVT_NS, symbol_short!("plan_chg"), meter_id.clone()),
+                (old_plan, plan, now),
+            );
+        }
         // meter_activated — payment always activates the meter
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id), ());
         Ok(())
+    }
+
+    /// Refund a previous payment. Admin-only.
+    ///
+    /// Transfers `amount` back to `recipient` from the contract's token balance,
+    /// reduces `meter_id`'s tracked balance (and the admin's tracked provider
+    /// revenue) accordingly, and records `reason` in the emitted event for the
+    /// audit trail.
+    ///
+    /// # Guards
+    /// - `amount` must be <= the total this `recipient` has actually paid towards
+    ///   `meter_id`, minus any amount already refunded to them — this prevents
+    ///   refunding more than was ever received from that address.
+    /// - Total refunds across all recipients are capped per rolling 24h window
+    ///   via [`Self::set_refund_limit`] (0 = unlimited), to prevent a compromised
+    ///   or buggy admin flow from draining the contract balance in one burst.
+    ///
+    /// # Errors
+    /// - [`ContractError::InvalidAmount`] when `amount <= 0`
+    /// - [`ContractError::Unauthorized`] when caller is not the contract admin
+    /// - [`ContractError::MeterNotFound`] when `meter_id` doesn't exist
+    /// - [`ContractError::RefundExceedsPayments`] when `amount` exceeds what
+    ///   `recipient` has paid (net of prior refunds) for this meter
+    /// - [`ContractError::RefundLimitExceeded`] when `amount` would push total
+    ///   refunds in the current window past the configured limit
+    /// - [`ContractError::InsufficientBalance`] when the contract's token
+    ///   balance is less than `amount`
+    ///
+    /// Emits: `pmt_rfnd { recipient, amount, reason, meter_id, refunded_balance }`
+    /// (the logical event name is `payment_refunded`; the on-chain topic is
+    /// abbreviated to fit the Soroban `Symbol` short-code limit).
+    pub fn refund_payment(
+        env: Env,
+        meter_id: String,
+        amount: i128,
+        recipient: Address,
+        reason: String,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        // Cap refunds to what this recipient has actually paid (net of prior refunds).
+        let paid_key = DataKey::PayerPaid(meter_id.clone(), recipient.clone());
+        let refunded_key = DataKey::PayerRefunded(meter_id.clone(), recipient.clone());
+        let paid: i128 = env.storage().persistent().get(&paid_key).unwrap_or(0);
+        let already_refunded: i128 = env.storage().persistent().get(&refunded_key).unwrap_or(0);
+        let refundable = paid.saturating_sub(already_refunded);
+        if amount > refundable {
+            return Err(ContractError::RefundExceedsPayments);
+        }
+
+        // Enforce the rolling-window cap across all recipients, if configured.
+        let refund_limit: i128 = env.storage().instance().get(&REFUND_LIMIT).unwrap_or(0);
+        let now = env.ledger().timestamp();
+        if refund_limit > 0 {
+            let mut window: RefundWindow = env
+                .storage()
+                .instance()
+                .get(&REFUND_WINDOW)
+                .unwrap_or(RefundWindow {
+                    window_start: now,
+                    window_spent: 0,
+                });
+            if now.saturating_sub(window.window_start) > SECONDS_PER_DAY {
+                window.window_start = now;
+                window.window_spent = 0;
+            }
+            if window.window_spent.saturating_add(amount) > refund_limit {
+                return Err(ContractError::RefundLimitExceeded);
+            }
+            window.window_spent = window.window_spent.saturating_add(amount);
+            env.storage().instance().set(&REFUND_WINDOW, &window);
+        }
+
+        let token_address = Self::get_token_address(&env)?;
+        let token_client = token::Client::new(&env, &token_address);
+        let contract_balance = token_client.balance(&env.current_contract_address());
+        if amount > contract_balance {
+            return Err(ContractError::InsufficientBalance);
+        }
+
+        // Update meter balance — the refunded amount is no longer available for usage.
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        let new_balance = balance.saturating_sub(amount).max(0);
+        env.storage().persistent().set(&bal_key, &new_balance);
+        if new_balance == 0 && meter.active {
+            meter.active = false;
+            env.storage().persistent().set(&key, &meter);
+            env.events()
+                .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()), ());
+        }
+
+        // Reverse the admin's tracked revenue for the refunded amount, so the
+        // refunded funds can't also be withdrawn via withdraw_revenue.
+        let admin = Self::get_admin(&env)?;
+        let provider_key = DataKey::ProviderRevenue(admin);
+        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&provider_key, &provider_revenue.saturating_sub(amount).max(0));
+
+        env.storage()
+            .persistent()
+            .set(&refunded_key, &already_refunded.saturating_add(amount));
+
+        token_client.transfer(&env.current_contract_address(), &recipient, &amount);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("pmt_rfnd"), meter_id),
+            (recipient, amount, reason, new_balance, now),
+        );
+        Ok(())
+    }
+
+    /// Set the maximum total amount refundable (across all recipients) per
+    /// rolling 24h window. Admin-only. A limit of 0 means unlimited.
+    ///
+    /// Guards against a compromised admin key or a scripting bug issuing a
+    /// burst of refunds that drains the contract's token balance.
+    pub fn set_refund_limit(env: Env, limit: i128) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if limit < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let old_limit: i128 = env.storage().instance().get(&REFUND_LIMIT).unwrap_or(0);
+        env.storage().instance().set(&REFUND_LIMIT, &limit);
+        env.events().publish(
+            (EVT_NS, symbol_short!("rfnd_lim")),
+            (old_limit, limit),
+        );
+        Ok(())
+    }
+
+    /// Total amount `payer` has paid towards `meter_id` (lifetime, unaffected by refunds).
+    pub fn get_payer_paid(env: Env, meter_id: String, payer: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PayerPaid(meter_id, payer))
+            .unwrap_or(0)
+    }
+
+    /// Total amount already refunded to `payer` for `meter_id`.
+    pub fn get_payer_refunded(env: Env, meter_id: String, payer: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PayerRefunded(meter_id, payer))
+            .unwrap_or(0)
     }
 
     /// Withdraw accumulated revenue from the contract vault to the provider address.
@@ -3357,5 +3545,190 @@ mod tests {
         client.unfreeze_contract();
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
         assert!(client.check_access(&meter_id));
+    }
+
+    // ── plan_changed event tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_plan_change_emits_plan_chg_event() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "PLAN_CHG");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        // Same plan again — no plan_chg event expected.
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        let events_before = env.events().all();
+        let has_plan_chg_yet = events_before.iter().any(|(_, topics, _)| {
+            topics.len() >= 2 && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("plan_chg"))
+        });
+        assert!(!has_plan_chg_yet, "plan_chg should not fire when plan is unchanged");
+
+        // Switch to Weekly — should emit plan_chg.
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly);
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, _)| {
+            topics.len() >= 3
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("plan_chg"))
+                && topics.get(2) == Some(meter_id.clone().into())
+        });
+        assert!(found, "plan_chg event not emitted on plan switch");
+    }
+
+    // ── refund_payment tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_refund_payment_transfers_and_updates_balance() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let token_client = token::Client::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND1");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        assert_eq!(client.get_meter_balance(&meter_id), 10_000);
+
+        let reason = String::from_str(&env, "duplicate payment");
+        client.refund_payment(&meter_id, &3_000_i128, &user, &reason);
+
+        assert_eq!(client.get_meter_balance(&meter_id), 7_000);
+        assert_eq!(token_client.balance(&user), 3_000);
+        assert_eq!(client.get_payer_refunded(&meter_id, &user), 3_000);
+    }
+
+    #[test]
+    fn test_refund_payment_emits_pmt_rfnd_event() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND2");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &5_000_i128);
+        client.make_payment(&meter_id, &user, &5_000_i128, &PaymentPlan::UsageBased);
+
+        let reason = String::from_str(&env, "billing error");
+        client.refund_payment(&meter_id, &1_000_i128, &user, &reason);
+
+        let events = env.events().all();
+        let found = events.iter().any(|(_, topics, _)| {
+            topics.len() >= 2
+                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("pmt_rfnd"))
+        });
+        assert!(found, "pmt_rfnd event not emitted");
+    }
+
+    #[test]
+    fn test_refund_payment_rejects_amount_above_total_paid() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND3");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+
+        let reason = String::from_str(&env, "abuse attempt");
+        let result = client.try_refund_payment(&meter_id, &1_001_i128, &user, &reason);
+        assert_eq!(result, Err(Ok(ContractError::RefundExceedsPayments)));
+    }
+
+    #[test]
+    fn test_refund_payment_rejects_double_refund_over_paid_total() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND4");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+
+        let reason = String::from_str(&env, "partial refund");
+        client.refund_payment(&meter_id, &600_i128, &user, &reason);
+        // Only 400 remains refundable.
+        let result = client.try_refund_payment(&meter_id, &500_i128, &user, &reason);
+        assert_eq!(result, Err(Ok(ContractError::RefundExceedsPayments)));
+    }
+
+    #[test]
+    fn test_refund_payment_rejects_recipient_with_no_payments() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND5");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+
+        // A recipient who never paid towards this meter has nothing refundable,
+        // regardless of the contract's overall token balance.
+        let reason = String::from_str(&env, "n/a");
+        let stranger = Address::generate(&env);
+        let result = client.try_refund_payment(&meter_id, &100_i128, &stranger, &reason);
+        assert_eq!(result, Err(Ok(ContractError::RefundExceedsPayments)));
+    }
+
+    #[test]
+    fn test_refund_payment_zero_amount_returns_typed_error() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND6");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+
+        let reason = String::from_str(&env, "n/a");
+        let result = client.try_refund_payment(&meter_id, &0_i128, &user, &reason);
+        assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+    }
+
+    #[test]
+    fn test_refund_payment_respects_rolling_window_limit() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND7");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+
+        // Cap total refunds to 500 stroops per 24h window.
+        client.set_refund_limit(&500_i128);
+
+        let reason = String::from_str(&env, "window test");
+        client.refund_payment(&meter_id, &500_i128, &user, &reason);
+
+        // A further refund within the same window should be rejected even
+        // though the payer still has refundable balance.
+        let result = client.try_refund_payment(&meter_id, &1_i128, &user, &reason);
+        assert_eq!(result, Err(Ok(ContractError::RefundLimitExceeded)));
+
+        // After the window rolls over, refunds resume.
+        env.ledger()
+            .with_mut(|li| li.timestamp += SECONDS_PER_DAY + 1);
+        client.refund_payment(&meter_id, &1_i128, &user, &reason);
+        assert_eq!(client.get_payer_refunded(&meter_id, &user), 501);
+    }
+
+    #[test]
+    fn test_refund_payment_deactivates_meter_when_balance_hits_zero() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "RFND8");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        assert!(client.get_meter(&meter_id).active);
+
+        let reason = String::from_str(&env, "full refund");
+        client.refund_payment(&meter_id, &1_000_i128, &user, &reason);
+        assert!(!client.get_meter(&meter_id).active);
+        assert!(!client.check_access(&meter_id));
     }
 }

@@ -12,11 +12,49 @@ import {
 } from "recharts";
 
 export interface UsageDataPoint {
+  /**
+   * An ISO 8601 timestamp (e.g. "2026-08-24T06:00:00Z"), or a plain
+   * "YYYY-MM-DD" date for day-granularity data. Always rendered in the
+   * viewer's local timezone — see `formatTickLocal` / `formatTooltipLocal`.
+   */
   date: string;
   /** Energy consumed in kWh */
   units: number;
   /** Cost deducted in XLM (optional) */
   cost?: number;
+}
+
+/** True if `value` carries a time-of-day component (not just a calendar date). */
+export function hasTimeComponent(value: string): boolean {
+  return /T\d{2}:\d{2}/.test(value);
+}
+
+/**
+ * Format an x-axis tick in the viewer's local timezone.
+ * Falls back to the raw value when it isn't a parseable date, so
+ * already-formatted or unexpected strings don't crash the chart.
+ */
+export function formatTickLocal(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return hasTimeComponent(value)
+    ? parsed.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/**
+ * Format a tooltip label with an explicit timezone indicator, so it's clear
+ * the time shown is local and not UTC (e.g. "Aug 24, 2:00 PM GMT+3").
+ */
+export function formatTooltipLocal(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(hasTimeComponent(value) ? { hour: "numeric", minute: "2-digit" } : {}),
+    timeZoneName: "short",
+  });
 }
 
 interface UsageChartProps {
@@ -138,6 +176,7 @@ export default function UsageChart({
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
               <XAxis
                 dataKey="date"
+                tickFormatter={formatTickLocal}
                 tick={{ fill: "#6b7280", fontSize: 11 }}
                 axisLine={false}
                 tickLine={false}
@@ -147,7 +186,7 @@ export default function UsageChart({
                 axisLine={false}
                 tickLine={false}
               />
-              <Tooltip content={<CustomTooltip />} />
+              <Tooltip content={<CustomTooltip />} labelFormatter={formatTooltipLocal} />
               <Legend
                 wrapperStyle={{
                   fontSize: "11px",
