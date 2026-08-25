@@ -11,8 +11,15 @@
 import mqtt from "mqtt";
 import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
-import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
+import {
+  persistAndSubmitUsageEvent,
+  insertSubmittedUsageEvents,
+  getKV,
+  setKV,
+  getTypicalWeeklyUsageStroops,
+} from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
+import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -37,6 +44,7 @@ const EVENT_POLL_INTERVAL_MS = Number(
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
 
+const FALLBACK_LOW_BALANCE_THRESHOLD = parseInt(
 // Module-scope batch state so shutdown and flush share the same buffer
 let pending: Reading[] = [];
 let flushIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -147,19 +155,42 @@ async function checkAndNotifyLowBalance(meterId: string) {
     ]);
     const meter = StellarSdk.scValToNative(result) as {
       balance: bigint;
+      owner?: string;
       [key: string]: unknown;
     };
     const balance = Number(meter.balance);
+    const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
+    const dynamicThreshold =
+      weeklyTypicalStroops > 0
+        ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
+        : FALLBACK_LOW_BALANCE_THRESHOLD;
 
-    if (balance <= LOW_BALANCE_THRESHOLD) {
+    if (balance <= dynamicThreshold) {
+      const ownerAddress = typeof meter.owner === "string" ? meter.owner : "";
       const body = JSON.stringify({
         event: "low_balance",
         meter_id: meterId,
         balance,
-        threshold: LOW_BALANCE_THRESHOLD,
+        threshold: dynamicThreshold,
+        weekly_typical_stroops: weeklyTypicalStroops,
         timestamp: new Date().toISOString(),
       });
 
+      const urls = getWebhookUrls();
+      if (urls.size > 0) {
+        // Fire webhooks with automatic retry
+        await Promise.all([...urls].map((url) => fireWebhook(url, body)));
+      }
+
+      if (ownerAddress) {
+        await sendLowBalanceNotification({
+          ownerAddress,
+          meterId,
+          balanceStroops: balance,
+          thresholdStroops: dynamicThreshold,
+          weeklyTypicalStroops,
+        });
+      }
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
@@ -183,7 +214,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
         [...urls].map((url) => fireWebhook(url, body)),
       );
 
-      logger.info("Low balance webhook fired", { meterId, balance });
+      logger.info("Low balance notifications fired", { meterId, balance });
     }
   } catch (err) {
     logger.error("Low balance webhook check failed", { meterId, err });
@@ -342,6 +373,29 @@ function startMqttBridge() {
         cost,
       });
 
+      const event = await persistAndSubmitUsageEvent({
+        meterId,
+        units,
+        cost,
+        sourceTopic: topic,
+      });
+
+      if (event.on_chain_tx_hash) {
+        logger.info("Usage recorded on-chain", {
+          meterId,
+          eventId: event.id,
+          txHash: event.on_chain_tx_hash,
+        });
+        // Check if balance is low after usage update
+        checkAndNotifyLowBalance(meterId).catch(err => {
+          logger.error("Low balance check failed", { err });
+        });
+      } else {
+        logger.warn("Usage event queued for retry", {
+          meterId,
+          eventId: event.id,
+        });
+      }
       // Issue #601: queue for the next priority-ordered batch flush instead
       // of submitting immediately, so near-zero-balance meters can be
       // sequenced first within the batch.

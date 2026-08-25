@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import { MeterStatusBadge } from "@/components/MeterStatusBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import { useToast } from "@/components/ToastProvider";
@@ -20,7 +21,17 @@ function isValidStellarAddress(addr: string): boolean {
 
 type Status = "idle" | "loading";
 
+export const dynamic = "force-dynamic";
+
 export default function ProviderDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderDashboardPageContent />
+    </Suspense>
+  );
+}
+
+function ProviderDashboardPageContent() {
   const { showToast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();

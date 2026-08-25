@@ -157,6 +157,21 @@ export function getUsageHistory(
   };
 }
 
+export function getTypicalWeeklyUsageStroops(meterId: string): number {
+  const row = db
+    .prepare(
+      `
+        SELECT COALESCE(SUM(CAST(cost AS INTEGER)), 0) as weekly_cost
+        FROM usage_events
+        WHERE meter_id = ?
+          AND received_at >= datetime('now', '-7 days')
+      `,
+    )
+    .get(meterId) as { weekly_cost: number | null };
+
+  return Number(row?.weekly_cost ?? 0);
+}
+
 export async function persistAndSubmitUsageEvent(input: CreateUsageEventInput) {
   const event = recordUsageEvent(input);
   try {
