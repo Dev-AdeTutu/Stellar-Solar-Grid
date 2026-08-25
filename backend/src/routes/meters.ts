@@ -1,19 +1,31 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { StellarService, stellarService } from "../lib/stellar.js";
+import { StellarService, server } from "../lib/stellar.js";
 import {
   getUsageHistory,
   getTypicalWeeklyUsageStroops,
   persistAndSubmitUsageEvent,
   initUsageEventStore,
 } from "../lib/usageEvents.js";
+import {
+  addMeterNote,
+  getLatestMeterNotes,
+  getAllMeterNotes,
+  deleteMeterNote,
+} from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { logger } from "../lib/logger.js";
 import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
+import {
+  validateRequest,
+  RegisterMeterSchema,
+  MeterNoteSchema,
+} from "../lib/validation.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
 import { getMqttClient } from "../iot/mqttClient.js";
+import { logger } from "../lib/logger.js";
 
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
@@ -30,17 +42,40 @@ export function createMeterRouter(stellar: StellarService) {
    *
    * Fixes #268.
    */
+  /**
+   * GET /api/meters?page=1&pageSize=20 — list all meters with pagination
+   *
+   * Registered BEFORE /:id so the literal string "meters" is never matched
+   * as a meter ID parameter.
+   */
   meterRouter.get(
     "/",
     asyncHandler(async (req, res) => {
       const page = Math.max(1, Number(req.query.page ?? 1) || 1);
-      const pageSize = Math.min(
-        100,
-        Math.max(1, Number(req.query.pageSize ?? 25) || 25),
-      );
+      const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
 
       const result = await stellar.query("get_all_meters", []);
-      const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+      let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+
+      if (owner !== undefined) {
+        allMeters = allMeters.filter((m: any) => m.owner === String(owner));
+      }
+      if (active !== undefined) {
+        const activeVal = active === "true";
+        allMeters = allMeters.filter((m: any) => Boolean(m.active) === activeVal);
+      }
+      if (plan !== undefined) {
+        const planMap: Record<string, string> = { daily: "Daily", weekly: "Weekly", usage_based: "UsageBased" };
+        const contractPlan = planMap[String(plan)];
+        allMeters = allMeters.filter((m: any) => m.plan === contractPlan);
+      }
+      if (expiresBeforeMs !== undefined) {
+        const threshold = expiresBeforeMs;
+        allMeters = allMeters.filter((m: any) => {
+          if (!m.expires_at) return false;
+          return Number(m.expires_at) * 1000 < threshold;
+        });
+      }
 
       const total = allMeters.length;
       const start = (page - 1) * pageSize;
@@ -89,13 +124,31 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const windowHours = Number(req.query.hours ?? 24);
       if (isNaN(windowHours) || windowHours <= 0) {
-        return res.status(400).json({ error: "Invalid hours parameter" });
+        return res.status(400).json({ error: "Invalid hours parameter", code: "VALIDATION_ERROR" });
       }
 
       const result = await stellar.query("get_all_meters", []);
       const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 
-      const nowMs = Date.now();
+      // Issue #596: anchor "now" to the Stellar network's own ledger close
+      // time rather than this server's wall clock, so expiry comparisons
+      // against on-chain expires_at (a ledger timestamp) aren't skewed by
+      // local clock drift. getTransactions' summary fields are populated
+      // even when the requested page has zero transactions, so a cheap
+      // limit:1 call at the latest sequence is enough to read it.
+      let nowMs = Date.now();
+      try {
+        const latestLedger = await server.getLatestLedger();
+        const txPage = await server.getTransactions({
+          startLedger: latestLedger.sequence,
+          limit: 1,
+        });
+        if (txPage.latestLedgerCloseTimestamp) {
+          nowMs = txPage.latestLedgerCloseTimestamp * 1000;
+        }
+      } catch (err) {
+        logger.warn("Failed to fetch ledger close time, falling back to server clock", { err });
+      }
       const thresholdMs = nowMs + windowHours * 60 * 60 * 1000;
 
       const expiring = allMeters.filter((m: any) => {
@@ -166,7 +219,7 @@ export function createMeterRouter(stellar: StellarService) {
       try {
         StellarSdk.StrKey.decodeEd25519PublicKey(req.params.address);
       } catch {
-        return res.status(400).json({ error: "Invalid Stellar address" });
+        return res.status(400).json({ error: "Invalid Stellar address", code: "VALIDATION_ERROR" });
       }
       const result = await stellar.query("get_meters_by_owner", [
         StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
@@ -232,7 +285,7 @@ export function createMeterRouter(stellar: StellarService) {
       try {
         StellarSdk.StrKey.decodeEd25519PublicKey(req.params.address);
       } catch {
-        return res.status(400).json({ error: "Invalid Stellar address" });
+        return res.status(400).json({ error: "Invalid Stellar address", code: "VALIDATION_ERROR" });
       }
       const result = await stellar.query("get_meters_by_owner", [
         StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
@@ -245,6 +298,7 @@ export function createMeterRouter(stellar: StellarService) {
    * GET /api/meters/:id — get meter status with ETag support.
    * Sets ETag header based on a hash of the meter JSON so clients can make
    * conditional requests with If-None-Match to avoid redundant downloads.
+   * Includes the latest 5 admin notes from SQLite.
    *
    * Closes #462.
    */
@@ -255,7 +309,8 @@ export function createMeterRouter(stellar: StellarService) {
       const result = await stellar.query("get_meter", [
         StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
       ]);
-      const data = { meter: StellarSdk.scValToNative(result) };
+      const notes = getLatestMeterNotes(req.params.id, 5);
+      const data = { meter: StellarSdk.scValToNative(result), notes };
       const etag = etagFor(data);
 
       res.setHeader("ETag", etag);
@@ -265,6 +320,79 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       res.json(data);
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/note — admin free-text annotation persisted in SQLite.
+   *
+   * Closes #591.
+   */
+  meterRouter.post(
+    "/:id/note",
+    requireAdminKey,
+    validateRequest({ body: MeterNoteSchema }),
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const note = addMeterNote(meterId, req.body.text, req.ip);
+      invalidateCache(`/api/meters/${meterId}`);
+      res.status(201).json(note);
+    }),
+  );
+
+  /** GET /api/meters/:id/notes — all notes for a meter (paginated, no auth required) */
+  meterRouter.get(
+    "/:id/notes",
+    asyncHandler(async (req, res) => {
+      const page = Math.max(1, Number(req.query.page ?? 1) || 1);
+      const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 20) || 20));
+      const result = getAllMeterNotes(req.params.id, page, pageSize);
+      res.json(result);
+    }),
+  );
+
+  /** POST /api/meters/:id/notes — create a note (admin only) */
+  meterRouter.post(
+    "/:id/notes",
+    requireAdminKey,
+    validateRequest({ body: MeterNoteSchema }),
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+      const note = addMeterNote(meterId, req.body.text, req.ip);
+      invalidateCache(`/api/meters/${meterId}`);
+      res.status(201).json(note);
+    }),
+  );
+
+  /** DELETE /api/meters/:id/notes/:noteId — hard-delete a note (admin only) */
+  meterRouter.delete(
+    "/:id/notes/:noteId",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const noteId = Number(req.params.noteId);
+      if (!Number.isInteger(noteId) || noteId <= 0) {
+        return res.status(400).json({ error: "Invalid noteId", code: "VALIDATION_ERROR" });
+      }
+      const deleted = deleteMeterNote(noteId);
+      if (!deleted) {
+        return res.status(404).json({ error: "Note not found", code: "NOT_FOUND" });
+      }
+      res.json({ deleted: true, noteId });
     }),
   );
 
@@ -459,16 +587,20 @@ export function createMeterRouter(stellar: StellarService) {
     }),
   );
 
-  /** GET /api/meters/:id/history — paginated local usage history */
+  /** GET /api/meters/:id/history?page=1&pageSize=20 — paginated local usage history */
   meterRouter.get("/:id/history", (req, res) => {
-    const page = Math.max(1, Number(req.query.page ?? 1) || 1);
-    const pageSize = Math.min(
-      100,
-      Math.max(1, Number(req.query.pageSize ?? 25) || 25),
-    );
+    const rawPage = Number(req.query.page ?? 1);
+    const rawPageSize = Number(req.query.pageSize ?? 20);
+
+    if (!Number.isInteger(rawPage) || rawPage < 1) {
+      return res.status(400).json({ error: "page must be a positive integer", code: "VALIDATION_ERROR" });
+    }
+    if (!Number.isInteger(rawPageSize) || rawPageSize < 1 || rawPageSize > 100) {
+      return res.status(400).json({ error: "pageSize must be between 1 and 100", code: "VALIDATION_ERROR" });
+    }
 
     try {
-      const history = getUsageHistory(req.params.id, page, pageSize);
+      const history = getUsageHistory(req.params.id, rawPage, rawPageSize);
       res.json(history);
     } catch (err: any) {
       res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
@@ -567,7 +699,7 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const limit = Number(req.body.limit);
       if (!Number.isInteger(limit) || limit < 0) {
-        return res.status(400).json({ error: "limit must be a non-negative integer (stroops)" });
+        return res.status(400).json({ error: "limit must be a non-negative integer (stroops)", code: "VALIDATION_ERROR" });
       }
       const hash = await stellar.invoke("set_daily_limit", [
         StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
@@ -607,25 +739,29 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
-      const results: Array<{ meter_id: string; hash?: string; error?: string }> = [];
+      // Issue #597: each meter registration is a separate on-chain tx, so a
+      // single failure must not fail the whole batch or return a hard 500 —
+      // report per-meter success/failure instead.
+      const succeeded: Array<{ meterId: string; hash: string }> = [];
+      const failed: Array<{ meterId: string; reason: string }> = [];
 
       for (const item of meters) {
         const meterId = item?.meter_id;
         const owner = item?.owner;
 
         if (!meterId || typeof meterId !== "string" || meterId.trim().length === 0) {
-          results.push({ meter_id: String(meterId ?? ""), error: "meter_id is required" });
+          failed.push({ meterId: String(meterId ?? ""), reason: "meter_id is required" });
           continue;
         }
 
         const trimmedId = meterId.trim();
         if (trimmedId.length > 12) {
-          results.push({ meter_id: trimmedId, error: "meter_id must be at most 12 characters" });
+          failed.push({ meterId: trimmedId, reason: "meter_id must be at most 12 characters" });
           continue;
         }
 
         if (!owner || typeof owner !== "string" || !STELLAR_ACCOUNT_REGEX.test(owner)) {
-          results.push({ meter_id: trimmedId, error: "Invalid Stellar account address format" });
+          failed.push({ meterId: trimmedId, reason: "Invalid Stellar account address format" });
           continue;
         }
 
@@ -634,13 +770,13 @@ export function createMeterRouter(stellar: StellarService) {
             StellarSdk.nativeToScVal(trimmedId, { type: "symbol" }),
             StellarSdk.nativeToScVal(owner, { type: "address" }),
           ]);
-          results.push({ meter_id: trimmedId, hash });
+          succeeded.push({ meterId: trimmedId, hash });
         } catch (err: any) {
-          results.push({ meter_id: trimmedId, error: err.message ?? "Registration failed" });
+          failed.push({ meterId: trimmedId, reason: err.message ?? "Registration failed" });
         }
       }
 
-      res.json({ results });
+      res.json({ succeeded, failed });
     }),
   );
 
@@ -796,6 +932,8 @@ export function createMeterRouter(stellar: StellarService) {
         return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
       }
       if (!meter) return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+
+
 
       const planValue = plan ?? meter.plan;
       const hash = await stellar.invoke("make_payment", [

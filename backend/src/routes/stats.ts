@@ -1,73 +1,50 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { stellarService } from "../lib/stellar.js";
+import { server, CONTRACT_ID } from "../lib/stellar.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { register } from "../lib/metrics.js";
-import { logger } from "../lib/logger.js";
 
 export const statsRouter = Router();
 
-// Cache for the existing contract-based stats endpoint (30s TTL)
-let contractCache: { data: object; expiresAt: number } | null = null;
+const DEFAULT_DAYS = 30;
+const MAX_DAYS = 90;
+const CACHE_TTL_MS = 60_000;
 
-// Cache for the prom-client metrics summary endpoint (15s TTL)
-let metricsCache: { data: object; expiresAt: number } | null = null;
-
-// Cache for meters-by-plan breakdown (30s TTL)
-let metersByPlanCache: { data: object; expiresAt: number } | null = null;
-
-// Cache for meter counts grouped by plan (30s TTL)
-let meterPlanCache: { data: object; expiresAt: number } | null = null;
-
-export function __resetStatsCache() {
-  contractCache = null;
-  metricsCache = null;
-  metersByPlanCache = null;
-  meterPlanCache = null;
+interface RevenueHistoryEntry {
+  date: string; // YYYY-MM-DD
+  revenue_xlm: number;
 }
 
-
-type MeterPlanBreakdown = {
-  Daily: number;
-  Weekly: number;
-  Usage: number;
-  total: number;
-};
-
-const emptyPlanBreakdown = (): MeterPlanBreakdown => ({
-  Daily: 0,
-  Weekly: 0,
-  Usage: 0,
-  total: 0,
-});
-
-const normalizePlan = (plan: unknown): keyof Omit<MeterPlanBreakdown, "total"> | null => {
-  const raw =
-    typeof plan === "string"
-      ? plan
-      : typeof plan === "symbol"
-        ? plan.toString()
-        : plan && typeof plan === "object"
-          ? String(
-              (plan as { tag?: unknown; name?: unknown; variant?: unknown }).tag ??
-                (plan as { tag?: unknown; name?: unknown; variant?: unknown }).name ??
-                (plan as { tag?: unknown; name?: unknown; variant?: unknown }).variant ??
-                "",
-            )
-          : "";
-
-  const normalized = raw.toLowerCase().replace(/[^a-z]/g, "");
-  if (normalized === "daily") return "Daily";
-  if (normalized === "weekly") return "Weekly";
-  if (normalized === "usage" || normalized === "usagebased") return "Usage";
-  return null;
-};
+const revenueHistoryCache = new Map<
+  number,
+  { data: RevenueHistoryEntry[]; ts: number }
+>();
 
 /**
- * GET /api/stats/meters-by-plan — meter count breakdown by payment plan.
- * Response is cached for 30 seconds and always includes all known plan keys.
- *
- * Closes #461.
+ * GET /api/stats/revenue-history?days=30
+ */
+statsRouter.get(
+  "/revenue-history",
+  asyncHandler(async (req, res) => {
+    const requestedDays = parseInt((req.query.days as string) ?? String(DEFAULT_DAYS), 10);
+    const days = Math.min(
+      MAX_DAYS,
+      Math.max(1, Number.isFinite(requestedDays) ? requestedDays : DEFAULT_DAYS),
+    );
+
+    const cached = revenueHistoryCache.get(days);
+    if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
+      return res.json({ history: cached.data });
+    }
+
+    const history = await fetchRevenueHistory(days);
+    revenueHistoryCache.set(days, { data: history, ts: Date.now() });
+
+    res.json({ history });
+  }),
+);
+
+/**
+ * GET /api/stats/meters-by-plan
  */
 statsRouter.get("/meters-by-plan", asyncHandler(async (_req, res) => {
   if (meterPlanCache && Date.now() < meterPlanCache.expiresAt) {
@@ -87,8 +64,9 @@ statsRouter.get("/meters-by-plan", asyncHandler(async (_req, res) => {
   meterPlanCache = { data, expiresAt: Date.now() + 30_000 };
   res.json(data);
 }));
+
 /**
- * GET /api/stats — contract-derived meter statistics (existing endpoint)
+ * GET /api/stats — contract-derived meter statistics
  */
 statsRouter.get("/", asyncHandler(async (_req, res) => {
   if (contractCache && Date.now() < contractCache.expiresAt) {
@@ -109,57 +87,20 @@ statsRouter.get("/", asyncHandler(async (_req, res) => {
     ]);
     revenue = Number(StellarSdk.scValToNative(rev));
   } else {
-    logger.warn('ADMIN_ADDRESS environment variable is not set; provider revenue query skipped');
+    logger.warn("ADMIN_ADDRESS environment variable is not set; provider revenue query skipped");
   }
 
   const avgUnitsPerMeter = total > 0 ? units / total : 0;
   const avgRevenue = total > 0 ? revenue / total : 0;
 
-  const data = {
-    totalMeters: total,
-    activeMeters: active,
-    inactiveMeters: total - active,
-    totalUnits: units,
-    avgUnitsPerMeter,
-    totalRevenue: revenue,
-    avgRevenue,
-  };
+  const data = { totalMeters: total, activeMeters: active, inactiveMeters: total - active,
+    totalUnits: units, avgUnitsPerMeter, totalRevenue: revenue, avgRevenue };
   contractCache = { data, expiresAt: Date.now() + 30_000 };
   res.json(data);
 }));
 
 /**
- * GET /api/stats/meters-by-plan — meter count breakdown by plan type.
- * Returns zero counts for plan types with no meters.
- * Cached for 30 seconds.
- *
- * Closes #461.
- */
-statsRouter.get("/meters-by-plan", asyncHandler(async (_req, res) => {
-  if (metersByPlanCache && Date.now() < metersByPlanCache.expiresAt) {
-    return res.json(metersByPlanCache.data);
-  }
-
-  const result = await stellarService.query("get_all_meters", []);
-  const meters = (StellarSdk.scValToNative(result) as any[]) ?? [];
-
-  const counts: Record<string, number> = { Daily: 0, Weekly: 0, Usage: 0 };
-  for (const meter of meters) {
-    const plan = String(meter.plan);
-    if (plan in counts) counts[plan]++;
-  }
-
-  const data = { ...counts, total: meters.length };
-  metersByPlanCache = { data, expiresAt: Date.now() + 30_000 };
-  res.json(data);
-}));
-
-/**
- * GET /api/stats/summary — prom-client counter/gauge snapshot for the admin
- * dashboard. Does not require Prometheus or Grafana to be running.
- * Response is cached for 15 seconds.
- *
- * Closes #344.
+ * GET /api/stats/summary — prom-client counter/gauge snapshot
  */
 statsRouter.get("/summary", asyncHandler(async (_req, res) => {
   if (metricsCache && Date.now() < metricsCache.expiresAt) {
@@ -167,10 +108,10 @@ statsRouter.get("/summary", asyncHandler(async (_req, res) => {
   }
 
   const metrics = await register.getMetricsAsJSON();
-
   const find = (name: string): number => {
     const metric = metrics.find((m: any) => m.name === name);
-    return metric?.values?.[0]?.value ?? 0;
+    if (!metric?.values) return 0;
+    return metric.values.reduce((acc: number, val: any) => acc + val.value, 0);
   };
 
   const data = {
@@ -179,7 +120,70 @@ statsRouter.get("/summary", asyncHandler(async (_req, res) => {
     activeMeters: find("solargrid_active_meters"),
     paymentVolumeXlm: find("solargrid_payment_volume_xlm"),
   };
-
   metricsCache = { data, expiresAt: Date.now() + 15_000 };
   res.json(data);
 }));
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function fetchRevenueHistory(days: number): Promise<RevenueHistoryEntry[]> {
+  const response = await (server as any).getEvents({
+    startLedger: 1,
+    filters: [
+      {
+        type: "contract",
+        contractIds: [CONTRACT_ID],
+        topics: [[StellarSdk.xdr.ScVal.scvSymbol("payment").toXDR("base64")]],
+      },
+    ],
+    limit: 1000,
+  });
+
+  const totalsByDay = new Map<string, number>();
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  for (const event of response?.events ?? []) {
+    try {
+      const parsed = parsePaymentEvent(event);
+      if (!parsed) continue;
+      if (new Date(parsed.date).getTime() < cutoff) continue;
+
+      const day = parsed.date.slice(0, 10);
+      totalsByDay.set(day, (totalsByDay.get(day) ?? 0) + parsed.amountXlm);
+    } catch {
+      // skip malformed events
+    }
+  }
+
+  return buildDayRange(days).map((date) => ({
+    date,
+    revenue_xlm: totalsByDay.get(date) ?? 0,
+  }));
+}
+
+function buildDayRange(days: number): string[] {
+  const result: string[] = [];
+  const now = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() - i);
+    result.push(d.toISOString().slice(0, 10));
+  }
+  return result;
+}
+
+function parsePaymentEvent(event: any): { date: string; amountXlm: number } | null {
+  const dataXdr = event.value ?? event.data;
+  if (!dataXdr) return null;
+
+  const dataVal = StellarSdk.xdr.ScVal.fromXDR(dataXdr, "base64");
+  const native = StellarSdk.scValToNative(dataVal);
+  if (!Array.isArray(native) || native.length < 1) return null;
+
+  const amountXlm = Number(native[0]) / 10_000_000;
+  const date = event.ledgerClosedAt
+    ? new Date(event.ledgerClosedAt).toISOString()
+    : new Date().toISOString();
+
+  return { date, amountXlm };
+}

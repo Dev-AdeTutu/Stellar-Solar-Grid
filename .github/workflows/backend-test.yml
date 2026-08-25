@@ -1,0 +1,43 @@
+name: Backend Tests
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Run backend test suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run all backend tests
+        run: npm test
+        # vitest run exits non-zero on any test failure, which fails the build
+        env:
+          NODE_ENV: test
+          # Minimal env so modules that read process.env at import time don't throw
+          PORT: '3001'
+          STELLAR_NETWORK: testnet
+          STELLAR_RPC_URL: https://soroban-testnet.stellar.org
+          CONTRACT_ID: CTEST000000000000000000000000000000000000000000000000000
+          ADMIN_SECRET_KEY: STEST000000000000000000000000000000000000000000000000000
+          ADMIN_PUBLIC_KEY: GTEST000000000000000000000000000000000000000000000000000
+          MQTT_BROKER: mqtt://localhost:1883
+          ADMIN_API_KEY: test-key

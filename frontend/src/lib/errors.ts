@@ -1,7 +1,40 @@
 /**
  * Normalises errors thrown by Freighter / stellar-wallets-kit / Soroban RPC
  * into a human-readable string.
+ *
+ * The backend now returns a consistent envelope on every non-2xx response:
+ *   { error: string, code: string, details?: object }
+ *
+ * Use `parseApiError` to handle API responses and `parseWalletError` for
+ * wallet/transaction errors.
  */
+
+// ── API error helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Extract a human-readable message from a backend API error response.
+ * Works with both the new standardized envelope and any legacy bare shapes.
+ */
+export function parseApiError(body: unknown): string {
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    if (typeof b.error === "string") return b.error;
+  }
+  if (typeof body === "string") return body;
+  return "Something went wrong. Please try again.";
+}
+
+/**
+ * Extract the machine-readable code from a backend API error response.
+ * Returns null if the response does not include a code field.
+ */
+export function parseApiErrorCode(body: unknown): string | null {
+  if (body && typeof body === "object") {
+    const b = body as Record<string, unknown>;
+    if (typeof b.code === "string") return b.code;
+  }
+  return null;
+}
 
 // Known Freighter rejection signals
 const REJECTION_PATTERNS = [

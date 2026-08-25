@@ -16,17 +16,12 @@ import {
   requestPushPermissionOnFirstDashboardVisit,
   setupLowBalancePushNotifications,
 } from "@/services/pushService";
+import { env } from "@/lib/env";
 
 const STROOPS_PER_XLM = 10_000_000n;
 
-const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
-
-// Honour NEXT_PUBLIC_POLL_INTERVAL_MS env override, fall back to 30 s
-const BALANCE_POLL_INTERVAL_MS: number = (() => {
-  const env = process.env.NEXT_PUBLIC_POLL_INTERVAL_MS;
-  const parsed = env ? parseInt(env, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
-})();
+const API = env.NEXT_PUBLIC_BACKEND_URL;
+const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
 
 function stroopsToXlm(stroops: bigint): string {
   const whole = stroops / STROOPS_PER_XLM;

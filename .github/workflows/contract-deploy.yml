@@ -20,6 +20,19 @@ jobs:
       - name: Build WASM
         run: cargo build --target wasm32-unknown-unknown --release
         working-directory: contracts
+      - name: Hash WASM artifact
+        id: wasm_hash
+        run: |
+          WASM=contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm
+          HASH=$(sha256sum "$WASM" | awk '{print $1}')
+          echo "sha256=${HASH}" >> $GITHUB_OUTPUT
+          echo "${HASH}" > wasm-hash.txt
+          echo "## WASM Build Hash" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | SHA-256 |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| \`solar_grid.wasm\` | \`${HASH}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "Local WASM SHA-256: ${HASH}"
       - name: Install Stellar CLI
         run: cargo install stellar-cli --locked
       - name: Deploy to testnet
@@ -30,3 +43,43 @@ jobs:
           ID=$(stellar contract deploy --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm --source "$ADMIN_SECRET_KEY" --network testnet)
           echo "contract_id=$ID" >> $GITHUB_OUTPUT
           echo "Deployed: $ID"
+        working-directory: contracts
+      - name: Verify on-chain WASM hash
+        env:
+          CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
+          WASM_FILE: contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm
+        run: |
+          LOCAL_HASH=$(cat wasm-hash.txt)
+          echo "Fetching on-chain contract info for ${CONTRACT_ID}…"
+          ONCHAIN_JSON=$(stellar contract info --id "${CONTRACT_ID}" --network testnet)
+          ONCHAIN_HASH=$(echo "${ONCHAIN_JSON}" | jq -r '.hash')
+
+          echo "Local SHA-256  : ${LOCAL_HASH}"
+          echo "On-chain hash  : ${ONCHAIN_HASH}"
+
+          LOCAL_LOWER=$(echo "${LOCAL_HASH}"   | tr '[:upper:]' '[:lower:]')
+          ONCHAIN_LOWER=$(echo "${ONCHAIN_HASH}" | tr '[:upper:]' '[:lower:]')
+
+          if [[ "${LOCAL_LOWER}" == "${ONCHAIN_LOWER}" ]]; then
+            echo "✅ WASM hash MATCHES — deployment is consistent with the local build."
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## On-chain Hash Verification" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **PASSED** — on-chain hash matches local build." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Contract ID: \`${CONTRACT_ID}\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ WASM hash MISMATCH!" >&2
+            echo "   Local  : ${LOCAL_LOWER}" >&2
+            echo "   On-chain: ${ONCHAIN_LOWER}" >&2
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "## On-chain Hash Verification" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ **FAILED** — on-chain hash does not match local build." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| | Hash |" >> $GITHUB_STEP_SUMMARY
+            echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+            echo "| Local | \`${LOCAL_LOWER}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| On-chain | \`${ONCHAIN_LOWER}\` |" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

@@ -5,12 +5,14 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
 import { MeterStatusBadge } from "@/components/MeterStatusBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
+import { Skeleton } from "@/components/Skeleton";
 import { useToast } from "@/components/ToastProvider";
 import { getAllMeters, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { env } from "@/lib/env";
 
-const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
+const API = env.NEXT_PUBLIC_BACKEND_URL;
 
 /** Stellar public keys: G + 55 base32 chars (56 total) */
 function isValidStellarAddress(addr: string): boolean {
@@ -72,7 +74,7 @@ function ProviderDashboardPageContent() {
 
   const filteredMeters = meters.filter((m) => m.owner.toLowerCase().includes(search.toLowerCase()));
 
-  const EXPLORER_BASE = process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE?.includes("Test")
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 
@@ -266,8 +268,12 @@ function ProviderDashboardPageContent() {
                     className="rounded-xl border border-white/10 bg-solar-accent px-5 py-4 text-center"
                   >
                     <p className="text-xs uppercase tracking-wider text-gray-500 mb-1">{label}</p>
-                    <p className={`text-2xl font-bold ${color ?? "text-white"}`}>
-                      {fetching ? "—" : value}
+                    <p className={`text-2xl font-bold ${color ?? "text-white"} flex justify-center`}>
+                      {fetching && meters.length === 0 ? (
+                        <Skeleton width="2.5rem" height={28} />
+                      ) : (
+                        value
+                      )}
                     </p>
                   </div>
                 ))}
