@@ -470,8 +470,10 @@ impl SolarGridContract {
             .get(&ALLOWLIST)
             .unwrap_or(Vec::new(&env));
         if !list.contains(&owner) {
-            list.push_back(owner);
+            list.push_back(owner.clone());
             env.storage().instance().set(&ALLOWLIST, &list);
+            env.events()
+                .publish((EVT_NS, symbol_short!("alw_add")), owner);
         }
         Ok(())
     }
@@ -486,13 +488,31 @@ impl SolarGridContract {
             .get(&ALLOWLIST)
             .unwrap_or(Vec::new(&env));
         let mut new_list: Vec<Address> = Vec::new(&env);
+        let mut found = false;
         for addr in list.iter() {
             if addr != owner {
                 new_list.push_back(addr);
+            } else {
+                found = true;
             }
         }
-        env.storage().instance().set(&ALLOWLIST, &new_list);
+        if found {
+            env.storage().instance().set(&ALLOWLIST, &new_list);
+            env.events()
+                .publish((EVT_NS, symbol_short!("alw_rem")), owner);
+        }
         Ok(())
+    }
+
+    /// Add an address to the allowlist (alias for allowlist_add).
+    pub fn add_to_allowlist(env: Env, address: Address) -> Result<(), ContractError> {
+        Self::allowlist_add(env, address)
+    }
+
+    /// Remove an address from the allowlist (alias for allowlist_remove).
+    /// Admin should be able to call remove_from_allowlist to revoke allowlist access.
+    pub fn remove_from_allowlist(env: Env, address: Address) -> Result<(), ContractError> {
+        Self::allowlist_remove(env, address)
     }
 
     /// Returns the current allowlist.

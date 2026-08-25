@@ -6,22 +6,20 @@ import Navbar from "@/components/Navbar";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
+import UsageForecast from "@/components/UsageForecast";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
 import { useInterval } from "@/hooks/useInterval";
 import { env } from "@/lib/env";
-
-const STROOPS_PER_XLM = 10_000_000n;
+import { formatXLM } from "@/lib/format";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
 
 function stroopsToXlm(stroops: bigint): string {
-  const whole = stroops / STROOPS_PER_XLM;
-  const frac = stroops % STROOPS_PER_XLM;
-  return `${whole}.${frac.toString().padStart(7, "0").replace(/0+$/, "") || "0"}`;
+  return formatXLM(stroops);
 }
 
 function StatusBadge({ active }: { active: boolean }) {
@@ -200,6 +198,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
           </p>
         </div>
       )}
+
+      {/* Usage Forecasting */}
+      <UsageForecast
+        meterId={meterId}
+        balance={meter.balance}
+        history={history}
+        loading={loadingHistory}
+      />
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">

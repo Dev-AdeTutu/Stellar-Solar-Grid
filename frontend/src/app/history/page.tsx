@@ -13,6 +13,7 @@ import {
   type PaymentHistoryResponse,
 } from "@/services/paymentService";
 import { env } from "@/lib/env";
+import { formatXlmAmount } from "@/lib/format";
 
 type SortField = "date" | "amountXlm" | "plan" | "meterId";
 type SortDir = "asc" | "desc";
@@ -240,7 +241,7 @@ export default function HistoryPage() {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-solar-yellow font-bold text-base">
-                        {r.amountXlm.toFixed(4)} XLM
+                        {formatXlmAmount(r.amountXlm)} XLM
                       </span>
                       <PlanBadge plan={r.plan} />
                     </div>
@@ -311,7 +312,7 @@ export default function HistoryPage() {
                         </td>
                         <td className="px-3 py-3 font-mono text-gray-200 text-xs">{r.meterId}</td>
                         <td className="px-3 py-3 text-solar-yellow font-semibold text-xs">
-                          {r.amountXlm.toFixed(4)}
+                          {formatXlmAmount(r.amountXlm)}
                         </td>
                         <td className="px-3 py-3">
                           <PlanBadge plan={r.plan} />

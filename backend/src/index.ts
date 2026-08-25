@@ -58,10 +58,12 @@ const REQUIRED_ENV = [
   "CONTRACT_ID",
   "ADMIN_SECRET_KEY",
   "ADMIN_API_KEY",
-  "STELLAR_RPC_URL",
   "MQTT_BROKER",
 ];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (!process.env.STELLAR_RPC_URL && !process.env.STELLAR_RPC_URLS) {
+  missing.push("STELLAR_RPC_URL (or STELLAR_RPC_URLS)");
+}
 if (missing.length > 0) {
   logger.fatal(
     { missing },

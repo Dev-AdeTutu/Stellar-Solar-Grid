@@ -1,6 +1,7 @@
 import React from "react";
 import Link from "next/link";
 import { MeterStatusBadge } from "./MeterStatusBadge";
+import { formatXLM } from "@/lib/format";
 
 export interface MeterCardProps {
   meterId: string;
@@ -24,13 +25,12 @@ export function MeterCard({
   isDeactivating = false,
 }: MeterCardProps) {
   const expiresAtNum = Number(expiresAt);
-  const balanceNum = Number(balance);
 
   // Calculate days left
   const daysLeft = Math.max(0, Math.ceil((expiresAtNum * 1000 - Date.now()) / 86_400_000));
 
   // Convert stroops to XLM (1 XLM = 10,000,000 stroops)
-  const balanceXlm = (balanceNum / 1e7).toFixed(2);
+  const balanceXlm = formatXLM(balance);
 
   const isExpired =
     expiresAtNum !== Number.MAX_SAFE_INTEGER &&
