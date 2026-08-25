@@ -35,8 +35,15 @@ export function hasTimeComponent(value: string): boolean {
  * already-formatted or unexpected strings don't crash the chart.
  */
 export function formatTickLocal(value: string): string {
-  const parsed = new Date(value);
+  const parsed = hasTimeComponent(value)
+    ? new Date(value)
+    : (() => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+        return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+      })();
+
   if (Number.isNaN(parsed.getTime())) return value;
+
   return hasTimeComponent(value)
     ? parsed.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
     : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
@@ -47,8 +54,15 @@ export function formatTickLocal(value: string): string {
  * the time shown is local and not UTC (e.g. "Aug 24, 2:00 PM GMT+3").
  */
 export function formatTooltipLocal(value: string): string {
-  const parsed = new Date(value);
+  const parsed = hasTimeComponent(value)
+    ? new Date(value)
+    : (() => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+        return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+      })();
+
   if (Number.isNaN(parsed.getTime())) return value;
+
   return parsed.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
