@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
@@ -11,6 +12,10 @@ import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterServ
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
 import { useInterval } from "@/hooks/useInterval";
+import {
+  requestPushPermissionOnFirstDashboardVisit,
+  setupLowBalancePushNotifications,
+} from "@/services/pushService";
 
 const STROOPS_PER_XLM = 10_000_000n;
 
@@ -296,6 +301,13 @@ export default function UserDashboardPage() {
     fetchAll();
   }, [address, fetchAll]);
 
+  useEffect(() => {
+    if (!address) return;
+    requestPushPermissionOnFirstDashboardVisit().catch(() => {
+      // Permission API might fail on unsupported browser modes.
+    });
+  }, [address]);
+
   // Poll individual meter balances for live updates.
   // useInterval does NOT fire on mount, so fetchAll() above handles the
   // first load — no double-fetch on first render.
@@ -319,6 +331,14 @@ export default function UserDashboardPage() {
             },
           };
         });
+
+        const threshold = Number(data.low_balance_threshold_stroops ?? 0);
+        const currentBalance = Number(data.balance ?? 0);
+        if (threshold > 0 && currentBalance <= threshold) {
+          setupLowBalancePushNotifications(address).catch(() => {
+            // Avoid interrupting dashboard polling if push setup fails.
+          });
+        }
       } catch {
         // Silently skip — full refresh will recover on next interval
       }

@@ -87,7 +87,10 @@ Set the following environment variables:
 | Variable                | Required | Default | Description                                    |
 | ----------------------- | -------- | ------- | ---------------------------------------------- |
 | `PROVIDER_WEBHOOK_URL`  | No       | -       | Webhook endpoint URL for low-balance alerts    |
-| `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Balance threshold in stroops (0.1 XLM default) |
+| `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Fallback threshold (used when no 7-day usage history exists) |
+| `WEB_PUSH_VAPID_SUBJECT` | No      | -       | VAPID subject for Web Push (`mailto:...`) |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | No   | -       | VAPID public key sent to browsers |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | No  | -       | VAPID private key used to sign push sends |
 
 ### Register Webhook Endpoint
 
@@ -114,7 +117,11 @@ Register or update the webhook URL for low-balance notifications.
 
 ### Webhook Payload
 
-When a meter's balance drops below the threshold after a usage update, the bridge fires a POST request to the registered webhook URL.
+When a meter's balance drops below the alert threshold after a usage update, the bridge fires a POST request to the registered webhook URL.
+
+Alert threshold rule:
+- `threshold = 10% of typical weekly usage (last 7 days summed cost)`
+- If no recent usage exists, fallback to `LOW_BALANCE_THRESHOLD`
 
 **Payload**
 
@@ -123,7 +130,8 @@ When a meter's balance drops below the threshold after a usage update, the bridg
   "event": "low_balance",
   "meter_id": "METER123",
   "balance": 500000,
-  "threshold": 1000000,
+  "threshold": 800000,
+  "weekly_typical_stroops": 8000000,
   "timestamp": "2025-05-27T10:30:00.000Z"
 }
 ```
@@ -135,8 +143,38 @@ When a meter's balance drops below the threshold after a usage update, the bridg
 | `event`     | string | Always `"low_balance"`           |
 | `meter_id`  | string | The meter identifier             |
 | `balance`   | number | Current meter balance in stroops |
-| `threshold` | number | Configured threshold in stroops  |
+| `threshold` | number | Computed threshold in stroops  |
+| `weekly_typical_stroops` | number | Last-7-days usage cost sum in stroops |
 | `timestamp` | string | ISO 8601 timestamp of the event  |
+
+## Push Subscription API
+
+### `GET /api/push/config`
+
+Returns push feature status and the VAPID public key for browser subscription.
+
+### `POST /api/push/subscribe`
+
+Stores/updates a browser push subscription for a Stellar owner address.
+
+Body:
+
+```json
+{
+  "ownerAddress": "G...",
+  "subscription": {
+    "endpoint": "https://...",
+    "keys": {
+      "p256dh": "...",
+      "auth": "..."
+    }
+  }
+}
+```
+
+### `POST /api/push/unsubscribe`
+
+Deletes a stored push subscription by endpoint.
 
 **Error Handling**
 

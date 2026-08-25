@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useCallback, useRef } from "react";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { Skeleton } from "@/components/Skeleton";
@@ -25,13 +25,26 @@ const EXPLORER_BASE =
 
 const PAGE_SIZE = 10;
 
+export const dynamic = "force-dynamic";
+
 export default function HistoryPage() {
+  return (
+    <Suspense fallback={null}>
+      <HistoryPageContent />
+    </Suspense>
+  );
+}
+
+function HistoryPageContent() {
   const { address } = useWalletStore();
   const { showToast } = useToast();
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const queryPage = parseInt(searchParams.get("page") || "1");
+  const queryPage = parseInt(searchParams.get("page") || "1", 10);
+  const currentPage = Number.isFinite(queryPage) && queryPage > 0 ? queryPage : 1;
   const filterMeterId = searchParams.get("meterId");
+  const historySectionRef = useRef<HTMLDivElement | null>(null);
 
   const [records, setRecords] = useState<PaymentRecord[]>([]);
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
@@ -40,15 +53,6 @@ export default function HistoryPage() {
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [exporting, setExporting] = useState(false);
-
-  // Sync page to URL
-  useEffect(() => {
-    if (pagination.page > 1) {
-      router.push(`?page=${pagination.page}`, { scroll: false } as any);
-    } else if (queryPage > 1) {
-      router.push("", { scroll: false } as any);
-    }
-  }, [pagination.page, queryPage, router]);
 
   async function handleExportCsv() {
     if (!address) return;
@@ -127,8 +131,25 @@ export default function HistoryPage() {
   );
 
   useEffect(() => {
-    fetchHistory(queryPage);
-  }, [fetchHistory, queryPage]);
+    fetchHistory(currentPage);
+  }, [fetchHistory, currentPage]);
+
+  function handlePageChange(nextPage: number) {
+    if (loading) return;
+    if (nextPage < 1 || nextPage > pagination.pages) return;
+    if (nextPage === currentPage) return;
+
+    const params = new URLSearchParams(searchParams.toString());
+    if (nextPage === 1) {
+      params.delete("page");
+    } else {
+      params.set("page", String(nextPage));
+    }
+
+    const nextQuery = params.toString();
+    router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false } as any);
+    historySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   function handleSort(field: SortField) {
     if (field === sortField) {
@@ -159,7 +180,7 @@ export default function HistoryPage() {
   return (
     <>
       <Navbar />
-      <main className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
+      <main ref={historySectionRef} className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
         <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">Payment History</h1>
         <p className="text-gray-400 mb-3 text-sm">
           All <code className="text-solar-yellow">make_payment</code> transactions for your wallet.
@@ -352,18 +373,18 @@ export default function HistoryPage() {
                 {pagination.pages > 1 && (
                   <div className="flex items-center gap-2">
                     <button
-                      disabled={pagination.page <= 1 || loading}
-                      onClick={() => fetchHistory(pagination.page - 1)}
+                      disabled={currentPage <= 1 || loading}
+                      onClick={() => handlePageChange(currentPage - 1)}
                       className="rounded-lg border border-white/10 px-4 py-2 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-30 disabled:cursor-not-allowed transition"
                     >
                       ← Prev
                     </button>
                     <span className="px-2 text-xs">
-                      {pagination.page} / {pagination.pages}
+                      {currentPage} / {pagination.pages}
                     </span>
                     <button
-                      disabled={pagination.page >= pagination.pages || loading}
-                      onClick={() => fetchHistory(pagination.page + 1)}
+                      disabled={currentPage >= pagination.pages || loading}
+                      onClick={() => handlePageChange(currentPage + 1)}
                       className="rounded-lg border border-white/10 px-4 py-2 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-30 disabled:cursor-not-allowed transition"
                     >
                       Next →

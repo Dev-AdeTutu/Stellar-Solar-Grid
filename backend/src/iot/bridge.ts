@@ -10,8 +10,15 @@
 
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
-import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
+import {
+  persistAndSubmitUsageEvent,
+  insertSubmittedUsageEvents,
+  getKV,
+  setKV,
+  getTypicalWeeklyUsageStroops,
+} from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
+import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -36,7 +43,7 @@ const EVENT_POLL_INTERVAL_MS = Number(
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
 
-const LOW_BALANCE_THRESHOLD = parseInt(
+const FALLBACK_LOW_BALANCE_THRESHOLD = parseInt(
   process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
 ); // 0.1 XLM in stroops
 
@@ -48,34 +55,50 @@ interface Reading {
 
 /** Fire webhook notification when meter balance drops below threshold */
 async function checkAndNotifyLowBalance(meterId: string) {
-  const urls = getWebhookUrls();
-  if (urls.size === 0) return;
-
   try {
     const result = await contractQuery("get_meter", [
       StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
     ]);
     const meter = StellarSdk.scValToNative(result) as {
       balance: bigint;
+      owner?: string;
       [key: string]: unknown;
     };
     const balance = Number(meter.balance);
+    const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
+    const dynamicThreshold =
+      weeklyTypicalStroops > 0
+        ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
+        : FALLBACK_LOW_BALANCE_THRESHOLD;
 
-    if (balance <= LOW_BALANCE_THRESHOLD) {
+    if (balance <= dynamicThreshold) {
+      const ownerAddress = typeof meter.owner === "string" ? meter.owner : "";
       const body = JSON.stringify({
         event: "low_balance",
         meter_id: meterId,
         balance,
-        threshold: LOW_BALANCE_THRESHOLD,
+        threshold: dynamicThreshold,
+        weekly_typical_stroops: weeklyTypicalStroops,
         timestamp: new Date().toISOString(),
       });
 
-      // Fire webhooks with automatic retry
-      await Promise.all(
-        [...urls].map((url) => fireWebhook(url, body)),
-      );
+      const urls = getWebhookUrls();
+      if (urls.size > 0) {
+        // Fire webhooks with automatic retry
+        await Promise.all([...urls].map((url) => fireWebhook(url, body)));
+      }
 
-      logger.info("Low balance webhook fired", { meterId, balance });
+      if (ownerAddress) {
+        await sendLowBalanceNotification({
+          ownerAddress,
+          meterId,
+          balanceStroops: balance,
+          thresholdStroops: dynamicThreshold,
+          weeklyTypicalStroops,
+        });
+      }
+
+      logger.info("Low balance notifications fired", { meterId, balance });
     }
   } catch (err) {
     logger.error("Low balance webhook check failed", { meterId, err });
@@ -269,7 +292,6 @@ function startMqttBridge() {
           eventId: event.id,
         });
       }
-      await processMqttMessage(topic as string, payload as Buffer);
     } catch (err) {
       // Catch any unexpected errors from processing to ensure the bridge keeps running
       logger.error("Unhandled error in MQTT message handler", { topic, raw: payload.toString(), err });
