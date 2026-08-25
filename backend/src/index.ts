@@ -24,6 +24,9 @@ import { allowlistRouter } from "./routes/allowlist.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
+import { providerRouter } from "./routes/provider.js";
+import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
@@ -58,10 +61,12 @@ const REQUIRED_ENV = [
   "CONTRACT_ID",
   "ADMIN_SECRET_KEY",
   "ADMIN_API_KEY",
-  "STELLAR_RPC_URL",
   "MQTT_BROKER",
 ];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (!process.env.STELLAR_RPC_URL && !process.env.STELLAR_RPC_URLS) {
+  missing.push("STELLAR_RPC_URL (or STELLAR_RPC_URLS)");
+}
 if (missing.length > 0) {
   logger.fatal(
     { missing },
@@ -219,6 +224,7 @@ app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
+app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);

@@ -11,6 +11,7 @@ export interface MeterData {
   last_payment: bigint;
   expires_at: bigint;
   balance: bigint;
+  grace_expires_at?: bigint | null;
   meter_id?: string;
 }
 
