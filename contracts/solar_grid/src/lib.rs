@@ -44,6 +44,8 @@ const SHARES: Symbol = symbol_short!("SHARES");
 const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const FROZEN: Symbol = symbol_short!("FROZEN");
 const CONTRACT_VERSION: Symbol = symbol_short!("CTR_VER");
+const DEFAULT_GRACE_PERIOD: u64 = 7200; // 2 hours (in seconds)
+const GRACE_PERIOD: Symbol = symbol_short!("GRACE_P");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
 
@@ -55,6 +57,15 @@ pub enum PaymentPlan {
     Daily,
     Weekly,
     UsageBased,
+}
+
+/// Access status with grace period details
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccessStatus {
+    pub has_access: bool,
+    pub in_grace_period: bool,
+    pub grace_expires_at: Option<u64>,
 }
 
 /// v1 layout — kept for migration from v1 to v2.
@@ -76,7 +87,7 @@ pub struct LegacyMeterV1 {
 pub struct Meter {
     /// Schema version — increment when fields are added/changed.
     /// v1: initial layout (owner, active, units_used, plan, last_payment, expires_at)
-    /// v2: adds daily spending limit (daily_limit, day_spent, day_start)
+    /// v2: adds daily spending limit (daily_limit, day_spent, day_start) and grace period (grace_expires_at)
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -87,6 +98,7 @@ pub struct Meter {
     pub daily_limit: i128, // max stroops deductible per day; 0 = unlimited
     pub day_spent: i128,   // stroops spent in the current 24-hour window
     pub day_start: u64,    // timestamp when the current window started
+    pub grace_expires_at: Option<u64>, // Timestamp when grace period ends
 }
 
 /// v0 layout — kept for migration purposes only.
@@ -116,6 +128,7 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         daily_limit: 0,
         day_spent: 0,
         day_start: old.last_payment,
+        grace_expires_at: None,
     }
 }
 
@@ -132,12 +145,17 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         daily_limit: 0,
         day_spent: 0,
         day_start: old.last_payment,
+        grace_expires_at: None,
     }
 }
 
 /// Returns the number of seconds a payment plan is valid for.
-/// For UsageBased, returns u64::MAX (no time expiry); saturating_add
-/// with any reasonable timestamp still yields u64::MAX.
+///
+/// Calculations are strictly in elapsed UTC seconds based on Unix epoch timestamps,
+/// completely independent of local timezones or Daylight Saving Time (DST) changes.
+/// - Daily: exactly SECONDS_PER_DAY (86,400 seconds / 24 hours elapsed)
+/// - Weekly: exactly SECONDS_PER_WEEK (604,800 seconds / 7 days elapsed)
+/// - UsageBased: u64::MAX (no time expiry; saturating_add with any timestamp yields u64::MAX).
 fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
     match plan {
         PaymentPlan::Daily => SECONDS_PER_DAY,
@@ -235,6 +253,7 @@ impl SolarGridContract {
             daily_limit: 0,
             day_spent: 0,
             day_start: now,
+            grace_expires_at: None,
         };
         env.storage().persistent().set(&key, &meter);
 
@@ -641,6 +660,7 @@ impl SolarGridContract {
         meter.plan = plan.clone();
         meter.last_payment = now;
         meter.expires_at = expires_at;
+        meter.grace_expires_at = None;
         env.storage().persistent().set(&key, &meter);
 
         // Track provider (admin) accrued revenue
@@ -760,13 +780,68 @@ impl SolarGridContract {
         Ok(result)
     }
 
-    /// Check whether a meter currently has active energy access.
-    pub fn check_access(env: Env, meter_id: String) -> Result<bool, ContractError> {
+    /// Set the configurable grace period before meter deactivation (in seconds). Admin-only.
+    pub fn set_grace_period(env: Env, period: u64) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        env.storage().instance().set(&GRACE_PERIOD, &period);
+        Ok(())
+    }
+
+    /// Get the configured grace period in seconds (defaults to 7200 seconds / 2 hours).
+    pub fn get_grace_period(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&GRACE_PERIOD)
+            .unwrap_or(DEFAULT_GRACE_PERIOD)
+    }
+
+    /// Check access status with warning details during grace period.
+    pub fn check_access_status(env: Env, meter_id: String) -> Result<AccessStatus, ContractError> {
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
         let bal_key = DataKey::MeterBalance(meter_id);
         let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
-        Ok(meter.active && balance > 0 && env.ledger().timestamp() < meter.expires_at)
+        let now = env.ledger().timestamp();
+        let plan_valid = now < meter.expires_at;
+
+        if !meter.active || !plan_valid {
+            return Ok(AccessStatus {
+                has_access: false,
+                in_grace_period: false,
+                grace_expires_at: None,
+            });
+        }
+
+        if balance > 0 {
+            return Ok(AccessStatus {
+                has_access: true,
+                in_grace_period: false,
+                grace_expires_at: None,
+            });
+        }
+
+        // Balance is zero: check if within grace period
+        if let Some(grace_exp) = meter.grace_expires_at {
+            if now < grace_exp {
+                return Ok(AccessStatus {
+                    has_access: true,
+                    in_grace_period: true,
+                    grace_expires_at: Some(grace_exp),
+                });
+            }
+        }
+
+        Ok(AccessStatus {
+            has_access: false,
+            in_grace_period: false,
+            grace_expires_at: meter.grace_expires_at,
+        })
+    }
+
+    /// Check whether a meter currently has active energy access.
+    pub fn check_access(env: Env, meter_id: String) -> Result<bool, ContractError> {
+        let status = Self::check_access_status(env, meter_id)?;
+        Ok(status.has_access)
     }
 
     /// Called by the IoT oracle to record energy consumption (milli-kWh).
@@ -1244,14 +1319,37 @@ impl SolarGridContract {
             return Err(ContractError::DailyLimitReached);
         }
         meter.day_spent = meter.day_spent.saturating_add(cost);
-        let bal_key = DataKey::MeterBalance(meter_id.clone());
-        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
         let new_balance = balance.saturating_sub(cost).max(0);
         env.storage().persistent().set(&bal_key, &new_balance);
         meter.units_used = meter.units_used.saturating_add(units);
-        let deactivated = new_balance == 0;
-        if deactivated {
-            meter.active = false;
+
+        let deactivated;
+        if new_balance == 0 {
+            let grace_period = Self::get_grace_period(env.clone());
+            if grace_period == 0 {
+                meter.active = false;
+                meter.grace_expires_at = None;
+                deactivated = true;
+            } else {
+                if meter.grace_expires_at.is_none() {
+                    // Start grace period without compounding
+                    meter.grace_expires_at = Some(now.saturating_add(grace_period));
+                    deactivated = false;
+                } else if let Some(grace_exp) = meter.grace_expires_at {
+                    if now >= grace_exp {
+                        meter.active = false;
+                        deactivated = true;
+                    } else {
+                        deactivated = false;
+                    }
+                } else {
+                    meter.active = false;
+                    deactivated = true;
+                }
+            }
+        } else {
+            meter.grace_expires_at = None;
+            deactivated = false;
         }
         Ok(deactivated)
     }
@@ -3377,5 +3475,41 @@ mod tests {
         client.unfreeze_contract();
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
         assert!(client.check_access(&meter_id));
+    }
+
+    // ── Issue #703: DST / Timezone independence tests ────────────────────────
+
+    #[test]
+    fn test_time_based_access_during_dst_transition() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        // 2025-03-08 01:00:00 UTC (Unix timestamp: 1741395600) - day before US DST transition
+        let dst_start_ts = 1741395600_u64;
+        env.ledger().with_mut(|li| li.timestamp = dst_start_ts);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_DST");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        // Pay for 24-hour Daily access
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+
+        // Verify expires_at is exactly now + 86400 seconds (1741482000)
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.expires_at, dst_start_ts + SECONDS_PER_DAY);
+
+        // At 23 hours elapsed (1741478400), access must remain active
+        env.ledger().with_mut(|li| li.timestamp = dst_start_ts + 23 * 3600);
+        assert!(client.check_access(&meter_id));
+
+        // At 23 hours and 59 minutes (1741481940), access must remain active
+        env.ledger().with_mut(|li| li.timestamp = dst_start_ts + 86340);
+        assert!(client.check_access(&meter_id));
+
+        // At exactly 24 hours elapsed (1741482000), access expires
+        env.ledger().with_mut(|li| li.timestamp = dst_start_ts + SECONDS_PER_DAY);
+        assert!(!client.check_access(&meter_id));
     }
 }
