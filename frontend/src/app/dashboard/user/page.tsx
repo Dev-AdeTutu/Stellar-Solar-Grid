@@ -6,6 +6,7 @@ import Navbar from "@/components/Navbar";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
+import UsageForecast from "@/components/UsageForecast";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
@@ -200,6 +201,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
           </p>
         </div>
       )}
+
+      {/* Usage Forecasting */}
+      <UsageForecast
+        meterId={meterId}
+        balance={meter.balance}
+        history={history}
+        loading={loadingHistory}
+      />
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">
