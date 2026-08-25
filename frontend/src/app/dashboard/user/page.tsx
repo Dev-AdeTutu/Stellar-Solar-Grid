@@ -316,8 +316,16 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         </div>
       )}
 
-      {/* Warning for expired or low balance */}
-      {(isExpired || meter.balance === 0n) && (
+      {/* Warning for grace period, expired, or low balance */}
+      {meter.grace_expires_at && Number(meter.grace_expires_at) > now ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-amber-300 text-xs flex items-start gap-2">
+          <span className="mt-0.5">⚠️</span>
+          <p>
+            Meter is in <strong>grace period</strong> until{" "}
+            {new Date(Number(meter.grace_expires_at) * 1000).toLocaleTimeString()}. Top up your balance to avoid disconnection!
+          </p>
+        </div>
+      ) : (isExpired || meter.balance === 0n) ? (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 p-3 text-yellow-300 text-xs flex items-start gap-2">
           <span className="mt-0.5">⚠</span>
           <p>
@@ -326,7 +334,7 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
             Top up to restore access.
           </p>
         </div>
-      )}
+      ) : null}
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">

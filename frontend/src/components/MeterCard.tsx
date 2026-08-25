@@ -9,6 +9,7 @@ export interface MeterCardProps {
   balance: bigint;
   expiresAt: bigint;
   plan: "Daily" | "Weekly" | "Usage";
+  graceExpiresAt?: bigint | null;
   onDeactivate?: () => void;
   isDeactivating?: boolean;
 }
@@ -22,6 +23,7 @@ export function MeterCard({
   balance,
   expiresAt,
   plan,
+  graceExpiresAt,
   onDeactivate,
   isDeactivating = false,
 }: MeterCardProps) {
@@ -124,8 +126,23 @@ export function MeterCard({
             {owner.slice(0, 8)}...{owner.slice(-8)}
           </p>
         </div>
-        <MeterStatusBadge active={active} expiresAt={expiresAtNum} />
+        <MeterStatusBadge
+          active={active}
+          expiresAt={expiresAtNum}
+          graceExpiresAt={graceExpiresAt ? Number(graceExpiresAt) : undefined}
+        />
       </div>
+
+      {/* Grace period warning */}
+      {graceExpiresAt && Number(graceExpiresAt) * 1000 > Date.now() && (
+        <div className="mb-4 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-amber-300 text-xs flex items-start gap-2">
+          <span className="mt-0.5">⚠️</span>
+          <p>
+            Meter is in <strong>grace period</strong> until{" "}
+            {new Date(Number(graceExpiresAt) * 1000).toLocaleTimeString()}. Top up your balance to avoid disconnection!
+          </p>
+        </div>
+      )}
 
       {/* Nickname Editor */}
       {isEditing && (
