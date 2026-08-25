@@ -69,4 +69,56 @@ export const contractEventsProcessed = new Counter({
   labelNames: ["topic"] as const,
 });
 
+// ── Atomic Metric Increment Helpers ──────────────────────────────────────────
+// Use prom-client native atomic counter increments (counter.inc) to prevent
+// race conditions and lost increments under high concurrency (#706).
+
+/** Atomic increment for MQTT messages counter */
+export const incrementMqtt = (topic?: string, count: number = 1): void => {
+  mqttMessages.inc({ topic: topic ?? "solargrid/meters" }, count);
+};
+
+/** Atomic increment for contract invocations counter */
+export const incrementContractCall = (
+  method: string,
+  status: "success" | "error",
+  count: number = 1,
+): void => {
+  contractCalls.inc({ method, status }, count);
+};
+
+/** Atomic increment for payment volume counter */
+export const incrementPaymentVolume = (plan: string, amountXlm: number): void => {
+  paymentVolume.inc({ plan }, amountXlm);
+};
+
+/** Atomic increment for webhook deliveries counter */
+export const incrementWebhookDelivery = (
+  status: string,
+  attempt: number | string,
+  count: number = 1,
+): void => {
+  webhookDeliveries.inc({ status, attempt: String(attempt) }, count);
+};
+
+/** Atomic increment for permanent webhook delivery failures */
+export const incrementWebhookFailure = (urlHash: string, count: number = 1): void => {
+  webhookDeliveryFailures.inc({ url_hash: urlHash }, count);
+};
+
+/** Atomic increment for usage events counter */
+export const incrementUsageEvent = (status: string, count: number = 1): void => {
+  usageEvents.inc({ status }, count);
+};
+
+/** Atomic increment for dead-letter events counter */
+export const incrementDeadLetter = (meterId: string, count: number = 1): void => {
+  deadLetterEvents.inc({ meter_id: meterId }, count);
+};
+
+/** Atomic increment for contract events processed counter */
+export const incrementContractEvent = (topic: string, count: number = 1): void => {
+  contractEventsProcessed.inc({ topic }, count);
+};
+
 export { register };
