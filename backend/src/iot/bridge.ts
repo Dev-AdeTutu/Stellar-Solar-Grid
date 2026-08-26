@@ -9,10 +9,10 @@
  */
 
 import mqtt from "mqtt";
-import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
+import { SIGNATURE_HEADER, signWebhookPayload } from "../lib/webhookSignature.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -137,9 +137,10 @@ async function checkAndNotifyLowBalance(meterId: string) {
   // Read fresh each call — /api/webhooks/low-balance may register a URL
   // after this module was first loaded.
   const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
-  if (!webhookUrl) return;
   const urls = getWebhookUrls();
-  if (urls.size === 0) return;
+  // Nothing to notify: neither the legacy single-URL env var nor any
+  // provider registered via the webhook registry.
+  if (!webhookUrl && urls.size === 0) return;
 
   try {
     const result = await contractQuery("get_meter", [
@@ -160,25 +161,29 @@ async function checkAndNotifyLowBalance(meterId: string) {
         timestamp: new Date().toISOString(),
       });
 
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      const secret = process.env.PROVIDER_WEBHOOK_SECRET;
-      if (secret) {
-        const signature = crypto
-          .createHmac("sha256", secret)
-          .update(body)
-          .digest("hex");
-        headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
+      if (webhookUrl) {
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        // Closes #688: sign with the legacy single-URL secret when
+        // configured, falling back to the global WEBHOOK_SECRET env var.
+        const secret = process.env.PROVIDER_WEBHOOK_SECRET ?? process.env.WEBHOOK_SECRET;
+        if (secret) {
+          headers[SIGNATURE_HEADER] = signWebhookPayload(secret, body);
+        } else {
+          logger.warn("PROVIDER_WEBHOOK_URL configured without a signing secret", { webhookUrl });
+        }
+
+        await fetch(webhookUrl, {
+          method: "POST",
+          headers,
+          body,
+        });
       }
 
-      await fetch(webhookUrl, {
-        method: "POST",
-        headers,
-        body,
-      });
-
-      // Fire webhooks with automatic retry
+      // Fire webhooks registered via the webhook registry — each is signed
+      // with its own secret (or WEBHOOK_SECRET) inside fireWebhook, and
+      // retried automatically on failure.
       await Promise.all(
         [...urls].map((url) => fireWebhook(url, body)),
       );

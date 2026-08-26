@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { logger } from "./logger.js";
 import { webhookDeliveries, webhookDeliveryFailures } from "./metrics.js";
 import { getReqId } from "./requestContext.js";
+import { SIGNATURE_HEADER, signWebhookPayload, generateWebhookSecret } from "./webhookSignature.js";
 
 const DB_PATH =
   process.env.WEBHOOKS_DB_PATH ??
@@ -80,6 +81,12 @@ function openDatabase() {
   if (!cols.includes("failure_count")) {
     database.exec("ALTER TABLE webhooks ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0");
   }
+  if (!cols.includes("secret")) {
+    // Per-provider HMAC signing secret used to sign outbound webhook
+    // deliveries (X-Signature-256 header). Never returned by the read
+    // helpers below — only exposed once, at registration time.
+    database.exec("ALTER TABLE webhooks ADD COLUMN secret TEXT");
+  }
 
   return database;
 }
@@ -91,20 +98,74 @@ function initDatabase() {
   return db;
 }
 
-export function registerWebhook(providerId: string, url: string): WebhookRecord {
+/**
+ * Register a webhook URL for a provider.
+ *
+ * If `secret` is omitted, a random signing secret is generated so every
+ * webhook is signed by default. The secret is stored server-side only and
+ * returned to the caller once (see `WebhookRecord.secret` on the return
+ * value of this function) — callers must persist it to verify inbound
+ * `X-Signature-256` headers. It is never returned by the other read
+ * helpers in this module.
+ */
+export function registerWebhook(
+  providerId: string,
+  url: string,
+  secret?: string,
+): WebhookRecord & { secret: string } {
   initDatabase();
   const createdAt = new Date().toISOString();
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO webhooks (provider_id, url, created_at, failure_count)
-    VALUES (?, ?, ?, 0)
+    INSERT OR IGNORE INTO webhooks (provider_id, url, created_at, failure_count, secret)
+    VALUES (?, ?, ?, 0, ?)
   `);
-  stmt.run(providerId, url, createdAt);
+  stmt.run(providerId, url, createdAt, secret ?? null);
+
+  // If the record already existed and a secret was explicitly supplied,
+  // rotate the stored secret. Re-registering without a secret leaves the
+  // existing one (or lack thereof) untouched.
+  if (secret) {
+    db.prepare(
+      "UPDATE webhooks SET secret = ? WHERE provider_id = ? AND url = ?"
+    ).run(secret, providerId, url);
+  }
 
   const result = db.prepare(
-    "SELECT id, provider_id, url, created_at, last_triggered_at, failure_count FROM webhooks WHERE provider_id = ? AND url = ?"
-  ).get(providerId, url) as WebhookRecord;
+    "SELECT id, provider_id, url, created_at, last_triggered_at, failure_count, secret FROM webhooks WHERE provider_id = ? AND url = ?"
+  ).get(providerId, url) as (WebhookRecord & { secret: string | null }) | undefined;
 
-  return result;
+  if (!result) {
+    throw new Error(
+      `Failed to register webhook: no row was created or found for provider_id=${JSON.stringify(providerId)} url=${JSON.stringify(url)}. Both must be non-empty strings.`,
+    );
+  }
+
+  // Backfill a secret for rows that still don't have one (e.g. pre-existing
+  // registrations created before signing was introduced).
+  if (!result.secret) {
+    const generated = generateWebhookSecret();
+    db.prepare("UPDATE webhooks SET secret = ? WHERE id = ?").run(generated, result.id);
+    result.secret = generated;
+  }
+
+  return result as WebhookRecord & { secret: string };
+}
+
+/** Resolve the signing secret for a registered webhook URL, if any. */
+function getStoredSecret(url: string): string | null {
+  if (!db) return null;
+  const row = db.prepare("SELECT secret FROM webhooks WHERE url = ?").get(url) as
+    | { secret: string | null }
+    | undefined;
+  return row?.secret ?? null;
+}
+
+/**
+ * Resolve the effective signing secret for a URL: the per-webhook secret
+ * takes precedence, falling back to the global `WEBHOOK_SECRET` env var.
+ */
+function resolveSigningSecret(url: string): string | null {
+  return getStoredSecret(url) ?? process.env.WEBHOOK_SECRET ?? null;
 }
 
 export function getAllWebhooks(): WebhookRecord[] {
@@ -175,6 +236,13 @@ async function fireWebhookInternal(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (effectiveCorrelationId) {
     headers["X-Request-ID"] = effectiveCorrelationId;
+  }
+
+  const secret = resolveSigningSecret(url);
+  if (secret) {
+    headers[SIGNATURE_HEADER] = signWebhookPayload(secret, payload);
+  } else {
+    logger.warn("Firing webhook without a signing secret configured", { url });
   }
 
   const attemptedAt = new Date().toISOString();
@@ -330,6 +398,10 @@ export async function drainWebhookQueue(): Promise<void> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (item.correlationId) {
       headers["X-Request-ID"] = item.correlationId;
+    }
+    const secret = resolveSigningSecret(item.url);
+    if (secret) {
+      headers[SIGNATURE_HEADER] = signWebhookPayload(secret, item.payload);
     }
     return fetch(item.url, {
       method: "POST",

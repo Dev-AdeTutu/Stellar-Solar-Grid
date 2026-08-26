@@ -213,6 +213,7 @@ Set the following environment variables:
 | ----------------------- | -------- | ------- | ---------------------------------------------- |
 | `PROVIDER_WEBHOOK_URL`  | No       | -       | Webhook endpoint URL for low-balance alerts    |
 | `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Balance threshold in stroops (0.1 XLM default) |
+| `WEBHOOK_SECRET`        | No       | -       | Fallback HMAC signing secret used when a webhook has no per-provider secret registered |
 
 ### Register Webhook Endpoint
 
@@ -232,18 +233,29 @@ admin authentication via the `X-Admin-Key` header (same admin key used by
 
 ```json
 {
-  "webhook_url": "https://your-service.com/webhooks/low-balance"
+  "webhook_url": "https://your-service.com/webhooks/low-balance",
+  "secret": "optional-signing-secret-min-16-chars"
 }
 ```
+
+`secret` is optional. If omitted, the server generates a random one for you.
 
 **Response**
 
 ```json
 {
   "message": "Webhook registered successfully",
-  "webhook_url": "https://your-service.com/webhooks/low-balance"
+  "webhook_url": "https://your-service.com/webhooks/low-balance",
+  "provider_id": "provider-123",
+  "id": 1,
+  "created_at": "2025-05-27T10:30:00.000Z",
+  "secret": "5f2c...e91a",
+  "secret_notice": "Store this secret now — it will not be shown again. Use it to verify the X-Signature-256 header on inbound deliveries."
 }
 ```
+
+`secret` is returned **only in this response**. It is never exposed again by
+`GET /api/webhooks` or any other endpoint — store it securely.
 
 A request without a valid `X-Admin-Key` header returns `401 Unauthorized`.
 
@@ -278,6 +290,37 @@ When a meter's balance drops below the threshold after a usage update, the bridg
 - Failed webhook calls are logged but do not crash the IoT bridge
 - Webhook timeouts can be configured via your HTTP client settings
 - Consider idempotency keys on your webhook endpoint to handle retries
+
+### Verifying the Webhook Signature
+
+Every outbound webhook request carries an `X-Signature-256` header:
+
+```
+X-Signature-256: sha256=<hex-encoded HMAC-SHA256 of the raw request body>
+```
+
+The signature is computed as `HMAC-SHA256(secret, rawBody)`, where `secret`
+is either the per-webhook secret returned when you registered the URL, or
+the server's `WEBHOOK_SECRET` env var if no per-webhook secret was set.
+
+Verify it on your endpoint before trusting the payload (Node.js example):
+
+```typescript
+import crypto from "node:crypto";
+
+function verifySolarGridWebhook(rawBody: string, signatureHeader: string, secret: string): boolean {
+  const expected =
+    "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const expectedBuf = Buffer.from(expected);
+  const actualBuf = Buffer.from(signatureHeader);
+  if (expectedBuf.length !== actualBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, actualBuf);
+}
+```
+
+Always compare against the **raw** (unparsed) request body — re-serializing
+parsed JSON can reorder keys or change whitespace and break the comparison.
+Reject requests with a missing or invalid signature with `401`.
 
 ---
 

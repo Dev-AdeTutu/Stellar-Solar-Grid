@@ -20,6 +20,8 @@ process.env.STELLAR_RPC_URL = "https://mock.rpc.example";
 process.env.MQTT_BROKER = "mqtt://localhost:11883";
 process.env.LOW_BALANCE_THRESHOLD = "1000000";
 process.env.USAGE_EVENTS_DB_PATH = ":memory:";
+process.env.WEBHOOKS_DB_PATH = ":memory:";
+process.env.WEBHOOK_SECRET = "test-suite-shared-webhook-secret";
 
 // ── Mocks (hoisted before all imports) ───────────────────────────────────────
 
@@ -89,8 +91,11 @@ vi.mock("../src/lib/usageEvents.js", () => {
 
 import { processMqttMessage } from "../src/iot/bridge.js";
 import { contractQuery } from "../src/lib/stellar.js";
-import { registerWebhook, getWebhookUrls } from "../src/lib/webhookRegistry.js";
+import { registerWebhook, unregisterWebhook, getWebhookUrls } from "../src/lib/webhookRegistry.js";
+import { verifyWebhookSignature, SIGNATURE_HEADER } from "../src/lib/webhookSignature.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
+
+const TEST_PROVIDER_ID = "test-provider";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -111,15 +116,17 @@ function buildPayload(units: number, cost: number): Buffer {
 
 /** Spies on globalThis.fetch to capture webhook POST calls. */
 function installFetchSpy() {
-  const calls: Array<{ url: string; body: unknown }> = [];
+  const calls: Array<{ url: string; body: unknown; rawBody: string; headers: Record<string, string> }> = [];
   const original = globalThis.fetch;
 
   globalThis.fetch = vi.fn(
     async (input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input);
+      const rawBody = (init?.body as string) ?? "null";
       let body: unknown = null;
-      try { body = JSON.parse((init?.body as string) ?? "null"); } catch { body = init?.body; }
-      calls.push({ url, body });
+      try { body = JSON.parse(rawBody); } catch { body = rawBody; }
+      const headers = new Headers(init?.headers);
+      calls.push({ url, body, rawBody, headers: Object.fromEntries(headers.entries()) });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     },
   ) as typeof fetch;
@@ -127,10 +134,11 @@ function installFetchSpy() {
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
 
-/** Clears the shared webhook registry so tests don't bleed into each other. */
+/** Clears the webhook registry (both DB rows and any pending state) so tests don't bleed into each other. */
 function clearWebhookRegistry() {
-  const urls = getWebhookUrls() as unknown as Set<string>;
-  Array.from(urls).forEach((u) => urls.delete(u));
+  for (const url of getWebhookUrls()) {
+    unregisterWebhook(TEST_PROVIDER_ID, url);
+  }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -148,9 +156,9 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
     ).resolves.not.toThrow();
   });
 
-  it("fires a webhook POST when meter balance drops below LOW_BALANCE_THRESHOLD", async () => {
+  it("fires a signed webhook POST when meter balance drops below LOW_BALANCE_THRESHOLD", async () => {
     const WEBHOOK_URL = "https://provider.example.com/webhooks/low-balance";
-    registerWebhook(WEBHOOK_URL);
+    const { secret } = registerWebhook(TEST_PROVIDER_ID, WEBHOOK_URL);
 
     vi.mocked(contractQuery).mockResolvedValue(makeMeterScVal(LOW_BALANCE));
 
@@ -172,6 +180,14 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
       expect(payload.balance as number).toBeLessThanOrEqual(
         Number(process.env.LOW_BALANCE_THRESHOLD),
       );
+
+      // Closes #688: the delivery must carry a valid HMAC signature computed
+      // from the registered per-webhook secret.
+      const signatureHeader = hits[0].headers[SIGNATURE_HEADER.toLowerCase()];
+      expect(signatureHeader).toBeDefined();
+      expect(
+        verifyWebhookSignature(secret, hits[0].rawBody, signatureHeader),
+      ).toBe(true);
     } finally {
       spy.restore();
     }
@@ -179,7 +195,7 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
 
   it("does NOT fire a webhook when balance is above the threshold", async () => {
     const WEBHOOK_URL = "https://provider.example.com/webhooks/high-balance";
-    registerWebhook(WEBHOOK_URL);
+    registerWebhook(TEST_PROVIDER_ID, WEBHOOK_URL);
 
     vi.mocked(contractQuery).mockResolvedValueOnce(makeMeterScVal(HIGH_BALANCE));
 
@@ -197,8 +213,8 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
   it("fires webhooks to ALL registered URLs when balance is low", async () => {
     const URL_A = "https://a.example.com/hook";
     const URL_B = "https://b.example.com/hook";
-    registerWebhook(URL_A);
-    registerWebhook(URL_B);
+    registerWebhook(TEST_PROVIDER_ID, URL_A);
+    registerWebhook(TEST_PROVIDER_ID, URL_B);
 
     vi.mocked(contractQuery).mockResolvedValue(makeMeterScVal(LOW_BALANCE));
 
@@ -233,13 +249,19 @@ describe("webhook registry", () => {
   beforeEach(clearWebhookRegistry);
 
   it("registerWebhook adds URL to the registry", () => {
-    registerWebhook("https://example.com/wh");
+    registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh");
     expect(getWebhookUrls().has("https://example.com/wh")).toBe(true);
   });
 
   it("registerWebhook is idempotent (no duplicates)", () => {
-    registerWebhook("https://example.com/wh");
-    registerWebhook("https://example.com/wh");
+    registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh");
+    registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh");
     expect(getWebhookUrls().size).toBe(1);
+  });
+
+  it("registerWebhook generates a signing secret when none is supplied", () => {
+    const record = registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh-secret");
+    expect(typeof record.secret).toBe("string");
+    expect(record.secret.length).toBeGreaterThanOrEqual(32);
   });
 });
