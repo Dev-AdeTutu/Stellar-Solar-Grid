@@ -39,6 +39,18 @@ To also remove volumes (e.g., for a clean restart):
 docker-compose down -v
 ```
 
+## Request/Response Logging
+
+All requests are logged by `requestLogger` middleware (`backend/src/lib/requestLogger.ts`):
+
+- Every request gets a unique `request_id` (also returned as the `X-Request-Id`
+  response header) linking its request and response log lines.
+- Sensitive fields (secrets, tokens, passwords, API keys) are redacted from
+  logged request bodies.
+- Errors (status >= 400) are always logged; successful requests are sampled
+  at 10% by default to limit log volume.
+- Disable entirely by setting `LOG_REQUESTS=false`.
+
 ## Idempotency
 
 Payment endpoints support the `Idempotency-Key` header to prevent duplicate submissions on network retries.
@@ -75,6 +87,31 @@ Submit a payment for a meter.
 ```json
 { "hash": "<transaction-hash>" }
 ```
+
+## Batch Meter Registration
+
+### `POST /api/meters/batch`
+
+Registers up to 100 meters in a single on-chain transaction (admin only),
+wrapping the contract's `batch_register_meters` function.
+
+Request body:
+
+```json
+{
+  "meters": [
+    { "meter_id": "METER1", "owner": "GABC...XYZ" },
+    { "meter_id": "METER2", "owner": "GDEF...UVW" }
+  ]
+}
+```
+
+- Rejects (400) if `meters` is empty, exceeds 100 entries, or contains
+  duplicate `meter_id` values within the request.
+- Entries whose owner is not allowlisted, or whose `meter_id` already exists
+  on-chain, are skipped rather than failing the whole batch (see the
+  `batch_skip` event in `contracts/README.md`).
+- Response: `{ "hash": "<tx_hash>", "meter_ids": [...] }`.
 
 ## Low-Balance Webhook Notifications
 

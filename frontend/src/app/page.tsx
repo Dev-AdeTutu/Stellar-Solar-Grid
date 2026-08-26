@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export default function HomePage() {
   return (
-    <main className="min-h-screen flex flex-col items-center justify-center px-4 text-center">
+    <main id="main-content" tabIndex={-1} className="min-h-screen flex flex-col items-center justify-center px-4 text-center">
       <div className="w-full max-w-2xl">
         <span className="text-5xl">☀️</span>
         <h1 className="mt-4 text-3xl font-bold text-solar-yellow sm:text-5xl">

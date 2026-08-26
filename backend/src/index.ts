@@ -9,6 +9,7 @@ import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
+import { requestLogger } from "./lib/requestLogger.js";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
@@ -55,10 +56,7 @@ app.use((req: any, _res: any, next: any) => {
   if (!req.timedout) next();
 });
 
-app.use((req, _res, next) => {
-  logger.info({ method: req.method, path: req.path });
-  next();
-});
+app.use(requestLogger());
 
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useModalA11y } from "@/hooks/useModalA11y";
 
 const SMS_SHORTCODE = import.meta.env.VITE_SMS_SHORTCODE ?? "20880";
 const SMS_WEBHOOK_DOCS =
@@ -20,6 +21,7 @@ const PLANS = [
 
 export default function OfflinePaymentModal({ meterId, onClose }: Props) {
   const [copied, setCopied] = useState(false);
+  const panelRef = useModalA11y<HTMLDivElement>(onClose);
   const exampleMeter = meterId?.trim() || "METER1";
   const exampleSms = `PAY ${exampleMeter} 5 D`;
 
@@ -49,8 +51,11 @@ export default function OfflinePaymentModal({ meterId, onClose }: Props) {
       />
 
       {/* Panel — slides up from bottom on mobile */}
-      <div className="relative w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-solar-accent border border-white/10 shadow-2xl overflow-hidden">
-
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-solar-accent border border-white/10 shadow-2xl overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 bg-yellow-900/20">
           <div className="flex items-center gap-2">

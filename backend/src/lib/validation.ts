@@ -27,6 +27,15 @@ export const RegisterMeterSchema = z
   })
   .strict();
 
+export const BatchRegisterMetersSchema = z
+  .object({
+    meters: z
+      .array(RegisterMeterSchema)
+      .min(1, "meters must contain at least one entry")
+      .max(100, "batch size cannot exceed 100 meters"),
+  })
+  .strict();
+
 export const UsageUpdateSchema = z
   .object({
     units: z

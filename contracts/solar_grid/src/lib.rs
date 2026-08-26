@@ -238,6 +238,83 @@ impl SolarGridContract {
         Ok(())
     }
 
+    /// Register multiple new smart meters in a single transaction.
+    ///
+    /// Accepts a vector of `(meter_id, owner)` tuples. Each entry is skipped
+    /// (rather than aborting the whole batch) if the meter_id already exists,
+    /// is duplicated within the batch, or the owner is not on the allowlist;
+    /// a `batch_skip` event is emitted for each skip and `meter_registered`
+    /// for each success. Returns one bool per input entry (true = registered)
+    /// in the same order as the input. Admin-only. Maximum batch size: 100.
+    pub fn batch_register_meters(
+        env: Env,
+        meters: Vec<(String, Address)>,
+    ) -> Result<Vec<bool>, ContractError> {
+        Self::require_admin(&env)?;
+        if meters.len() > 100 {
+            return Err(ContractError::BatchTooLarge);
+        }
+        let allowlist = Self::get_allowlist(env.clone())?;
+        let now = env.ledger().timestamp();
+
+        let mut global_list: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+
+        let mut seen: Vec<String> = vec![&env];
+        let mut results: Vec<bool> = vec![&env];
+
+        for (meter_id, owner) in meters.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            if seen.contains(&meter_id)
+                || env.storage().persistent().has(&key)
+                || !allowlist.contains(&owner)
+            {
+                env.events().publish(
+                    (symbol_short!("btch_skip"), EVT_NS, meter_id.clone()),
+                    (),
+                );
+                results.push_back(false);
+                continue;
+            }
+            seen.push_back(meter_id.clone());
+
+            let meter = Meter {
+                version: 2,
+                owner: owner.clone(),
+                active: false,
+                units_used: 0,
+                plan: PaymentPlan::Daily,
+                last_payment: now,
+                expires_at: now,
+                daily_limit: 0,
+                day_spent: 0,
+                day_start: now,
+            };
+            env.storage().persistent().set(&key, &meter);
+
+            let owner_key = DataKey::OwnerMeters(owner.clone());
+            let mut owner_list: Vec<String> = env
+                .storage()
+                .persistent()
+                .get(&owner_key)
+                .unwrap_or_else(|| vec![&env]);
+            owner_list.push_back(meter_id.clone());
+            env.storage().persistent().set(&owner_key, &owner_list);
+
+            global_list.push_back(meter_id.clone());
+
+            env.events()
+                .publish(("meter", "registered"), (meter_id.clone(), owner.clone()));
+            results.push_back(true);
+        }
+
+        env.storage().instance().set(&METER_LIST, &global_list);
+        Ok(results)
+    }
+
     /// Get all meter IDs registered under a given owner address.
     pub fn get_meters_by_owner(env: Env, owner: Address) -> Result<Vec<String>, ContractError> {
         let owner_key = DataKey::OwnerMeters(owner);

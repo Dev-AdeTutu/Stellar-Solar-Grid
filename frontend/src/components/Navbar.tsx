@@ -20,6 +20,15 @@ export default function Navbar() {
     document.documentElement.setAttribute("data-theme", savedTheme);
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [menuOpen]);
+
   const toggleTheme = () => {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
@@ -34,7 +43,7 @@ export default function Navbar() {
   }
 
   return (
-    <nav className="bg-solar-accent border-b border-white/10 relative z-50">
+    <nav aria-label="Main navigation" className="bg-solar-accent border-b border-white/10 relative z-50">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
         <Link to="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>
@@ -52,7 +61,7 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme">
+          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
           <WalletButton address={short} connect={connect} disconnect={disconnect} />
@@ -69,7 +78,7 @@ export default function Navbar() {
 
         {/* Mobile: wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme">
+          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
           <WalletButton address={short} connect={connect} disconnect={disconnect} compact />
