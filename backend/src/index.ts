@@ -32,6 +32,7 @@ import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
+import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
@@ -217,8 +218,10 @@ try {
 }
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
-app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", writeLimiter, paymentsRouter);
+// Body parsing above makes payer/owner available before this limiter runs.
+// Missing payer identities remain governed by the global IP limiter.
+app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
+app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
