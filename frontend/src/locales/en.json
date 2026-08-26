@@ -130,6 +130,10 @@
     "weekly": "Weekly",
     "usage": "Usage"
   },
+  "pauseBanner": {
+    "title": "Emergency pause active",
+    "message": "Payments and meter registration are temporarily disabled. Usage reporting remains available."
+  },
   "common": {
     "loading": "Loading…",
     "error": "Error",
