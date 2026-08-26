@@ -618,6 +618,9 @@ impl SolarGridContract {
     /// Make a payment to top up a meter's balance and activate it.
     /// `amount` is in the token's smallest unit. `plan` sets the billing cycle.
     ///
+    /// SECURITY: Implements checks-effects-interactions pattern to prevent reentrancy.
+    /// All state mutations complete BEFORE the external token transfer call.
+    ///
     /// Emits:
     /// - `payment_received { meter_id, payer, amount, plan }`
     /// - `meter_activated  { meter_id }` (always, since payment activates the meter)
@@ -628,6 +631,8 @@ impl SolarGridContract {
         amount: i128,
         plan: PaymentPlan,
     ) -> Result<(), ContractError> {
+        // ── CHECKS ──────────────────────────────────────────────────────────
+        // Validate contract state and permissions
         if env
             .storage()
             .instance()
@@ -640,11 +645,14 @@ impl SolarGridContract {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
-        let token_address = Self::get_token_address(&env)?;
-        let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
+        let token_address = Self::get_token_address(&env)?;
         let key = DataKey::Meter(meter_id.clone());
+        let _meter = Self::get_meter_or_error(&env, &key)?; // Verify meter exists
+        let _admin = Self::get_admin(&env)?; // Verify admin exists
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
+        // Perform all state mutations BEFORE external calls
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(plan_duration_secs(&plan));
@@ -671,14 +679,19 @@ impl SolarGridContract {
             .persistent()
             .set(&provider_key, &provider_revenue.saturating_add(amount));
 
-        // payment_received
+        // Publish events (still part of effects, before external calls)
         env.events().publish(
             (EVT_NS, symbol_short!("payment"), meter_id.clone()),
-            (payer, token_address, amount, plan),
+            (payer.clone(), token_address.clone(), amount, plan),
         );
-        // meter_activated — payment always activates the meter
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id), ());
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        // External call happens AFTER all state updates are complete
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&payer, &env.current_contract_address(), &amount);
+
         Ok(())
     }
 
@@ -692,12 +705,15 @@ impl SolarGridContract {
     /// - [`ContractError::Unauthorized`] when caller is not the contract admin
     /// - [`ContractError::InsufficientBalance`] when tracked balance < `amount`
     ///
+    /// SECURITY: Implements checks-effects-interactions pattern to prevent reentrancy.
+    ///
     /// Emits: `rev_wdrl { provider, token_address, amount }`
     pub fn withdraw_revenue(
         env: Env,
         provider: Address,
         amount: i128,
     ) -> Result<(), ContractError> {
+        // ── CHECKS ──────────────────────────────────────────────────────────
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -713,40 +729,49 @@ impl SolarGridContract {
             return Err(ContractError::InsufficientBalance);
         }
 
+        let token_address = Self::get_token_address(&env)?;
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
         env.storage()
             .persistent()
             .set(&provider_key, &provider_revenue.saturating_sub(amount));
 
-        let token_address = Self::get_token_address(&env)?;
+        env.events().publish(
+            (EVT_NS, symbol_short!("rev_wdrl"), provider.clone()),
+            (token_address.clone(), amount),
+        );
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
         let token_client = token::Client::new(&env, &token_address);
         token_client.transfer(&env.current_contract_address(), &provider, &amount);
 
-        env.events().publish(
-            (EVT_NS, symbol_short!("rev_wdrl"), provider),
-            (token_address, amount),
-        );
         Ok(())
     }
 
     pub fn admin_withdraw(env: Env, admin: Address, amount: i128) -> Result<(), ContractError> {
+        // ── CHECKS ──────────────────────────────────────────────────────────
         admin.require_auth();
-        // Verify admin matches stored admin address
         let stored_admin: Address = Self::get_admin(&env)?;
         if admin != stored_admin {
             return Err(ContractError::Unauthorized);
         }
-        // Transfer XLM from contract to admin
+
         let token_address = Self::get_token_address(&env)?;
         let token_client = token::Client::new(&env, &token_address);
         let contract_balance = token_client.balance(&env.current_contract_address());
         if amount > contract_balance {
             return Err(ContractError::InsufficientBalance);
         }
-        token_client.transfer(&env.current_contract_address(), &admin, &amount);
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
         env.events().publish(
             (EVT_NS, symbol_short!("adm_wdrl"), admin.clone()),
             (admin.clone(), amount),
         );
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        token_client.transfer(&env.current_contract_address(), &admin, &amount);
+
         Ok(())
     }
 
@@ -1116,27 +1141,37 @@ impl SolarGridContract {
 
     /// Distribute `amount` stroops and perform the actual token transfers atomically.
     /// Uses `distribute` internally to compute shares, then transfers to each collaborator.
+    ///
+    /// SECURITY: Implements checks-effects-interactions pattern to prevent reentrancy.
+    /// All payouts are computed and recorded in state before external transfer calls.
+    ///
     /// Emits `distrib` event after all transfers succeed.
     pub fn distribute_and_transfer(
         env: Env,
         amount: i128,
     ) -> Result<Map<Address, i128>, ContractError> {
+        // ── CHECKS ──────────────────────────────────────────────────────────
         Self::require_admin(&env)?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
 
         let token_address = Self::get_token_address(&env)?;
-        let token = token::Client::new(&env, &token_address);
 
+        // ── EFFECTS ─────────────────────────────────────────────────────────
         let payouts = Self::distribute(env.clone(), amount)?;
+
+        env.events()
+            .publish((EVT_NS, symbol_short!("distrib")), (amount,));
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        let token = token::Client::new(&env, &token_address);
         for (collaborator, payout) in payouts.iter() {
             if payout > 0 {
                 token.transfer(&env.current_contract_address(), &collaborator, &payout);
             }
         }
-        env.events()
-            .publish((EVT_NS, symbol_short!("distrib")), (amount,));
+
         Ok(payouts)
     }
 
@@ -1145,7 +1180,10 @@ impl SolarGridContract {
     /// Drain all contract-held token balance to a recovery address. Admin-only.
     /// The contract must be frozen first via `freeze_contract`; returns
     /// `ContractNotFrozen` otherwise. Returns `Ok(())` when balance is zero.
+    ///
+    /// SECURITY: Implements checks-effects-interactions pattern to prevent reentrancy.
     pub fn emergency_withdraw(env: Env, to: Address) -> Result<(), ContractError> {
+        // ── CHECKS ──────────────────────────────────────────────────────────
         Self::require_admin(&env)?;
         let frozen: bool = env.storage().instance().get(&FROZEN).unwrap_or(false);
         if !frozen {
@@ -1156,15 +1194,21 @@ impl SolarGridContract {
             .instance()
             .get(&TOKEN)
             .ok_or(ContractError::NotInitialized)?;
+
         let token = token::Client::new(&env, &token_addr);
         let balance = token.balance(&env.current_contract_address());
-        if balance > 0 {
-            token.transfer(&env.current_contract_address(), &to, &balance);
-        }
+
+        // ── EFFECTS ─────────────────────────────────────────────────────────
         env.events().publish(
             (symbol_short!("WITHDRAW"), symbol_short!("emergency")),
             (to.clone(), balance),
         );
+
+        // ── INTERACTIONS ────────────────────────────────────────────────────
+        if balance > 0 {
+            token.transfer(&env.current_contract_address(), &to, &balance);
+        }
+
         Ok(())
     }
 
