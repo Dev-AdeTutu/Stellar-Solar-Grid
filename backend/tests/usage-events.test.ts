@@ -5,12 +5,16 @@ import {
   purgeSubmittedUsageEvents,
   getFailedUsageEvents,
   replayFailedUsageEvent,
+  compactUsageEvents,
+  getUsageSummary,
 } from "../src/lib/usageEvents";
 
 vi.mock("../src/lib/usageEvents", () => ({
   purgeSubmittedUsageEvents: vi.fn(),
   getFailedUsageEvents: vi.fn(),
   replayFailedUsageEvent: vi.fn(),
+  compactUsageEvents: vi.fn(),
+  getUsageSummary: vi.fn(),
 }));
 
 describe("usageEventsRouter - admin authentication", () => {
@@ -124,6 +128,92 @@ describe("usageEventsRouter - DELETE /api/usage-events", () => {
 
     expect(statusMock).toHaveBeenCalledWith(400);
     expect(jsonMock).toHaveBeenCalledWith({ error: "Invalid olderThanDays parameter", code: "VALIDATION_ERROR" });
+  });
+});
+
+describe("usageEventsRouter - POST /api/usage-events/compact", () => {
+  let req: Partial<Request>;
+  let res: Partial<Response>;
+  let jsonMock: any;
+  let statusMock: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    jsonMock = vi.fn().mockReturnValue({});
+    statusMock = vi.fn().mockReturnValue({ json: jsonMock });
+    req = { body: {} };
+    res = { json: jsonMock, status: statusMock };
+  });
+
+  const getCompactHandler = () => {
+    const layer = usageEventsRouter.stack.find(
+      (l: any) => l.route?.path === "/compact" && l.route?.methods.post
+    );
+    return layer.route.stack[1].handle;
+  };
+
+  it("runs compaction with defaults and returns the result", async () => {
+    const result = {
+      compactedCount: 5,
+      summaryRowsTouched: 2,
+      archivedCount: 1,
+      archiveFile: "/data/archive/x.jsonl.gz",
+      vacuumed: true,
+    };
+    (compactUsageEvents as any).mockReturnValueOnce(result);
+    const handler = getCompactHandler();
+
+    await handler(req as any, res as any, () => {});
+
+    expect(compactUsageEvents).toHaveBeenCalledWith({
+      detailedRetentionDays: undefined,
+      archiveRetentionDays: undefined,
+    });
+    expect(jsonMock).toHaveBeenCalledWith(result);
+  });
+
+  it("rejects a non-numeric detailedRetentionDays", async () => {
+    req.body = { detailedRetentionDays: "soon" };
+    const handler = getCompactHandler();
+
+    await handler(req as any, res as any, () => {});
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(compactUsageEvents).not.toHaveBeenCalled();
+  });
+});
+
+describe("usageEventsRouter - GET /api/usage-events/summary", () => {
+  let req: Partial<Request>;
+  let res: Partial<Response>;
+  let jsonMock: any;
+  let statusMock: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    jsonMock = vi.fn().mockReturnValue({});
+    statusMock = vi.fn().mockReturnValue({ json: jsonMock });
+    req = { query: {} };
+    res = { json: jsonMock, status: statusMock };
+  });
+
+  const getSummaryHandler = () => {
+    const layer = usageEventsRouter.stack.find(
+      (l: any) => l.route?.path === "/summary" && l.route?.methods.get
+    );
+    return layer.route.stack[1].handle;
+  };
+
+  it("returns aggregated summary rows", async () => {
+    const rows = [{ date: "2026-01-01", meter_id: "M1", total_units: 10, total_cost: 100, event_count: 2 }];
+    (getUsageSummary as any).mockReturnValueOnce(rows);
+    req.query = { meterId: "M1", limit: "30" };
+    const handler = getSummaryHandler();
+
+    await handler(req as any, res as any, () => {});
+
+    expect(getUsageSummary).toHaveBeenCalledWith("M1", 30);
+    expect(jsonMock).toHaveBeenCalledWith({ summary: rows, count: 1 });
   });
 });
 

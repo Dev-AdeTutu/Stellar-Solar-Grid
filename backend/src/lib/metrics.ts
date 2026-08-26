@@ -69,4 +69,14 @@ export const contractEventsProcessed = new Counter({
   labelNames: ["topic"] as const,
 });
 
+export const usageEventsCompacted = new Counter({
+  name: "solargrid_usage_events_compacted_total",
+  help: "Detailed usage_events rows rolled up into usage_summary and deleted by the retention job",
+});
+
+export const usageEventsArchived = new Counter({
+  name: "solargrid_usage_events_archived_total",
+  help: "Usage events written to cold-storage archive files before deletion (older than the archive retention window)",
+});
+
 export { register };

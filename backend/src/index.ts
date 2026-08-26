@@ -34,6 +34,7 @@ import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
+  startUsageCompactionWorker,
   countDeadLetterEvents,
 } from "./lib/usageEvents.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
@@ -323,6 +324,7 @@ app.listen(PORT, () => {
   initUsageEventStore();
   initMeterNotesStore();
   startUsageEventRetryWorker();
+  startUsageCompactionWorker();
   startLimitWatcher(stellarService);
   try {
     startIoTBridge();

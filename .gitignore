@@ -12,6 +12,7 @@ certs/
 logs/
 data/*.db
 data/*.sqlite
+data/archive/
 
 # Test snapshots
 __snapshots__/

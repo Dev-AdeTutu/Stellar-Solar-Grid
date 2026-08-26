@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
+import zlib from "node:zlib";
 import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
-import { deadLetterEvents, usageEvents } from "./metrics.js";
+import { deadLetterEvents, usageEvents, usageEventsCompacted, usageEventsArchived } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -14,6 +15,23 @@ const RETRY_INTERVAL_MS = Number(
 );
 const MAX_RETRY_ATTEMPTS = Number(process.env.MAX_RETRY_ATTEMPTS ?? 5);
 const MAX_RETRIES = MAX_RETRY_ATTEMPTS;
+
+// ── Retention / compaction (Closes #685) ────────────────────────────────────
+//
+// usage_events grows ~1KB/event; left unbounded it reaches multiple GB within
+// months at fleet scale. Detailed rows older than DETAIL_RETENTION_DAYS are
+// rolled up into daily (date, meter_id) summaries in usage_summary and
+// deleted. Rows older than ARCHIVE_RETENTION_DAYS are additionally dumped to
+// a gzipped JSONL file under USAGE_ARCHIVE_DIR before deletion, so the raw
+// records aren't lost — point USAGE_ARCHIVE_DIR at a mounted/synced bucket
+// (s3fs, gcsfuse, an `aws s3 sync` cron target, etc.) to treat it as cold
+// storage without pulling a cloud SDK into this service.
+const DETAIL_RETENTION_DAYS = Number(process.env.USAGE_DETAIL_RETENTION_DAYS ?? 90);
+const ARCHIVE_RETENTION_DAYS = Number(process.env.USAGE_ARCHIVE_RETENTION_DAYS ?? 365);
+const ARCHIVE_DIR =
+  process.env.USAGE_ARCHIVE_DIR ?? path.resolve(process.cwd(), "data", "archive");
+const COMPACTION_INTERVAL_MS = Number(process.env.USAGE_COMPACTION_INTERVAL_MS ?? 24 * 60 * 60 * 1000);
+let compactionTimer: NodeJS.Timeout | undefined;
 
 type UsageEventStatus = "pending" | "submitted" | "failed";
 
@@ -80,6 +98,22 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
       ON usage_events (status, submitted_at);
+
+    -- Daily per-meter rollup of usage_events older than the detail
+    -- retention window (see compactUsageEvents). Primary key is
+    -- (date, meter_id) — not just date — so multiple meters on the same
+    -- day get distinct rows.
+    CREATE TABLE IF NOT EXISTS usage_summary (
+      date TEXT NOT NULL,
+      meter_id TEXT NOT NULL,
+      total_units INTEGER NOT NULL DEFAULT 0,
+      total_cost INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (date, meter_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_summary_meter_date
+      ON usage_summary (meter_id, date DESC);
   `);
   return database;
 }
@@ -426,6 +460,186 @@ export function purgeSubmittedUsageEvents(olderThanDays: number): number {
     .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
     .run(cutoff);
   return result.changes;
+}
+
+export type UsageCompactionResult = {
+  /** Detailed rows rolled into usage_summary and deleted. */
+  compactedCount: number;
+  /** Distinct (date, meter_id) summary rows touched. */
+  summaryRowsTouched: number;
+  /** Rows additionally written to a cold-storage archive file before deletion. */
+  archivedCount: number;
+  archiveFile: string | null;
+  vacuumed: boolean;
+};
+
+function isoDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * Write rows to a gzipped JSONL "cold storage" archive file before they're
+ * deleted from usage_events. Returns the file path, or null if there was
+ * nothing to archive.
+ */
+function archiveUsageEvents(rows: UsageEventRecord[]): string | null {
+  if (rows.length === 0) return null;
+
+  fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+  const fileName = `usage-events-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl.gz`;
+  const filePath = path.join(ARCHIVE_DIR, fileName);
+
+  const jsonl = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+  fs.writeFileSync(filePath, zlib.gzipSync(Buffer.from(jsonl, "utf8")));
+
+  return filePath;
+}
+
+/**
+ * Retention job (Closes #685): rolls detailed 'submitted' usage_events older
+ * than `detailedRetentionDays` (default 90) into daily per-meter summaries in
+ * usage_summary, archives events older than `archiveRetentionDays` (default
+ * 365) to a gzipped JSONL file under USAGE_ARCHIVE_DIR, deletes the now-
+ * redundant detail rows, and reclaims disk space with VACUUM.
+ *
+ * Only 'submitted' events are touched — 'pending' and 'failed' events are
+ * left alone so retry/replay flows keep working regardless of age.
+ * Idempotent: running it again with nothing left to compact is a no-op.
+ */
+export function compactUsageEvents(options?: {
+  detailedRetentionDays?: number;
+  archiveRetentionDays?: number;
+}): UsageCompactionResult {
+  const detailedRetentionDays = options?.detailedRetentionDays ?? DETAIL_RETENTION_DAYS;
+  const archiveRetentionDays = options?.archiveRetentionDays ?? ARCHIVE_RETENTION_DAYS;
+  const detailCutoff = isoDaysAgo(detailedRetentionDays);
+  const archiveCutoff = isoDaysAgo(archiveRetentionDays);
+
+  // Archive the oldest slice first (and only) — its rows are also covered by
+  // the compaction cutoff below, so they get deleted along with everything
+  // else once the archive write has succeeded.
+  const toArchive = db
+    .prepare("SELECT * FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+    .all(archiveCutoff) as UsageEventRecord[];
+  const archiveFile = archiveUsageEvents(toArchive);
+  if (toArchive.length > 0) {
+    usageEventsArchived.inc(toArchive.length);
+    logger.info("Archived usage events to cold storage", {
+      count: toArchive.length,
+      archiveFile,
+    });
+  }
+
+  const summaryUpsert = db.prepare(`
+    INSERT INTO usage_summary (date, meter_id, total_units, total_cost, event_count)
+    SELECT
+      substr(received_at, 1, 10) AS date,
+      meter_id,
+      SUM(units) AS total_units,
+      SUM(CAST(cost AS INTEGER)) AS total_cost,
+      COUNT(*) AS event_count
+    FROM usage_events
+    WHERE status = 'submitted' AND received_at < ?
+    GROUP BY date, meter_id
+    ON CONFLICT(date, meter_id) DO UPDATE SET
+      total_units = total_units + excluded.total_units,
+      total_cost = total_cost + excluded.total_cost,
+      event_count = event_count + excluded.event_count
+  `);
+
+  const runCompaction = db.transaction((cutoff: string) => {
+    const summaryResult = summaryUpsert.run(cutoff);
+    const deleteResult = db
+      .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+      .run(cutoff);
+    return { summaryRowsTouched: summaryResult.changes, compactedCount: deleteResult.changes };
+  });
+
+  const { summaryRowsTouched, compactedCount } = runCompaction(detailCutoff);
+
+  let vacuumed = false;
+  if (compactedCount > 0) {
+    usageEventsCompacted.inc(compactedCount);
+    db.exec("VACUUM");
+    vacuumed = true;
+    logger.info("Usage event compaction complete", {
+      compactedCount,
+      summaryRowsTouched,
+      archivedCount: toArchive.length,
+      detailedRetentionDays,
+      archiveRetentionDays,
+    });
+  }
+
+  return {
+    compactedCount,
+    summaryRowsTouched,
+    archivedCount: toArchive.length,
+    archiveFile,
+    vacuumed,
+  };
+}
+
+/** Aggregated daily usage for a meter (or all meters), most recent first. */
+export function getUsageSummary(
+  meterId?: string,
+  limit = 90,
+): Array<{ date: string; meter_id: string; total_units: number; total_cost: number; event_count: number }> {
+  if (meterId) {
+    return db
+      .prepare(
+        "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary WHERE meter_id = ? ORDER BY date DESC LIMIT ?",
+      )
+      .all(meterId, limit) as any[];
+  }
+  return db
+    .prepare(
+      "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary ORDER BY date DESC LIMIT ?",
+    )
+    .all(limit) as any[];
+}
+
+/**
+ * Start the daily compaction worker. Runs once at the next 2 AM UTC, then
+ * every COMPACTION_INTERVAL_MS (default 24h) thereafter.
+ */
+export function startUsageCompactionWorker() {
+  if (compactionTimer) return;
+
+  const runAndReschedule = () => {
+    try {
+      compactUsageEvents();
+    } catch (err) {
+      logger.error("Usage event compaction failed", { err });
+    }
+    compactionTimer = setTimeout(runAndReschedule, COMPACTION_INTERVAL_MS);
+    compactionTimer.unref?.();
+  };
+
+  const now = new Date();
+  const next2am = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 2, 0, 0, 0),
+  );
+  if (next2am.getTime() <= now.getTime()) {
+    next2am.setUTCDate(next2am.getUTCDate() + 1);
+  }
+  const initialDelayMs = next2am.getTime() - now.getTime();
+
+  logger.info("Usage event compaction worker scheduled", {
+    firstRunAt: next2am.toISOString(),
+    intervalMs: COMPACTION_INTERVAL_MS,
+  });
+
+  compactionTimer = setTimeout(runAndReschedule, initialDelayMs);
+  compactionTimer.unref?.();
+
+  process.on("SIGTERM", () => {
+    if (compactionTimer) {
+      clearTimeout(compactionTimer);
+      compactionTimer = undefined;
+      logger.info("Usage event compaction worker stopped on SIGTERM");
+    }
+  });
 }
 
 /** Alias for getDeadLetterEvents with page/pageSize convention. */

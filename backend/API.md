@@ -555,3 +555,77 @@ and zeroes the attempt counter so the retry worker picks it up on its next tick.
 | 400 | Invalid event id |
 | 401 | Missing or invalid `X-Admin-Key` |
 | 404 | Event not found or not in dead-letter state |
+
+---
+
+## Usage Event Retention & Compaction
+
+`usage_events` grows roughly 1KB per row; left unbounded it reaches multiple
+GB after months of operation at fleet scale. A daily job compacts detailed
+history into aggregates while keeping analytics intact.
+
+### How it works
+
+1. **Detail window** (`USAGE_DETAIL_RETENTION_DAYS`, default 90): events
+   newer than this stay as individual rows in `usage_events`.
+2. **Roll-up**: events older than the detail window are aggregated per
+   `(date, meter_id)` into `usage_summary` (`total_units`, `total_cost`,
+   `event_count`), then the detail rows are deleted and the database is
+   `VACUUM`ed to reclaim disk space.
+3. **Cold-storage archive** (`USAGE_ARCHIVE_RETENTION_DAYS`, default 365):
+   events older than this are additionally written to a gzipped JSONL file
+   under `USAGE_ARCHIVE_DIR` (default `./data/archive`) *before* deletion, so
+   the raw records survive even though they're gone from the live database.
+   Point `USAGE_ARCHIVE_DIR` at a mounted/synced bucket (s3fs, gcsfuse, an
+   `aws s3 sync` cron target) to treat it as real cold storage.
+4. Only `submitted` events are touched — `pending` and `failed` events are
+   left alone regardless of age so retry/replay keeps working.
+
+The job runs automatically once a day at **02:00 UTC**. It's idempotent:
+running it again with nothing left to compact is a no-op.
+
+### `POST /api/usage-events/compact`
+
+Run the compaction job on demand (e.g. right after lowering the retention
+window). Requires `X-Admin-Key`.
+
+**Body** (optional overrides)
+
+```json
+{ "detailedRetentionDays": 90, "archiveRetentionDays": 365 }
+```
+
+**Response**
+
+```json
+{
+  "compactedCount": 1200,
+  "summaryRowsTouched": 40,
+  "archivedCount": 300,
+  "archiveFile": "/app/data/archive/usage-events-2026-08-26T02-00-00-000Z.jsonl.gz",
+  "vacuumed": true
+}
+```
+
+### `GET /api/usage-events/summary?meterId=&limit=`
+
+Aggregated daily usage from `usage_summary`, most recent day first. `meterId`
+is optional (omit for all meters); `limit` caps the number of rows (default
+90, max 365).
+
+**Response**
+
+```json
+{
+  "summary": [
+    { "date": "2026-05-01", "meter_id": "METER1", "total_units": 4200, "total_cost": 21000000, "event_count": 48 }
+  ],
+  "count": 1
+}
+```
+
+### `DELETE /api/usage-events?olderThanDays=90`
+
+Hard-deletes submitted events older than N days **without** aggregating them
+first — use `POST /api/usage-events/compact` instead unless you specifically
+want to discard the history rather than roll it up. Requires `X-Admin-Key`.
