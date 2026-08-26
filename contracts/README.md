@@ -121,3 +121,46 @@ stellar contract invoke \
 | Version | Fields added / changed |
 |---------|------------------------|
 | 1 | Initial layout: `owner`, `active`, `units_used`, `plan`, `last_payment`, `expires_at` |
+
+
+## WASM Build Hash Verification
+
+To prevent supply-chain or configuration drift issues, the CI pipeline computes a SHA-256 hash of the locally built `solar_grid.wasm` artifact and compares it against the hash stored on-chain after every deploy.  A mismatch causes the workflow to exit non-zero, blocking the release.
+
+### How it works
+
+1. **Build** — `cargo build --target wasm32-unknown-unknown --release` produces `contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm`.
+2. **Hash artifact** — `sha256sum` computes the digest, which is written to `wasm-hash.txt` and echoed to the GitHub Actions step summary.
+3. **Deploy** — the WASM is deployed to Stellar Testnet; the new contract ID is captured as a step output.
+4. **Verify on-chain** — `stellar contract info --id <CONTRACT_ID> --network testnet` returns JSON containing a `hash` field (the SHA-256 of the WASM stored on-chain).  The CI step compares it against the local digest (case-insensitively) and exits 1 on any mismatch.
+
+### verify_wasm_hash.sh
+
+A standalone helper script is provided at `contracts/scripts/verify_wasm_hash.sh` for local verification or ad-hoc checks against an already-deployed contract.
+
+```bash
+# Print the local WASM hash only (no on-chain lookup)
+./contracts/scripts/verify_wasm_hash.sh
+
+# Verify against a deployed contract
+CONTRACT_ID=<CONTRACT_ID> ./contracts/scripts/verify_wasm_hash.sh
+
+# Override the WASM path or target network
+WASM_FILE=path/to/custom.wasm CONTRACT_ID=<CONTRACT_ID> NETWORK=mainnet \
+  ./contracts/scripts/verify_wasm_hash.sh
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `WASM_FILE` | `contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm` | Path to the compiled WASM artifact |
+| `CONTRACT_ID` | _(unset)_ | Deployed contract ID; triggers on-chain comparison when set |
+| `NETWORK` | `testnet` | Stellar network passed to `stellar contract info` |
+
+Exit codes: **0** — hashes match (or `CONTRACT_ID` not set), **1** — mismatch or prerequisite failure.
+
+### CI integration
+
+The verification runs automatically on every `contract-v*` tag push via `.github/workflows/contract-deploy.yml`.  Two steps are involved:
+
+- **Hash WASM artifact** — runs immediately after `Build WASM`; records the digest in the step summary.
+- **Verify on-chain WASM hash** — runs after `Deploy to testnet`; fetches the on-chain hash with `stellar contract info` and fails the job if it does not match the locally computed digest.

@@ -6,6 +6,22 @@ on:
   pull_request:
 
 jobs:
+  # Closes #538: guard against duplicate package.json keys.
+  # Standard JSON.parse() silently keeps the last occurrence, so npm install
+  # succeeding is NOT sufficient proof a package.json is duplicate-free.
+  check-pkg-duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check for duplicate keys in package.json files
+        run: |
+          node scripts/check-duplicate-pkg-keys.js \
+            backend/package.json \
+            frontend/package.json
+
   contract:
     runs-on: ubuntu-latest
     steps:
@@ -22,8 +38,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - run: cd frontend && npm ci && npm run build
+    env:
+      VITE_CONTRACT_ID: placeholder
+      VITE_RPC_URL: https://soroban-testnet.stellar.org
+      VITE_NETWORK_PASSPHRASE: Test SDF Network ; September 2015
 
   backend:
     runs-on: ubuntu-latest
@@ -31,7 +51,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - run: cd backend && npm ci
       - run: cd backend && npm run build
       - name: Run e2e tests (only when secrets are available)

@@ -12,6 +12,11 @@ import {
 } from "recharts";
 
 export interface UsageDataPoint {
+  /**
+   * An ISO 8601 timestamp (e.g. "2026-08-24T06:00:00Z"), or a plain
+   * "YYYY-MM-DD" date for day-granularity data. Always rendered in the
+   * viewer's local timezone — see `formatTickLocal` / `formatTooltipLocal`.
+   */
   date: string;
   /** Energy consumed in kWh */
   units: number;
@@ -19,8 +24,56 @@ export interface UsageDataPoint {
   cost?: number;
 }
 
+/** True if `value` carries a time-of-day component (not just a calendar date). */
+export function hasTimeComponent(value: string): boolean {
+  return /T\d{2}:\d{2}/.test(value);
+}
+
+/**
+ * Format an x-axis tick in the viewer's local timezone.
+ * Falls back to the raw value when it isn't a parseable date, so
+ * already-formatted or unexpected strings don't crash the chart.
+ */
+export function formatTickLocal(value: string): string {
+  const parsed = hasTimeComponent(value)
+    ? new Date(value)
+    : (() => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+        return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+      })();
+
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  return hasTimeComponent(value)
+    ? parsed.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/**
+ * Format a tooltip label with an explicit timezone indicator, so it's clear
+ * the time shown is local and not UTC (e.g. "Aug 24, 2:00 PM GMT+3").
+ */
+export function formatTooltipLocal(value: string): string {
+  const parsed = hasTimeComponent(value)
+    ? new Date(value)
+    : (() => {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+        return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(value);
+      })();
+
+  if (Number.isNaN(parsed.getTime())) return value;
+
+  return parsed.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...(hasTimeComponent(value) ? { hour: "numeric", minute: "2-digit" } : {}),
+    timeZoneName: "short",
+  });
+}
+
 interface UsageChartProps {
-  data: UsageDataPoint[];
+  /** Usage data points. Null/undefined treated as empty — no crash. */
+  data?: UsageDataPoint[] | null;
   /** Pass true while the parent is still fetching meter data */
   loading?: boolean;
   meterId?: string;
@@ -87,10 +140,12 @@ function CustomTooltip({
 import styles from './UsageChart.module.css';
 
 export default function UsageChart({
-  data,
+  data: rawData,
   loading = false,
   meterId,
 }: UsageChartProps) {
+  // Normalise: null/undefined → empty array so no downstream code can throw
+  const data: UsageDataPoint[] = Array.isArray(rawData) ? rawData : [];
   const isEmpty = !loading && data.length === 0;
 
   return (
@@ -115,8 +170,16 @@ export default function UsageChart({
         {loading ? (
           <ChartSkeleton />
         ) : isEmpty ? (
-          <div className="flex h-48 items-center justify-center text-sm text-gray-500">
-            No usage data available yet.
+          <div
+            role="status"
+            aria-label="No usage data"
+            className="flex h-48 flex-col items-center justify-center gap-2 text-center"
+          >
+            <span className="text-2xl" aria-hidden="true">📊</span>
+            <p className="text-sm text-gray-400 font-medium">No usage data yet</p>
+            <p className="text-xs text-gray-600 max-w-xs">
+              Data will appear here after your first recorded unit.
+            </p>
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={192}>
@@ -127,6 +190,7 @@ export default function UsageChart({
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
               <XAxis
                 dataKey="date"
+                tickFormatter={formatTickLocal}
                 tick={{ fill: "#6b7280", fontSize: 11 }}
                 axisLine={false}
                 tickLine={false}
@@ -136,7 +200,7 @@ export default function UsageChart({
                 axisLine={false}
                 tickLine={false}
               />
-              <Tooltip content={<CustomTooltip />} />
+              <Tooltip content={<CustomTooltip />} labelFormatter={formatTooltipLocal} />
               <Legend
                 wrapperStyle={{
                   fontSize: "11px",

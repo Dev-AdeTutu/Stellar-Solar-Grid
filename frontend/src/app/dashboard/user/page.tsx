@@ -1,25 +1,30 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
+import UsageForecast from "@/components/UsageForecast";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
+import { useInterval } from "@/hooks/useInterval";
+import {
+  requestPushPermissionOnFirstDashboardVisit,
+  setupLowBalancePushNotifications,
+} from "@/services/pushService";
+import { env } from "@/lib/env";
+import { formatXLM } from "@/lib/format";
 
-const STROOPS_PER_XLM = 10_000_000n;
-
-const API = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001";
-const BALANCE_POLL_INTERVAL_MS = 30_000; // 30 seconds
+const API = env.NEXT_PUBLIC_BACKEND_URL;
+const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
 
 function stroopsToXlm(stroops: bigint): string {
-  const whole = stroops / STROOPS_PER_XLM;
-  const frac = stroops % STROOPS_PER_XLM;
-  return `${whole}.${frac.toString().padStart(7, "0").replace(/0+$/, "") || "0"}`;
+  return formatXLM(stroops);
 }
 
 function StatusBadge({ active }: { active: boolean }) {
@@ -82,13 +87,81 @@ function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
   );
 }
 
+function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }) {
+  const isTimedPlan = plan === "Daily" || plan === "Weekly";
+  const expSec = Number(expiresAt);
+  const hasExpiry = expSec > 0 && expSec !== Number.MAX_SAFE_INTEGER;
+
+  const [remaining, setRemaining] = useState(() =>
+    isTimedPlan && hasExpiry ? Math.max(0, expSec - Math.floor(Date.now() / 1000)) : -1
+  );
+
+  useEffect(() => {
+    if (!isTimedPlan || !hasExpiry) return;
+    const tick = () => setRemaining(Math.max(0, expSec - Math.floor(Date.now() / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [isTimedPlan, hasExpiry, expSec]);
+
+  if (!isTimedPlan || !hasExpiry || remaining < 0) return null;
+
+  if (remaining === 0) {
+    return <span className="text-xs font-semibold text-red-400">Expired</span>;
+  }
+
+  const h = Math.floor(remaining / 3600).toString().padStart(2, "0");
+  const m = Math.floor((remaining % 3600) / 60).toString().padStart(2, "0");
+  const s = (remaining % 60).toString().padStart(2, "0");
+
+  return <span className="text-xs font-mono text-solar-yellow">{h}:{m}:{s}</span>;
+}
+
+const COMMON_EMOJIS = ["☀️", "🏠", "🏬", "⚡", "🔋", "🏭"];
+
 function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
+  const [nickname, setNickname] = useState<string>("");
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempNickname, setTempNickname] = useState("");
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`meter_nickname_${meterId}`);
+      if (saved) {
+        setNickname(saved);
+        setTempNickname(saved);
+      }
+    } catch {
+      // LocalStorage might be unavailable
+    }
+  }, [meterId]);
+
+  const handleSaveNickname = () => {
+    const trimmed = tempNickname.trim().slice(0, 30);
+    setNickname(trimmed);
+    setIsEditing(false);
+    try {
+      if (trimmed) {
+        localStorage.setItem(`meter_nickname_${meterId}`, trimmed);
+      } else {
+        localStorage.removeItem(`meter_nickname_${meterId}`);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const handleCancelNickname = () => {
+    setTempNickname(nickname);
+    setIsEditing(false);
+  };
+
   const now = Date.now() / 1000; // Current time in seconds
   const expiresAt = Number(meter.expires_at);
   const isExpired = expiresAt !== Number.MAX_SAFE_INTEGER && expiresAt > 0 && now >= expiresAt;
   const hasAccess = meter.active && meter.balance > 0n && !isExpired;
 
-  const [history, setHistory] = useState<any[]>([]);
+  const [history, setHistory] = useState<UsageDataPoint[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(true);
 
   useEffect(() => {
@@ -96,7 +169,15 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
     fetch('/api/meters/' + meterId + '/history?limit=7')
       .then(r => r.json())
       .then(d => {
-        setHistory(d.events || []);
+        // Pass the raw ISO 8601 timestamp through — UsageChart formats it in
+        // the viewer's local timezone (with a timezone indicator) itself, so
+        // pre-formatting here would throw away the time-of-day and tz info.
+        const events: UsageDataPoint[] = (d.events || []).map((e: { recorded_at: string; units: number; cost?: number }) => ({
+          date: e.recorded_at,
+          units: e.units,
+          cost: e.cost,
+        }));
+        setHistory(events);
         setLoadingHistory(false);
       })
       .catch(() => {
@@ -120,12 +201,101 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
     <div className="rounded-xl border border-white/10 bg-solar-accent p-4 sm:p-5 space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-mono text-sm text-solar-yellow font-semibold">{meterId}</span>
+        <div className="flex-1 min-w-0">
+          {nickname ? (
+            <div>
+              <div className="flex items-center gap-1.5 group">
+                <h3 className="font-semibold text-white text-base truncate">{nickname}</h3>
+                {!isEditing && (
+                  <button
+                    onClick={() => {
+                      setTempNickname(nickname);
+                      setIsEditing(true);
+                    }}
+                    className="text-gray-400 hover:text-solar-yellow text-xs opacity-70 group-hover:opacity-100 transition"
+                    title="Edit nickname"
+                    aria-label="Edit nickname"
+                  >
+                    ✏️
+                  </button>
+                )}
+              </div>
+              <span className="font-mono text-xs text-gray-400 truncate block mt-0.5">{meterId}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm text-solar-yellow font-semibold">{meterId}</span>
+              {!isEditing && (
+                <button
+                  onClick={() => {
+                    setTempNickname("");
+                    setIsEditing(true);
+                  }}
+                  className="text-xs text-gray-400 hover:text-solar-yellow underline transition"
+                >
+                  Set nickname
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <StatusBadge active={hasAccess} />
           <PlanBadge plan={meter.plan} />
         </div>
       </div>
+
+      {/* Nickname Editor */}
+      {isEditing && (
+        <div className="rounded-lg bg-solar-dark/50 border border-white/10 p-3 space-y-2">
+          <label className="text-xs text-gray-400 block">Set nickname (max 30 chars)</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              maxLength={30}
+              value={tempNickname}
+              onChange={(e) => setTempNickname(e.target.value)}
+              placeholder="e.g. Home Solar ☀️"
+              className="flex-1 rounded border border-white/20 bg-solar-dark px-2.5 py-1 text-xs text-white placeholder-gray-500 focus:border-solar-yellow focus:outline-none"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveNickname();
+                if (e.key === "Escape") handleCancelNickname();
+              }}
+            />
+            <button
+              onClick={handleSaveNickname}
+              className="rounded bg-solar-yellow px-2.5 py-1 text-xs font-semibold text-solar-dark hover:opacity-90 transition"
+            >
+              Save
+            </button>
+            <button
+              onClick={handleCancelNickname}
+              className="rounded border border-white/20 px-2 py-1 text-xs text-gray-400 hover:text-white transition"
+            >
+              Cancel
+            </button>
+          </div>
+          {/* Quick Emoji Picker */}
+          <div className="flex items-center gap-1.5 pt-1">
+            <span className="text-[10px] text-gray-500">Quick emojis:</span>
+            {COMMON_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => {
+                  if (tempNickname.length + emoji.length <= 30) {
+                    setTempNickname((prev) => (prev ? `${prev} ${emoji}` : emoji).slice(0, 30));
+                  }
+                }}
+                className="rounded px-1.5 py-0.5 text-xs hover:bg-white/10 transition"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 min-[480px]:grid-cols-2 sm:grid-cols-4 gap-3">
@@ -144,8 +314,24 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         ))}
       </div>
 
-      {/* Warning for expired or low balance */}
-      {(isExpired || meter.balance === 0n) && (
+      {/* Countdown timer for time-based plans */}
+      {(meter.plan === "Daily" || meter.plan === "Weekly") && (
+        <div className="flex items-center gap-2">
+          <span className="text-xs uppercase tracking-wider text-gray-500">Time Remaining</span>
+          <CountdownTimer expiresAt={meter.expires_at} plan={meter.plan} />
+        </div>
+      )}
+
+      {/* Warning for grace period, expired, or low balance */}
+      {meter.grace_expires_at && Number(meter.grace_expires_at) > now ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-amber-300 text-xs flex items-start gap-2">
+          <span className="mt-0.5">⚠️</span>
+          <p>
+            Meter is in <strong>grace period</strong> until{" "}
+            {new Date(Number(meter.grace_expires_at) * 1000).toLocaleTimeString()}. Top up your balance to avoid disconnection!
+          </p>
+        </div>
+      ) : (isExpired || meter.balance === 0n) ? (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 p-3 text-yellow-300 text-xs flex items-start gap-2">
           <span className="mt-0.5">⚠</span>
           <p>
@@ -154,36 +340,19 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
             Top up to restore access.
           </p>
         </div>
-      )}
+      ) : null}
+
+      {/* Usage Forecasting */}
+      <UsageForecast
+        meterId={meterId}
+        balance={meter.balance}
+        history={history}
+        loading={loadingHistory}
+      />
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">
-        <h3 className="text-sm font-semibold text-gray-300 mb-4">Last 7 Days Usage</h3>
-        {loadingHistory ? (
-          <Skeleton height={200} />
-        ) : history.length === 0 ? (
-          <div className="h-[200px] flex items-center justify-center text-gray-500 text-sm border border-white/5 rounded-lg bg-black/20">
-            No history available
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={history}>
-              <XAxis 
-                dataKey="recorded_at" 
-                tickFormatter={d => new Date(d).toLocaleDateString()} 
-                stroke="#9ca3af"
-                fontSize={12}
-              />
-              <YAxis stroke="#9ca3af" fontSize={12} />
-              <Tooltip 
-                contentStyle={{ backgroundColor: '#1c2b3a', border: 'none', borderRadius: '8px' }}
-                itemStyle={{ color: '#00d4ff' }}
-                labelStyle={{ color: '#9ca3af' }}
-              />
-              <Line type="monotone" dataKey="units" stroke="#00d4ff" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        )}
+        <UsageChart data={history} loading={loadingHistory} meterId={meterId} />
       </div>
 
       {/* Actions */}
@@ -195,10 +364,10 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
           Top Up
         </Link>
         <Link
-          href="/history"
+          href={`/history?meterId=${meterId}`}
           className="rounded-lg border border-white/10 px-4 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
         >
-          History
+          View history
         </Link>
       </div>
     </div>
@@ -258,6 +427,7 @@ export default function UserDashboardPage() {
     }
   }, [address, showToast]);
 
+  // Initial fetch when wallet connects / address changes
   useEffect(() => {
     if (!address) {
       setMeterIds([]);
@@ -270,49 +440,56 @@ export default function UserDashboardPage() {
     fetchAll();
   }, [address, fetchAll]);
 
-  // Poll individual meter balances every 30s for live updates
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
   useEffect(() => {
-    if (!address || meterIds.length === 0) {
-      if (pollRef.current) clearInterval(pollRef.current);
-      return;
-    }
+    if (!address) return;
+    requestPushPermissionOnFirstDashboardVisit().catch(() => {
+      // Permission API might fail on unsupported browser modes.
+    });
+  }, [address]);
 
-    async function pollBalances() {
-      for (const id of meterIds) {
-        try {
-          const res = await fetch(`${API}/api/meters/${id}/balance`);
-          if (!res.ok) continue;
-          const data = await res.json();
-          setMeters((prev) => {
-            const existing = prev[id];
-            if (!existing) return prev;
-            return {
-              ...prev,
-              [id]: {
-                ...existing,
-                balance: BigInt(data.balance ?? existing.balance),
-                units_used: data.units_used ?? existing.units_used,
-                active: data.active ?? existing.active,
-              },
-            };
+  // Poll individual meter balances for live updates.
+  // useInterval does NOT fire on mount, so fetchAll() above handles the
+  // first load — no double-fetch on first render.
+  const pollBalances = useCallback(async () => {
+    if (!address || meterIds.length === 0) return;
+    for (const id of meterIds) {
+      try {
+        const res = await fetch(`${API}/api/meters/${id}/balance`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        setMeters((prev) => {
+          const existing = prev[id];
+          if (!existing) return prev;
+          return {
+            ...prev,
+            [id]: {
+              ...existing,
+              balance: BigInt(data.balance ?? existing.balance),
+              units_used: data.units_used ?? existing.units_used,
+              active: data.active ?? existing.active,
+            },
+          };
+        });
+
+        const threshold = Number(data.low_balance_threshold_stroops ?? 0);
+        const currentBalance = Number(data.balance ?? 0);
+        if (threshold > 0 && currentBalance <= threshold) {
+          setupLowBalancePushNotifications(address).catch(() => {
+            // Avoid interrupting dashboard polling if push setup fails.
           });
-        } catch {
-          // Silently skip — full refresh will recover
         }
+      } catch {
+        // Silently skip — full refresh will recover on next interval
       }
-      setLastRefresh(new Date());
     }
-
-    pollRef.current = setInterval(pollBalances, BALANCE_POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-    };
+    setLastRefresh(new Date());
   }, [address, meterIds]);
 
+  // Pause polling when address is gone or no meters loaded yet
+  useInterval(pollBalances, address && meterIds.length > 0 ? BALANCE_POLL_INTERVAL_MS : null);
+
   return (
-    <>
+    <ErrorBoundary>
       <Navbar />
       <main id="main-content" tabIndex={-1} className="min-h-screen px-4 py-8 max-w-3xl mx-auto">
         {/* Header */}
@@ -410,6 +587,6 @@ export default function UserDashboardPage() {
 
 
       </main>
-    </>
+    </ErrorBoundary>
   );
 }

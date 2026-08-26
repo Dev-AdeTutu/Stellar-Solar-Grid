@@ -3,12 +3,17 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
+import { logger } from "./logger.js";
+import { deadLetterEvents, usageEvents } from "./metrics.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
   path.resolve(process.cwd(), "data", "usage-events.sqlite");
-const RETRY_INTERVAL_MS = Number(process.env.USAGE_RETRY_INTERVAL_MS ?? 10_000);
-const MAX_RETRIES = 3;
+const RETRY_INTERVAL_MS = Number(
+  process.env.RETRY_INTERVAL_MS ?? process.env.USAGE_RETRY_INTERVAL_MS ?? 30_000,
+);
+const MAX_RETRY_ATTEMPTS = Number(process.env.MAX_RETRY_ATTEMPTS ?? 5);
+const MAX_RETRIES = MAX_RETRY_ATTEMPTS;
 
 type UsageEventStatus = "pending" | "submitted" | "failed";
 
@@ -34,7 +39,10 @@ type CreateUsageEventInput = {
   sourceTopic?: string | null;
 };
 
-const db = openDatabase();
+// Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
+// such that the instance type loses its namespace-declared methods at this call site.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const db = openDatabase() as any;
 let retryTimer: NodeJS.Timeout | undefined;
 let retryInFlight = false;
 const activeSubmissionIds = new Set<number>();
@@ -44,6 +52,11 @@ function openDatabase() {
   const database = new Database(DB_PATH);
   database.pragma("journal_mode = WAL");
   database.exec(`
+    CREATE TABLE IF NOT EXISTS kv (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS usage_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       meter_id TEXT NOT NULL,
@@ -64,12 +77,24 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_retry
       ON usage_events (status, attempt_count, received_at ASC);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+      ON usage_events (status, submitted_at);
   `);
   return database;
 }
 
 export function initUsageEventStore() {
   return db;
+}
+
+export function getKV(key: string): string | null {
+  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
+  return row?.value ?? null;
+}
+
+export function setKV(key: string, value: string) {
+  db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
@@ -94,6 +119,8 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     input.sourceTopic ?? null
   );
 
+  usageEvents.inc({ status: "pending" });
+
   return getUsageEventById(Number(result.lastInsertRowid))!;
 }
 
@@ -102,35 +129,47 @@ export function getUsageHistory(
   page: number,
   pageSize: number
 ): {
-  data: UsageEventRecord[];
-  pagination: { page: number; pageSize: number; total: number; totalPages: number };
+  events: UsageEventRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
 } {
-  const totalRow = db
-    .prepare("SELECT COUNT(*) as total FROM usage_events WHERE meter_id = ?")
-    .get(meterId) as { total: number };
-  const total = totalRow.total;
   const offset = (page - 1) * pageSize;
-  const data = db
+
+  const events = db
     .prepare(
-      `
-        SELECT *
-        FROM usage_events
-        WHERE meter_id = ?
-        ORDER BY received_at DESC, id DESC
-        LIMIT ? OFFSET ?
-      `
+      "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
+      "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
     )
     .all(meterId, pageSize, offset) as UsageEventRecord[];
 
+  const { count } = db
+    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
+    .get(meterId) as { count: number };
+
   return {
-    data,
-    pagination: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / pageSize)),
-    },
+    events,
+    page,
+    pageSize,
+    total: count,
+    hasMore: offset + pageSize < count,
   };
+}
+
+export function getTypicalWeeklyUsageStroops(meterId: string): number {
+  const row = db
+    .prepare(
+      `
+        SELECT COALESCE(SUM(CAST(cost AS INTEGER)), 0) as weekly_cost
+        FROM usage_events
+        WHERE meter_id = ?
+          AND received_at >= datetime('now', '-7 days')
+      `,
+    )
+    .get(meterId) as { weekly_cost: number | null };
+
+  return Number(row?.weekly_cost ?? 0);
 }
 
 export async function persistAndSubmitUsageEvent(input: CreateUsageEventInput) {
@@ -182,6 +221,7 @@ export function insertSubmittedUsageEvents(
         txHash,
         now,
       );
+      usageEvents.inc({ status: "submitted" });
     }
   });
 
@@ -193,10 +233,19 @@ export function startUsageEventRetryWorker() {
     return;
   }
 
+  logger.info('Usage event retry worker started', { intervalMs: RETRY_INTERVAL_MS, maxRetryAttempts: MAX_RETRY_ATTEMPTS });
   retryTimer = setInterval(() => {
     void retryQueuedUsageEvents();
   }, RETRY_INTERVAL_MS);
   retryTimer.unref?.();
+
+  process.on('SIGTERM', () => {
+    if (retryTimer) {
+      clearInterval(retryTimer);
+      retryTimer = undefined;
+      logger.info('Usage event retry worker stopped on SIGTERM');
+    }
+  });
 }
 
 export async function retryQueuedUsageEvents() {
@@ -225,6 +274,35 @@ export async function retryQueuedUsageEvents() {
   } finally {
     retryInFlight = false;
   }
+}
+
+export type TopConsumer = {
+  meterId: string;
+  totalUnits: number;
+  rank: number;
+};
+
+/** Top consumers by total units used over the last `days` days. */
+export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `
+        SELECT meter_id AS meterId, SUM(units) AS totalUnits
+        FROM usage_events
+        WHERE received_at >= ?
+        GROUP BY meter_id
+        ORDER BY totalUnits DESC
+        LIMIT ?
+      `
+    )
+    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
+
+  return rows.map((row, index) => ({
+    meterId: row.meterId,
+    totalUnits: row.totalUnits,
+    rank: index + 1,
+  }));
 }
 
 function getUsageEventById(id: number): UsageEventRecord | undefined {
@@ -266,11 +344,23 @@ async function submitUsageEvent(id: number) {
       `
     ).run(attemptedAt, hash, attemptedAt, id);
 
+    usageEvents.inc({ status: "submitted" });
+
     return getUsageEventById(id);
   } catch (error) {
     const nextAttemptCount = event.attempt_count + 1;
     const finalStatus: UsageEventStatus =
       nextAttemptCount >= MAX_RETRIES ? "failed" : "pending";
+
+    if (finalStatus === "failed") {
+      logger.error({
+        eventId: id,
+        meter_id: event.meter_id,
+        units: event.units,
+        last_error: error instanceof Error ? error.message : String(error),
+      }, 'Usage event transitioned to failed state after max retries');
+      deadLetterEvents.inc({ meter_id: event.meter_id });
+    }
 
     db.prepare(
       `
@@ -290,8 +380,86 @@ async function submitUsageEvent(id: number) {
       id
     );
 
+    usageEvents.inc({ status: finalStatus });
+
     throw error;
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+/**
+ * Return all events in 'failed' (dead-lettered) status, newest first.
+ * Supports optional pagination via limit/offset.
+ */
+export function getDeadLetterEvents(
+  limit = 50,
+  offset = 0,
+): { events: UsageEventRecord[]; total: number } {
+  const events = db
+    .prepare(
+      `SELECT * FROM usage_events
+       WHERE status = 'failed'
+       ORDER BY last_attempt_at DESC, id DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(limit, offset) as UsageEventRecord[];
+
+  const { count } = db
+    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
+    .get() as { count: number };
+
+  return { events, total: count };
+}
+
+/**
+ * Requeue a dead-lettered event for retry by resetting its status to
+ * 'pending' and zeroing the attempt counter.  Returns the updated record,
+ * or undefined if the event does not exist or is not in 'failed' state.
+ */
+export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined {
+  const event = getUsageEventById(id);
+  if (!event || event.status !== 'failed') return undefined;
+
+  db.prepare(
+    `UPDATE usage_events
+     SET status = 'pending',
+         attempt_count = 0,
+         last_error = NULL,
+         last_attempt_at = NULL
+     WHERE id = ?`,
+  ).run(id);
+
+  logger.info({ eventId: id, meterId: event.meter_id }, 'Dead-lettered event requeued for retry');
+  return getUsageEventById(id);
+}
+
+/** Purge submitted events older than N days. Returns deleted row count. */
+export function purgeSubmittedUsageEvents(olderThanDays: number): number {
+  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  const result = db
+    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+    .run(cutoff);
+  return result.changes;
+}
+
+/** Alias for getDeadLetterEvents with page/pageSize convention. */
+export function getFailedUsageEvents(
+  page: number,
+  pageSize: number,
+): { events: UsageEventRecord[]; total: number } {
+  return getDeadLetterEvents(pageSize, (page - 1) * pageSize);
+}
+
+/** Alias for requeueDeadLetterEvent. */
+export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined {
+  return requeueDeadLetterEvent(id);
+}
+
+/** Count of events currently in dead-letter state (used by /health). */
+export function countDeadLetterEvents(): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
+    .get() as { count: number };
+  return row.count;
 }
