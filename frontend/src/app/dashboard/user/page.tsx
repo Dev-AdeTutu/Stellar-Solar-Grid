@@ -169,8 +169,11 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
     fetch('/api/meters/' + meterId + '/history?limit=7')
       .then(r => r.json())
       .then(d => {
+        // Pass the raw ISO 8601 timestamp through — UsageChart formats it in
+        // the viewer's local timezone (with a timezone indicator) itself, so
+        // pre-formatting here would throw away the time-of-day and tz info.
         const events: UsageDataPoint[] = (d.events || []).map((e: { recorded_at: string; units: number; cost?: number }) => ({
-          date: new Date(e.recorded_at).toLocaleDateString(),
+          date: e.recorded_at,
           units: e.units,
           cost: e.cost,
         }));
