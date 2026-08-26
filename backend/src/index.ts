@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import timeout from "connect-timeout";
 import { NextFunction, Request, Response } from "express";
@@ -9,6 +10,7 @@ import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
+import { runWithRequestId } from "./lib/requestContext.js";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
@@ -55,14 +57,32 @@ app.use((req: any, _res: any, next: any) => {
   if (!req.timedout) next();
 });
 
+// Assign/propagate a request id so every log line for a request can be
+// correlated, and callers can trace a request via the response header.
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string | undefined) || randomUUID();
+  res.setHeader("X-Request-Id", requestId);
+  runWithRequestId(requestId, next);
+});
+
 app.use((req, _res, next) => {
-  logger.info({ method: req.method, path: req.path });
+  logger.info("Incoming request", { method: req.method, path: req.path });
   next();
 });
 
-app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", paymentsRouter);
-app.use("/api/webhooks", webhookRouter);
+// ── API versioning ──────────────────────────────────────────────────────────
+// /api/v1/* is the versioned, stable surface. /api/* remains an alias to the
+// latest version (v1 today) so existing clients keep working. When a v2 ships
+// with breaking changes, mount it separately and point the /api/* alias at
+// it, while /api/v1/* keeps serving old clients until its documented sunset
+// date (see docs/API_VERSIONING.md).
+const v1Router = express.Router();
+v1Router.use("/meters", createMeterRouter(stellarService));
+v1Router.use("/payments", paymentsRouter);
+v1Router.use("/webhooks", webhookRouter);
+
+app.use("/api/v1", v1Router);
+app.use("/api", v1Router);
 
 app.get('/health', async (_req, res) => {
   const checks: Record<string, string> = {};
