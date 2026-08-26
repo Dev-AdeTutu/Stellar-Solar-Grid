@@ -139,14 +139,66 @@ export async function checkMeterAccess(meterId: string): Promise<boolean> {
 }
 
 export async function fetchAllMeters(): Promise<MeterData[]> {
-  const [dataRetval, idsRetval] = await Promise.all([
-    client.query("get_all_meters", []),
-    client.query("get_all_meters_paginated", [
-      StellarSdk.nativeToScVal(0, { type: "u32" }),
-      StellarSdk.nativeToScVal(100, { type: "u32" }),
-    ]).catch(() => null),
+  const allMeters: MeterData[] = [];
+  const pageSize = 50; // Fetch 50 meters per page to respect Soroban read limits
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    try {
+      const pageIds = await fetchMetersPaginated(offset, pageSize);
+      if (pageIds.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      // Fetch full meter details for each ID on this page
+      const pageMeters = await Promise.all(
+        pageIds.map(async (meterId) => {
+          try {
+            const meter = await fetchMeter(meterId);
+            return meter;
+          } catch (error) {
+            console.warn(`Failed to fetch meter ${meterId}:`, error);
+            return null;
+          }
+        }),
+      );
+
+      // Filter out failed fetches and add to results
+      const validMeters = pageMeters.filter((m) => m !== null) as MeterData[];
+      allMeters.push(...validMeters);
+
+      // Check if we got less than a full page (means we reached the end)
+      if (pageIds.length < pageSize) {
+        hasMore = false;
+      }
+
+      offset += pageSize;
+    } catch (error) {
+      console.error("Error fetching meters page:", error);
+      hasMore = false;
+    }
+  }
+
+  return allMeters;
+}
+
+export async function fetchMetersPaginated(offset: number, limit: number): Promise<string[]> {
+  const retval = await client.query("get_all_meters_paginated", [
+    StellarSdk.nativeToScVal(offset, { type: "u32" }),
+    StellarSdk.nativeToScVal(limit, { type: "u32" }),
   ]);
-  const rawMeters = StellarSdk.scValToNative(dataRetval) as MeterData[];
-  const meterIds: string[] = idsRetval ? (StellarSdk.scValToNative(idsRetval) as string[]) : [];
-  return rawMeters.map((m, i) => ({ ...m, balance: 0n, meter_id: meterIds[i] }));
+  return StellarSdk.scValToNative(retval) as string[];
+}
+
+export async function transferMeterOwnership(
+  sourceAddress: string,
+  meterId: string,
+  newOwnerAddress: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "transfer_meter_ownership", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(newOwnerAddress, { type: "address" }),
+  ]);
 }

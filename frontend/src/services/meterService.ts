@@ -1,4 +1,4 @@
-import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, contractInvoke, type MeterData } from "@/lib/contract";
+import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, contractInvoke, type MeterData } from "@/lib/contract";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData };
@@ -17,6 +17,18 @@ export async function checkAccess(meterId: string): Promise<boolean> {
 
 export async function getAllMeters(): Promise<MeterData[]> {
   return fetchAllMeters();
+}
+
+export async function getMetersPaginated(offset: number, limit: number): Promise<string[]> {
+  return fetchMetersPaginated(offset, limit);
+}
+
+export async function transferOwnership(
+  sourceAddress: string,
+  meterId: string,
+  newOwnerAddress: string,
+): Promise<string> {
+  return transferMeterOwnership(sourceAddress, meterId, newOwnerAddress);
 }
 
 export async function makePayment(
