@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import { QRCodeCanvas } from "qrcode.react";
 import { env } from "@/lib/env";
+import { buildSep7PaymentUri } from "@/lib/sep7";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -72,6 +73,15 @@ export default async function MeterReportPage({ params }: { params: { id: string
 
   const balanceXlm = (balance.balance / 1e7).toFixed(2);
   const reportUrl = `${process.env.NEXT_PUBLIC_BACKEND_URL}/meters/${meterId}`;
+  const paymentDestination = env.NEXT_PUBLIC_PAYMENT_DESTINATION;
+  const paymentUri = paymentDestination
+    ? buildSep7PaymentUri({
+        destination: paymentDestination,
+        amount: balanceXlm,
+        memo: meterId,
+        message: `SolarGrid payment for meter ${meterId}`,
+      })
+    : reportUrl;
   const generatedAt = new Date().toLocaleString();
 
   return (
@@ -145,9 +155,11 @@ export default async function MeterReportPage({ params }: { params: { id: string
                 QR Code
               </p>
               <div className="bg-white p-3 rounded-lg">
-                <QRCodeCanvas value={reportUrl} size={128} />
+                <QRCodeCanvas value={paymentUri} size={128} />
               </div>
-              <p className="text-xs text-gray-400 text-center">Scan to view this meter</p>
+              <p className="text-xs text-gray-400 text-center">
+                {paymentDestination ? "Scan to pay this meter" : "Scan to view this meter"}
+              </p>
             </div>
           </div>
 
