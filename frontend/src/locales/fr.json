@@ -130,6 +130,10 @@
     "weekly": "Hebdomadaire",
     "usage": "Usage"
   },
+  "pauseBanner": {
+    "title": "Pause d'urgence active",
+    "message": "Les paiements et l'enregistrement des compteurs sont temporairement désactivés. Le suivi de la consommation reste disponible."
+  },
   "common": {
     "loading": "Chargement…",
     "error": "Erreur",

@@ -31,6 +31,12 @@ pub enum ContractError {
     CollaboratorNotFound = 18,
     RefundExceedsPayments = 19,
     RefundLimitExceeded = 20,
+    /// The contract-wide emergency pause is active.
+    ContractPaused = 21,
+    /// The contract is already paused.
+    AlreadyPaused = 22,
+    /// The contract is not currently paused.
+    NotPaused = 23,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -53,6 +59,11 @@ const SECONDS_PER_WEEK: u64 = 604_800;
 /// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
 const REFUND_LIMIT: Symbol = symbol_short!("RFND_LIM");
 const REFUND_WINDOW: Symbol = symbol_short!("RFND_WIN");
+/// Contract-wide emergency pause state and timestamp.
+const PAUSED: Symbol = symbol_short!("PAUSED");
+const PAUSED_AT: Symbol = symbol_short!("PAUSE_AT");
+/// A pause automatically expires after 48 hours (Unix seconds).
+const MAX_PAUSE_DURATION: u64 = 48 * 60 * 60;
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -250,6 +261,9 @@ impl SolarGridContract {
     /// - `owner` must co-sign the registration (require_auth), confirming they
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: String, owner: Address) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
         Self::require_admin(&env)?;
         let allowlist = Self::get_allowlist(env.clone())?;
         if !allowlist.contains(&owner) {
@@ -710,6 +724,83 @@ impl SolarGridContract {
             .unwrap_or(false))
     }
 
+    // ── Issue #672: emergency pause ───────────────────────────────────────────
+
+    /// Pause payments and meter registration for up to 48 hours.
+    ///
+    /// Usage reporting and all read-only methods remain available while paused,
+    /// allowing the oracle and dashboards to continue operating during an
+    /// incident. The pause is admin-only and emits the compact on-chain event
+    /// topic `paused` (logical event name: `contract_paused`).
+    pub fn pause(env: Env) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        // A stale pause is cleared before evaluating whether a new pause is
+        // already active. This makes the expiry deterministic even if no
+        // transaction touched the contract during the 48-hour window.
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::AlreadyPaused);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().set(&PAUSED, &true);
+        env.storage().instance().set(&PAUSED_AT, &now);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "contract_paused")),
+            (Self::get_admin(&env)?, now, MAX_PAUSE_DURATION),
+        );
+        Ok(())
+    }
+
+    /// Resume payments and meter registration before the automatic expiry.
+    /// Admin-only; emits the compact topic `unpaused` (logical event name:
+    /// `contract_unpaused`).
+    pub fn unpause(env: Env) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if !Self::pause_is_active(&env) {
+            return Err(ContractError::NotPaused);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().remove(&PAUSED);
+        env.storage().instance().remove(&PAUSED_AT);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "contract_unpaused")),
+            (Self::get_admin(&env)?, now),
+        );
+        Ok(())
+    }
+
+    /// Return whether the emergency pause is active. A pause older than the
+    /// 48-hour maximum is treated as expired automatically.
+    pub fn is_paused(env: Env) -> Result<bool, ContractError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::pause_is_active(&env))
+    }
+
+    /// Read the pause flag and clear it when the maximum duration has elapsed.
+    /// This helper is called by state-changing guards as well as the view method
+    /// so the policy remains enforced even when no explicit `unpause` is sent.
+    fn pause_is_active(env: &Env) -> bool {
+        let paused: bool = env.storage().instance().get(&PAUSED).unwrap_or(false);
+        if !paused {
+            return false;
+        }
+
+        let paused_at: u64 = env.storage().instance().get(&PAUSED_AT).unwrap_or(0);
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(paused_at) >= MAX_PAUSE_DURATION {
+            env.storage().instance().remove(&PAUSED);
+            env.storage().instance().remove(&PAUSED_AT);
+            env.events().publish(
+                (EVT_NS, Symbol::new(env, "contract_unpaused")),
+                (now, true),
+            );
+            return false;
+        }
+        true
+    }
+
     /// Make a payment to top up a meter's balance and activate it.
     /// `amount` is in the token's smallest unit. `plan` sets the billing cycle.
     ///
@@ -723,6 +814,9 @@ impl SolarGridContract {
         amount: i128,
         plan: PaymentPlan,
     ) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
         if env
             .storage()
             .instance()
@@ -1584,6 +1678,8 @@ impl SolarGridContract {
             return Err(ContractError::DailyLimitReached);
         }
         meter.day_spent = meter.day_spent.saturating_add(cost);
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
         let new_balance = balance.saturating_sub(cost).max(0);
         env.storage().persistent().set(&bal_key, &new_balance);
         meter.units_used = meter.units_used.saturating_add(units);
@@ -3924,6 +4020,8 @@ mod tests {
         let reason = String::from_str(&env, "full refund");
         client.refund_payment(&meter_id, &1_000_i128, &user, &reason);
         assert!(!client.get_meter(&meter_id).active);
+    }
+
     // ── Issue #703: DST / Timezone independence tests ────────────────────────
 
     #[test]
