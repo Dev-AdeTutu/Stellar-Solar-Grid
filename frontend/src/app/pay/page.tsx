@@ -9,6 +9,7 @@ import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
 import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
+import { env } from "@/lib/env";
 
 type Plan = "Daily" | "Weekly" | "Usage";
 type Status = "idle" | "loading";
@@ -19,6 +20,12 @@ const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Usage", label: "Usage-Based", desc: "Pay per kWh consumed" },
 ];
 
+const PLAN_AMOUNT_HINTS: Record<Plan, string> = {
+  Daily: "Suggested: 10 XLM/day",
+  Weekly: "Suggested: 50 XLM/week",
+  Usage: "Amount (billed per kWh consumed)",
+};
+
 export default function PayPage() {
   const { address, connect } = useWalletStore();
   const { meterId, plan, setMeterId, setPlan } = usePaymentStore();
@@ -26,6 +33,7 @@ export default function PayPage() {
   const isOffline = useOffline();
 
   const [amount, setAmount] = useState("");
+  const [recentAmounts, setRecentAmounts] = useState<number[]>([]);
   const [status, setStatus] = useState<Status>("idle");
   const [showSmsModal, setShowSmsModal] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -33,12 +41,21 @@ export default function PayPage() {
   const [currency, setCurrency] = useState("NGN");
   const [txHash, setTxHash] = useState<string | null>(null);
 
-  // Load currency preference from localStorage
+  // Load currency preference and recent payment amounts from localStorage
   useEffect(() => {
     const savedCurrency = localStorage.getItem("preferredCurrency");
     if (savedCurrency) {
       setCurrency(savedCurrency);
     }
+    try {
+      const savedRecent = localStorage.getItem("recentPaymentAmounts");
+      if (savedRecent) {
+        const parsed = JSON.parse(savedRecent);
+        if (Array.isArray(parsed)) {
+          setRecentAmounts(parsed.filter((n): n is number => typeof n === "number" && n > 0).slice(0, 3));
+        }
+      }
+    } catch {}
   }, []);
 
   // Fetch XLM exchange rate
@@ -68,13 +85,13 @@ export default function PayPage() {
     localStorage.setItem("preferredCurrency", newCurrency);
   };
 
-  const EXPLORER_BASE = import.meta.env.VITE_NETWORK_PASSPHRASE?.includes("Test")
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 
   async function handlePay(e: React.FormEvent) {
     e.preventDefault();
-    if (!address) return;
+    if (isOffline || !address) return;
 
     const amountNum = parseFloat(amount);
     if (!meterId.trim() || isNaN(amountNum) || amountNum <= 0) return;
@@ -84,17 +101,37 @@ export default function PayPage() {
   }
 
   async function confirmPayment() {
+    if (isOffline) {
+      showToast({
+        variant: "error",
+        title: "Offline",
+        description: "Blockchain payments unavailable offline.",
+      });
+      setShowSmsModal(true);
+      return;
+    }
     if (!address) return;
     setShowConfirm(false);
     setStatus("loading");
     setTxHash(null);
 
+    const amountNum = parseFloat(amount);
     try {
-      const hash = await makePayment(address, meterId.trim(), parseFloat(amount), plan);
+      const hash = await makePayment(address, meterId.trim(), amountNum, plan);
+      // Remember last 3 payment amounts in localStorage
+      if (!isNaN(amountNum) && amountNum > 0) {
+        setRecentAmounts((prev) => {
+          const updated = [amountNum, ...prev.filter((a) => a !== amountNum)].slice(0, 3);
+          try {
+            localStorage.setItem("recentPaymentAmounts", JSON.stringify(updated));
+          } catch {}
+          return updated;
+        });
+      }
       showToast({
         variant: "success",
         title: "Payment successful",
-        description: `${meterId.trim()} was topped up with ${parseFloat(amount).toFixed(2)} XLM.`,
+        description: `${meterId.trim()} topped up · tx ${hash.slice(0, 8)}…`,
         actionHref: `${EXPLORER_BASE}/${hash}`,
         actionLabel: "View transaction",
       });
@@ -233,43 +270,6 @@ export default function PayPage() {
                   />
                 </div>
 
-                {/* Amount */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                    Amount (XLM)
-                  </label>
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => { setAmount(e.target.value); setTxHash(null); }}
-                    placeholder="0.00"
-                    min="0.0000001"
-                    step="any"
-                    required
-                    className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
-                  />
-                  {xlmRate && amount && (
-                    <div className="mt-2 flex items-center justify-between">
-                      <p className="text-xs text-gray-400">
-                        ≈ {(parseFloat(amount) * xlmRate).toLocaleString('en-NG', { 
-                          style: 'currency', 
-                          currency: currency 
-                        })}
-                      </p>
-                      <select
-                        value={currency}
-                        onChange={(e) => handleCurrencyChange(e.target.value)}
-                        className="text-xs bg-solar-dark border border-white/10 rounded px-2 py-1 text-gray-300"
-                      >
-                        <option value="NGN">NGN</option>
-                        <option value="KES">KES</option>
-                        <option value="GHS">GHS</option>
-                        <option value="USD">USD</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-
                 {/* Plan */}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">Billing Plan</label>
@@ -290,6 +290,128 @@ export default function PayPage() {
                       </button>
                     ))}
                   </div>
+                </div>
+
+                {/* Quick Top-Up Presets */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-300">Quick Top-Up</label>
+                    <span className="text-xs text-gray-400">Select preset</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    {[5, 10, 20, 50].map((preset) => {
+                      const isSelected = amount === String(preset);
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            setAmount(String(preset));
+                            setTxHash(null);
+                          }}
+                          className={`py-3 px-4 rounded-xl border text-center font-semibold text-sm transition-all active:scale-95 ${
+                            isSelected
+                              ? "border-solar-yellow bg-solar-yellow/20 text-solar-yellow ring-1 ring-solar-yellow shadow-lg shadow-solar-yellow/10"
+                              : "border-white/10 bg-solar-dark text-white hover:border-white/30 hover:bg-white/5"
+                          }`}
+                        >
+                          {preset} XLM
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Remembered recent payment amounts */}
+                  {recentAmounts.length > 0 && (
+                    <div className="mt-3 flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-gray-400">Recent:</span>
+                      {recentAmounts.map((recent) => (
+                        <button
+                          key={recent}
+                          type="button"
+                          onClick={() => {
+                            setAmount(String(recent));
+                            setTxHash(null);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg border text-xs font-medium transition ${
+                            amount === String(recent)
+                              ? "border-solar-yellow bg-solar-yellow/20 text-solar-yellow"
+                              : "border-white/10 bg-solar-dark/60 text-gray-300 hover:border-white/30"
+                          }`}
+                        >
+                          {recent} XLM
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Usage-based recommendation */}
+                  <div className="mt-3 flex items-center justify-between rounded-lg border border-solar-yellow/20 bg-solar-yellow/5 px-3 py-2">
+                    <div className="flex items-center gap-2 text-xs text-solar-yellow">
+                      <span>💡</span>
+                      <span>
+                        {plan === "Daily"
+                          ? "Recommended: 10 XLM for 1 day"
+                          : plan === "Weekly"
+                          ? "Recommended: 12 XLM for 7 days"
+                          : "Recommended: 20 XLM for 7 days"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rec = plan === "Daily" ? "10" : plan === "Weekly" ? "12" : "20";
+                        setAmount(rec);
+                        setTxHash(null);
+                      }}
+                      className="text-xs font-semibold text-solar-yellow hover:underline"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+
+                {/* Amount */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1.5">
+                    Or custom amount:
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={amount}
+                      onChange={(e) => { setAmount(e.target.value); setTxHash(null); }}
+                      placeholder="0.00"
+                      min="0.0000001"
+                      step="any"
+                      required
+                      className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 pr-14 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+                    />
+                    <span className="absolute right-4 top-2.5 text-sm font-medium text-gray-400 pointer-events-none">
+                      XLM
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-xs text-gray-500">{PLAN_AMOUNT_HINTS[plan]}</p>
+                  {xlmRate && amount && (
+                    <div className="mt-2 flex items-center justify-between">
+                      <p className="text-xs text-gray-400">
+                        ≈ {(parseFloat(amount) * xlmRate).toLocaleString('en-NG', {
+                          style: 'currency',
+                          currency: currency
+                        })}
+                      </p>
+                      <select
+                        value={currency}
+                        onChange={(e) => handleCurrencyChange(e.target.value)}
+                        className="text-xs bg-solar-dark border border-white/10 rounded px-2 py-1 text-gray-300"
+                      >
+                        <option value="NGN">NGN</option>
+                        <option value="KES">KES</option>
+                        <option value="GHS">GHS</option>
+                        <option value="USD">USD</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
 
               {/* Submit */}

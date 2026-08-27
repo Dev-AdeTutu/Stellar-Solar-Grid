@@ -3,7 +3,7 @@ import { create } from 'zustand';
 export type Toast = {
   id: string;
   message: string;
-  type: 'success' | 'error';
+  type: 'success' | 'error' | 'info';
   description?: string;
   actionHref?: string;
   actionLabel?: string;

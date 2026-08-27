@@ -1,209 +1,91 @@
-# User Dashboard - Real-Time Data Implementation
+## Summary
+This PR delivers two user-facing improvements:
 
-## 🎯 Overview
-This PR implements real-time data fetching from the Soroban smart contract for the user dashboard, replacing mock data with live on-chain information.
+1. Proactive low-balance browser push notifications for meter owners.
+2. A pagination reliability fix for payment history (including Safari behavior where paging could stop responding after deep scroll).
 
-## 📋 Changes
+## Problem
+Users only discovered low balances after manually checking dashboards, causing avoidable service interruptions. In addition, payment history pagination could become non-functional after scrolling in Safari, with no API request fired and URL page state not updating consistently.
 
-### Code Files Modified (3)
-- **`frontend/src/lib/contract.ts`** - Enhanced contract interaction layer
-- **`frontend/src/services/meterService.ts`** - Added access checking function
-- **`frontend/src/app/dashboard/user/page.tsx`** - Enhanced dashboard UI
+## What Changed
+### Frontend
+- Added Web Push client setup service:
+  - Requests notification permission on first dashboard visit.
+  - Registers service worker and subscribes browser via PushManager.
+  - Persists subscription endpoint in localStorage to avoid duplicate registration calls.
+- Added service worker to:
+  - Render push notifications.
+  - Handle notification click/action and route users to top-up flow.
+- Added push notification icons.
+- Updated User Dashboard polling flow to trigger subscription registration once low-balance condition is observed.
+- Fixed payment history pagination flow:
+  - Uses URL page param as the source of truth.
+  - Uses explicit page-change handler for next/prev.
+  - Scrolls to top of history section on page change.
+  - Prevents stale disabled-state behavior on pagination buttons.
+- Fixed a pre-existing production build failure:
+  - `/history` and `/dashboard/provider` used `useSearchParams()` without a `Suspense` boundary, which made `next build` fail with a prerender/export error (unrelated to this PR's business logic, but blocking any build that touches these routes). Wrapped both pages' bodies in `Suspense` so the build succeeds again.
 
-### Key Improvements
-1. **Fixed v1 Schema Compatibility**
-   - Updated `MeterData` interface to match contract v1 schema
-   - Added `version` and `expires_at` fields
-   - Balance now fetched separately via `get_meter_balance()`
+### Backend
+- Added push subscription persistence layer (SQLite-backed table):
+  - Upsert subscriptions by endpoint.
+  - Delete stale/unsubscribed endpoints.
+- Added Web Push delivery module using VAPID configuration.
+- Added new push API endpoints:
+  - `GET /api/push/config`
+  - `POST /api/push/subscribe`
+  - `POST /api/push/unsubscribe`
+- Integrated low-balance push send in IoT bridge low-balance pipeline.
+- Upgraded low-balance threshold logic to requested rule:
+  - `threshold = 10% of typical weekly usage (last 7 days)`
+  - Falls back to `LOW_BALANCE_THRESHOLD` when insufficient history exists.
+- Exposed low-balance metadata in meter balance responses for frontend gating.
 
-2. **Enhanced Data Fetching**
-   - `fetchMeter()` now makes two contract calls:
-     - `get_meter(meter_id)` → meter details
-     - `get_meter_balance(meter_id)` → balance
-   - Added `checkMeterAccess()` for access verification
-   - Parallel fetching with `Promise.all()` for performance
+### Docs / Config
+- Updated backend API docs to include push endpoints and dynamic threshold behavior.
+- Added required/optional Web Push env vars to backend `.env.example`.
+- Added frontend backend URL env example for push API usage.
 
-3. **Improved Dashboard UI**
-   - Real-time balance display (XLM)
-   - Active/Inactive status badges (green/red)
-   - Units used in kWh (converted from milli-kWh)
-   - Plan type badges (Daily/Weekly/UsageBased)
-   - **NEW**: Expiry date tracking and display
-   - **NEW**: Warning alerts for expired plans
-   - **NEW**: Warning alerts for zero balance
-   - Smart access calculation: `active && balance > 0 && !expired`
+## Files of Interest
+- Frontend:
+  - `src/app/history/page.tsx`
+  - `src/app/dashboard/user/page.tsx`
+  - `src/services/pushService.ts`
+  - `public/sw.js`
+  - `public/icons/push-warning.svg`
+  - `public/icons/push-badge.svg`
+- Backend:
+  - `../backend/src/routes/pushSubscriptions.ts`
+  - `../backend/src/lib/pushNotifications.ts`
+  - `../backend/src/lib/pushSubscriptions.ts`
+  - `../backend/src/iot/bridge.ts`
+  - `../backend/src/lib/usageEvents.ts`
+  - `../backend/src/routes/meters.ts`
+  - `../backend/src/index.ts`
 
-4. **Error Handling & UX**
-   - Comprehensive error handling with user-friendly messages
-   - Loading states with skeleton cards
-   - Auto-refresh on wallet change
-   - Manual refresh button with timestamp
-   - Toast notifications for errors
-   - Retry functionality
+## Testing / Validation
+- Backend TypeScript build passes: `cd backend && npm run build`.
+- Backend dependencies verified installed and loadable (`web-push`).
+- Frontend type check passes for all application source (`cd frontend && npx tsc --noEmit`, excluding pre-existing test-file type errors from missing Jest type defs, unrelated to this change).
+- Frontend production build passes end-to-end (`cd frontend && npm run build`, exit code 0) after the Suspense fix.
+- `frontend/npm test` run: pre-existing failures in `OfflinePaymentModal.test.tsx` and `AllowlistPanel.test.tsx` (missing unrelated modules `@/hooks/useOffline`, `@/services/allowlistService`) are unaffected by this change; all other suites pass (19/19 tests).
 
-## ✅ Acceptance Criteria
+## Operational Notes
+- To enable push notifications in deployed environments, set:
+  - `WEB_PUSH_VAPID_SUBJECT`
+  - `WEB_PUSH_VAPID_PUBLIC_KEY`
+  - `WEB_PUSH_VAPID_PRIVATE_KEY`
+- Without these vars, push endpoints remain available but sending is effectively disabled (safe no-op behavior with warning logs).
 
-All criteria met:
-- [x] Call contractQuery with meter ID on mount
-- [x] Handle loading states
-- [x] Handle error states
-- [x] Display real balance
-- [x] Display active status
-- [x] Display units used
-- [x] Display plan type
-- [x] Refresh data on wallet change
-- [x] Dashboard reflects live on-chain state
+## Risk Assessment
+- Low-to-medium risk due to new notification pipeline and persistence table.
+- Mitigations:
+  - Invalid/stale subscriptions are removed on 404/410 push responses.
+  - Existing webhook path remains intact.
+  - Fallback threshold preserves behavior when history data is unavailable.
 
-## 🧪 Testing
-
-### Manual Testing
-1. Connect Freighter wallet
-2. Verify meter data loads from contract
-3. Check balance, status, units, plan display correctly
-4. Test refresh button
-5. Test wallet disconnect/reconnect
-6. Verify error handling (offline mode)
-
-### Test Coverage
-- 38+ test cases documented in `TESTING_CHECKLIST.md`
-- Functional tests, edge cases, responsive design
-- Browser compatibility, accessibility, security
-
-## 📚 Documentation
-
-Comprehensive documentation included:
-- **`README_DASHBOARD_UPDATE.md`** - Main overview
-- **`QUICK_START_DASHBOARD.md`** - Quick reference
-- **`DASHBOARD_IMPLEMENTATION.md`** - Technical details
-- **`TESTING_CHECKLIST.md`** - 38+ test cases
-- **`ARCHITECTURE_DIAGRAM.md`** - Visual architecture
-- **`IMPLEMENTATION_SUMMARY.md`** - Executive summary
-- **`FILES_CHANGED.md`** - Change summary
-- **`COMPLETION_REPORT.md`** - Project report
-
-Total: 2,650+ lines of documentation
-
-## 🔧 Technical Details
-
-### Contract Queries Used
-```typescript
-// 1. Get meter IDs for owner
-get_meters_by_owner(address) → Vec<Symbol>
-
-// 2. Get meter details
-get_meter(meter_id) → Meter {
-  version, owner, active, units_used,
-  plan, last_payment, expires_at
-}
-
-// 3. Get balance separately (v1 schema)
-get_meter_balance(meter_id) → i128
-```
-
-### Data Flow
-```
-User connects wallet
-    ↓
-getMetersByOwner(address)
-    ↓
-For each meter:
-  getMeter(meterId)
-    ├─ get_meter(meter_id)
-    └─ get_meter_balance(meter_id)
-    ↓
-Display in MeterCard
-```
-
-## 🔐 Security
-
-- ✅ Read-only queries use throwaway keypairs
-- ✅ No private keys exposed
-- ✅ Wallet signature only for write operations
-- ✅ Input validation on all queries
-- ✅ Error messages sanitized
-
-## 📊 Performance
-
-- **RPC Calls**: 1 + (2 × N) for N meters
-- **Example**: 3 meters = 7 calls (~2 seconds)
-- **Optimization**: Parallel fetching with `Promise.all()`
-
-## 🎨 Screenshots
-
-### Before
-- Hardcoded mock data
-- No expiry tracking
-- No warnings
-
-### After
-- Live contract data
-- Expiry date display
-- Smart warnings (expired/zero balance)
-- Auto-refresh on wallet change
-
-## 🚀 Deployment
-
-### Environment Variables Required
-```env
-NEXT_PUBLIC_CONTRACT_ID=<deployed_contract_id>
-NEXT_PUBLIC_RPC_URL=https://soroban-testnet.stellar.org
-NEXT_PUBLIC_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
-```
-
-### Build
-```bash
-cd frontend
-npm run build
-```
-
-## 📝 Checklist
-
-- [x] Code implemented
-- [x] TypeScript errors resolved (0 errors)
-- [x] ESLint warnings resolved (0 warnings)
-- [x] Documentation created
-- [x] Testing guide provided
-- [x] Architecture documented
-- [x] Security reviewed
-- [x] Performance optimized
-- [ ] Code review (pending)
-- [ ] QA testing (pending)
-
-## 🎯 Breaking Changes
-
-None. This is a pure enhancement that maintains backward compatibility.
-
-## 🔄 Rollback Plan
-
-If issues occur, revert these 3 files:
-- `frontend/src/lib/contract.ts`
-- `frontend/src/services/meterService.ts`
-- `frontend/src/app/dashboard/user/page.tsx`
-
-## 📖 Related Documentation
-
-- Start with: `README_DASHBOARD_UPDATE.md`
-- Quick reference: `QUICK_START_DASHBOARD.md`
-- Testing: `TESTING_CHECKLIST.md`
-- Technical: `DASHBOARD_IMPLEMENTATION.md`
-
-## 🙏 Review Notes
-
-This PR includes:
-- **135 lines** of code changes (3 files)
-- **2,650+ lines** of documentation (8 files)
-- **38+ test cases** documented
-- **Zero** TypeScript errors
-- **Senior-level** code quality
-
-Please review:
-1. Contract interaction logic in `contract.ts`
-2. UI enhancements in `page.tsx`
-3. Error handling throughout
-4. Documentation completeness
-
-## 🎉 Result
-
-Production-ready user dashboard with real-time Soroban contract data!
-
-All acceptance criteria met (9/9) with 10+ bonus features and comprehensive documentation.
+## Follow-ups
+- Add targeted unit/integration tests for:
+  - Push subscription route validation.
+  - Threshold computation edge cases.
+  - Safari regression on pagination URL/button state.

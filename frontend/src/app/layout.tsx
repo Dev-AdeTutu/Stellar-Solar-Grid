@@ -3,6 +3,7 @@ import { ToastProvider } from "@/components/ToastProvider";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
+import { I18nProvider } from "@/components/I18nProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -17,7 +18,19 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" data-theme="dark">
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                const saved = localStorage.getItem('theme') || 'dark';
+                document.documentElement.setAttribute('data-theme', saved);
+              } catch (e) {}
+            `,
+          }}
+        />
+      </head>
       <body>
         <ErrorBoundary>
           <ToastProvider>
@@ -25,6 +38,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <OfflineBanner />
             {children}
           </ToastProvider>
+          <I18nProvider>
+            <ToastProvider>{children}</ToastProvider>
+          </I18nProvider>
         </ErrorBoundary>
       </body>
     </html>

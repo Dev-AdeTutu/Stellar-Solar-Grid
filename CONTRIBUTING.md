@@ -7,6 +7,7 @@ Thanks for your interest in contributing! This guide covers everything you need 
 - [Getting Started](#getting-started)
 - [Project Structure](#project-structure)
 - [Development Setup](#development-setup)
+- [HTTPS Local Development](#https-local-development)
 - [Running Tests](#running-tests)
 - [Coding Standards](#coding-standards)
 - [Security Considerations](#security-considerations)
@@ -117,6 +118,78 @@ You can spin up the full stack using docker compose:
 ```bash
 docker compose up --build
 ```
+
+---
+
+## HTTPS Local Development
+
+The default `docker compose up` setup serves the frontend over plain HTTP on port 80. If you need HTTPS locally (e.g. to test Freighter wallet flows that require a secure origin, or browser APIs restricted to HTTPS), follow the steps below.
+
+This setup uses [mkcert](https://github.com/FiloSottile/mkcert) to generate locally-trusted TLS certificates. It works on **macOS**, **Linux**, and **Windows WSL2** without any browser security warnings.
+
+> **The default HTTP setup is completely unaffected.** The `frontend-https` service is gated behind a Docker Compose profile and will never start unless you explicitly opt in.
+
+### Prerequisites
+
+- **macOS**: [Homebrew](https://brew.sh) must be installed.
+- **Linux / WSL2**: `curl` and `sudo` access are required. `apt-get` is used to install dependencies.
+- **Docker & Docker Compose** (same as the standard setup).
+
+### Step 1 — Generate certificates
+
+A helper script handles mkcert installation and certificate generation across all supported platforms:
+
+```bash
+bash scripts/setup-mkcert.sh
+```
+
+The script will:
+1. Detect your OS (macOS, Linux, or WSL2).
+2. Install `mkcert` if it is not already present.
+3. Run `mkcert -install` to add the local CA to your system trust store (you may be prompted for your password).
+4. Create a `certs/` directory at the repository root.
+5. Generate `certs/localhost.pem` and `certs/localhost-key.pem`.
+
+> **Security note:** The `certs/` directory is listed in `.gitignore`. Never commit your private key (`localhost-key.pem`).
+
+#### WSL2 — trusting the cert in Windows browsers
+
+The script installs the CA into the Linux trust store automatically. To also trust it in native Windows browsers (Chrome, Edge), run the following in an **Administrator PowerShell** terminal after running the script:
+
+```powershell
+Import-Certificate `
+  -FilePath "$(wsl wslpath -w "$(mkcert -CAROOT)/rootCA.pem")" `
+  -CertStoreLocation Cert:\LocalMachine\Root
+```
+
+### Step 2 — Start the HTTPS stack
+
+```bash
+docker compose --profile https up --build
+```
+
+This starts the `frontend-https` service alongside the existing `backend` and `mqtt` services. The HTTPS frontend:
+- Listens on **port 443** (HTTPS, TLS terminated by nginx using your mkcert certs).
+- Listens on **port 80** and issues a **301 redirect** to `https://localhost`.
+- Mounts `./certs` into the container read-only at `/etc/nginx/certs`.
+- Uses `frontend/nginx-https.conf` instead of the default `nginx.conf`.
+
+Open [https://localhost](https://localhost) in your browser — you should see a valid, green padlock.
+
+### Step 3 — Stop the HTTPS stack
+
+```bash
+docker compose --profile https down
+```
+
+### Troubleshooting HTTPS
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `ERR_CERT_AUTHORITY_INVALID` | CA not trusted | Re-run `mkcert -install`, restart your browser |
+| `no such file or directory: ./certs/localhost.pem` | Certs not generated | Run `bash scripts/setup-mkcert.sh` first |
+| Port 80/443 already in use | Default `frontend` service is running | Stop it with `docker compose down` before using the `https` profile |
+| WSL2: cert trusted in Linux but not Windows browser | CA not imported into Windows | Follow the PowerShell import step above |
 
 ---
 
@@ -238,25 +311,27 @@ npm run test:watch    # Run tests in watch mode
 
 ## Troubleshooting
 
-### Common Issues
+For a full list of common issues with symptoms, root causes, and step-by-step fixes, see the dedicated **[Troubleshooting Guide](TROUBLESHOOTING.md)**.
+
+### Quick reference
 
 **Contract deployment fails:**
-- Ensure you have testnet XLM in your account
-- Check that the WASM file was built successfully
+- Ensure you have testnet XLM in your account (`curl "https://friendbot.stellar.org?addr=YOUR_PUBLIC_KEY"`)
+- Check that the WASM file was built successfully (`make build`)
 - Verify network configuration in Stellar CLI
 
 **Backend fails to start:**
-- Check that all required environment variables are set
-- Ensure MQTT broker is running (via Docker Compose)
-- Verify Stellar RPC endpoint is accessible
+- Check that all required environment variables are set in `backend/.env`
+- Ensure MQTT broker is running (`docker compose up mqtt`)
+- Verify Stellar RPC endpoint is accessible (`curl https://soroban-testnet.stellar.org/`)
 
 **Frontend build errors:**
 - Clear node_modules and reinstall: `rm -rf node_modules package-lock.json && npm install`
-- Check that environment variables match the deployed contract
-- Ensure Freighter wallet is installed and connected to testnet
+- Check that `VITE_CONTRACT_ID` matches the deployed contract
+- Ensure Freighter wallet is installed and set to Testnet
 
 **Tests failing:**
-- For contract tests: ensure `wasm32-unknown-unknown` target is installed
+- For contract tests: ensure `wasm32-unknown-unknown` target is installed (`rustup target add wasm32-unknown-unknown`)
 - For frontend tests: check that test environment variables are set
 - For integration tests: ensure all services are running
 

@@ -1,5 +1,6 @@
 import winston from "winston";
 import { getRequestId } from "./requestContext.js";
+import { getReqId } from "./requestContext.js";
 
 const isProduction = process.env.NODE_ENV === "production";
 // LOG_FORMAT lets structured JSON logging be forced/disabled independently of
@@ -58,3 +59,59 @@ export const logger = winston.createLogger({
 export function getComponentLogger(component: string) {
   return logger.child({ component });
 }
+const fmt = isProduction
+  ? winston.format.combine(winston.format.timestamp(), winston.format.json())
+  : winston.format.combine(
+      winston.format.colorize(),
+      winston.format.timestamp({ format: "HH:mm:ss" }),
+      winston.format.printf(({ timestamp, level, message, ...meta }) => {
+        const metaStr = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : "";
+        return `${timestamp} ${level} ${message}${metaStr}`;
+      }),
+    );
+
+const winstonLogger = winston.createLogger({
+  level: process.env.LOG_LEVEL ?? "info",
+  format: fmt,
+  transports: [new winston.transports.Console()],
+});
+
+type Meta = Record<string, unknown>;
+
+/**
+ * Merge the current request's correlation ID (if any) into log meta.
+ * This ensures every log line within an async request context automatically
+ * carries { requestId } without callers having to thread it through.
+ */
+function withRequestId(meta: Meta): Meta {
+  const requestId = getReqId();
+  if (requestId) {
+    return { requestId, ...meta };
+  }
+  return meta;
+}
+
+// Pino-style: logger.info({ meta }, "msg") or logger.info("msg")
+// Winston-style: logger.info("msg", { meta }) or logger.info("msg")
+// This wrapper accepts both call signatures.
+function makeLogFn(level: "fatal" | "error" | "warn" | "info" | "debug") {
+  return (msgOrMeta: string | Meta, msgOrMeta2?: string | Meta, ...rest: unknown[]) => {
+    if (typeof msgOrMeta === "string") {
+      // Called as: logger.info("msg", { meta }) — winston style
+      const meta = typeof msgOrMeta2 === "object" ? msgOrMeta2 : {};
+      winstonLogger.log(level === "fatal" ? "error" : level, msgOrMeta, withRequestId(meta));
+    } else {
+      // Called as: logger.info({ meta }, "msg") — pino style
+      const msg = typeof msgOrMeta2 === "string" ? msgOrMeta2 : String(rest[0] ?? "");
+      winstonLogger.log(level === "fatal" ? "error" : level, msg, withRequestId(msgOrMeta as Meta));
+    }
+  };
+}
+
+export const logger = {
+  fatal: makeLogFn("fatal"),
+  error: makeLogFn("error"),
+  warn: makeLogFn("warn"),
+  info: makeLogFn("info"),
+  debug: makeLogFn("debug"),
+};
