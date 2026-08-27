@@ -31,6 +31,8 @@ pub enum ContractError {
     CollaboratorNotFound = 18,
     RefundExceedsPayments = 19,
     RefundLimitExceeded = 20,
+    /// `make_payment`'s optional memo exceeds MAX_MEMO_LEN bytes.
+    MemoTooLong = 21,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -50,6 +52,8 @@ const DEFAULT_GRACE_PERIOD: u64 = 7200; // 2 hours (in seconds)
 const GRACE_PERIOD: Symbol = symbol_short!("GRACE_P");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
+/// Max length (bytes) of the optional memo accepted by `make_payment` (Issue #766).
+const MAX_MEMO_LEN: u32 = 100;
 /// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
 const REFUND_LIMIT: Symbol = symbol_short!("RFND_LIM");
 const REFUND_WINDOW: Symbol = symbol_short!("RFND_WIN");
@@ -635,9 +639,11 @@ impl SolarGridContract {
 
     /// Make a payment to top up a meter's balance and activate it.
     /// `amount` is in the token's smallest unit. `plan` sets the billing cycle.
+    /// `memo` is an optional free-text note (e.g. "August electricity") capped
+    /// at MAX_MEMO_LEN bytes; pass `None` to omit it (Issue #766).
     ///
     /// Emits:
-    /// - `payment_received { meter_id, payer, amount, plan }`
+    /// - `payment_received { meter_id, payer, amount, plan, memo }`
     /// - `meter_activated  { meter_id }` (always, since payment activates the meter)
     pub fn make_payment(
         env: Env,
@@ -645,6 +651,7 @@ impl SolarGridContract {
         payer: Address,
         amount: i128,
         plan: PaymentPlan,
+        memo: Option<String>,
     ) -> Result<(), ContractError> {
         if env
             .storage()
@@ -657,6 +664,11 @@ impl SolarGridContract {
         payer.require_auth();
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
+        }
+        if let Some(m) = &memo {
+            if m.len() > MAX_MEMO_LEN {
+                return Err(ContractError::MemoTooLong);
+            }
         }
         let token_address = Self::get_token_address(&env)?;
         let token_client = token::Client::new(&env, &token_address);
@@ -701,7 +713,7 @@ impl SolarGridContract {
         // payment_received
         env.events().publish(
             (EVT_NS, symbol_short!("payment"), meter_id.clone()),
-            (payer, token_address, amount, plan.clone()),
+            (payer, token_address, amount, plan.clone(), memo),
         );
         // plan_changed — emitted whenever a payment switches the meter's active plan,
         // so off-chain services can track plan migrations (e.g. Daily -> Weekly).
@@ -1507,6 +1519,8 @@ impl SolarGridContract {
             return Err(ContractError::DailyLimitReached);
         }
         meter.day_spent = meter.day_spent.saturating_add(cost);
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
         let new_balance = balance.saturating_sub(cost).max(0);
         env.storage().persistent().set(&bal_key, &new_balance);
         meter.units_used = meter.units_used.saturating_add(units);
@@ -1688,7 +1702,7 @@ mod tests {
         assert!(!client.check_access(&meter_id));
 
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily, &None);
         assert!(client.check_access(&meter_id));
         assert_eq!(token_client.balance(&user), 0);
 
@@ -1724,7 +1738,7 @@ mod tests {
         let meter_id = symbol_short!("METER3");
         allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
-            client.try_make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily),
+            client.try_make_payment(&meter_id, &user, &0_i128, &PaymentPlan::Daily, &None),
             Err(Ok(ContractError::InvalidAmount))
         );
     }
@@ -1736,7 +1750,7 @@ mod tests {
         let meter_id = symbol_short!("METER4");
         allowlist_and_register(&client, meter_id.clone(), &user);
         assert_eq!(
-            client.try_make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily),
+            client.try_make_payment(&meter_id, &user, &-1_i128, &PaymentPlan::Daily, &None),
             Err(Ok(ContractError::InvalidAmount))
         );
     }
@@ -1752,7 +1766,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::UsageBased, &None);
 
         client.update_usage(&meter_id, &50_u64, &4_000_000_i128);
         assert_eq!(client.get_meter_balance(&meter_id), 6_000_000);
@@ -1794,7 +1808,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &100_i128);
-        client.make_payment(&meter_id, &user, &100_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &100_i128, &PaymentPlan::UsageBased, &None);
 
         client.update_usage(&meter_id, &1_u64, &i128::MAX);
         assert_eq!(client.get_meter_balance(&meter_id), 0);
@@ -1815,7 +1829,7 @@ mod tests {
         assert!(!client.check_access(&meter_id));
 
         token_admin_client.mint(&user, &2_000_000_i128);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Weekly);
+        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Weekly, &None);
         assert!(client.check_access(&meter_id));
 
         client.update_usage(&meter_id, &10_u64, &2_000_000_i128);
@@ -1836,7 +1850,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &2_000_000_i128);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily, &None);
         assert!(client.check_access(&meter_id));
 
         let meter = client.get_meter(&meter_id);
@@ -1856,7 +1870,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Weekly);
+        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Weekly, &None);
         assert!(client.check_access(&meter_id));
 
         let meter = client.get_meter(&meter_id);
@@ -1876,7 +1890,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at, u64::MAX);
@@ -1895,13 +1909,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &4_000_000_i128);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily, &None);
 
         let meter = client.get_meter(&meter_id);
         env.ledger().with_mut(|li| li.timestamp = meter.expires_at);
         assert!(!client.check_access(&meter_id));
 
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily, &None);
         assert!(client.check_access(&meter_id));
 
         let renewed = client.get_meter(&meter_id);
@@ -1969,7 +1983,7 @@ mod tests {
         allowlist_and_register(&client, meter_id.clone(), &user);
 
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily, &None);
 
         assert_eq!(client.get_provider_revenue(&admin), 5_000_000_i128);
         assert_eq!(token_client.balance(&client.address), 5_000_000_i128);
@@ -2037,7 +2051,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::UsageBased, &None);
 
         client.update_usage(&meter_id, &1_u64, &5_000_000_i128);
         assert_eq!(
@@ -2093,7 +2107,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_000_i128, &PaymentPlan::Daily, &None);
 
         let events = env.events().all();
         let has_pmt = events.iter().any(|(_, topics, _)| {
@@ -2122,7 +2136,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &500_i128);
-        client.make_payment(&meter_id, &user, &500_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &500_i128, &PaymentPlan::UsageBased, &None);
 
         client.update_usage(&meter_id, &10_u64, &500_i128);
 
@@ -2152,7 +2166,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
 
         client.set_active(&meter_id, &false);
 
@@ -2467,7 +2481,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         client.set_active(&meter_id, &false);
 
         client.set_active(&meter_id, &true);
@@ -2495,7 +2509,7 @@ mod tests {
         let token_admin_client = token::StellarAssetClient::new(env, token_address);
         allowlist_and_register(client, meter_id, &user);
         token_admin_client.mint(&user, &amount);
-        client.make_payment(meter_id, &user, &amount, &PaymentPlan::UsageBased);
+        client.make_payment(meter_id, &user, &amount, &PaymentPlan::UsageBased, &None);
     }
 
     #[test]
@@ -2724,15 +2738,15 @@ mod tests {
 
         allowlist_and_register(&client, meter_valid1.clone(), &user1);
         token_admin_client.mint(&user1, &5_000_i128);
-        client.make_payment(&meter_valid1, &user1, &5_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_valid1, &user1, &5_000_i128, &PaymentPlan::UsageBased, &None);
 
         allowlist_and_register(&client, meter_valid2.clone(), &user2);
         token_admin_client.mint(&user2, &5_000_i128);
-        client.make_payment(&meter_valid2, &user2, &5_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_valid2, &user2, &5_000_i128, &PaymentPlan::UsageBased, &None);
 
         allowlist_and_register(&client, meter_valid3.clone(), &user3);
         token_admin_client.mint(&user3, &1_000_i128);
-        client.make_payment(&meter_valid3, &user3, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_valid3, &user3, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         // Deactivate the third valid meter
         client.deactivate_meter(&meter_valid3);
@@ -2811,7 +2825,7 @@ mod tests {
         let meter_id = symbol_short!("ORC_NS");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         let result = client.try_update_usage(&meter_id, &10_u64, &100_i128);
         assert_eq!(result, Err(Ok(ContractError::OracleNotSet)));
@@ -2827,7 +2841,7 @@ mod tests {
         let meter_id = symbol_short!("ORC_OK");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         client.update_usage(&meter_id, &5_u64, &200_i128);
         assert_eq!(client.get_meter_balance(&meter_id), 800);
@@ -3059,7 +3073,7 @@ mod tests {
         token_admin_client.mint(&user, &1_000_i128);
 
         let before = env.ledger().timestamp();
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at - before, SECONDS_PER_DAY);
     }
@@ -3075,7 +3089,7 @@ mod tests {
         token_admin_client.mint(&user, &1_000_i128);
 
         let before = env.ledger().timestamp();
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly, &None);
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at - before, SECONDS_PER_WEEK);
     }
@@ -3090,7 +3104,7 @@ mod tests {
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
 
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at, u64::MAX);
     }
@@ -3108,7 +3122,7 @@ mod tests {
         let meter_id = symbol_short!("DL_HIT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         // Set daily limit to 500 stroops.
         client.set_daily_limit(&meter_id, &500_i128);
@@ -3132,7 +3146,7 @@ mod tests {
         let meter_id = symbol_short!("DL_EVT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
         client.set_daily_limit(&meter_id, &500_i128);
 
         let result = client.try_update_usage(&meter_id, &1_u64, &600_i128);
@@ -3159,7 +3173,7 @@ mod tests {
         let meter_id = symbol_short!("DL_RST");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         client.set_daily_limit(&meter_id, &500_i128);
 
@@ -3188,7 +3202,7 @@ mod tests {
         let meter_id = symbol_short!("DL_UNL");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &100_000_i128);
-        client.make_payment(&meter_id, &user, &100_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &100_000_i128, &PaymentPlan::UsageBased, &None);
 
         // daily_limit defaults to 0 (unlimited) — large repeated costs must succeed.
         client.update_usage(&meter_id, &1_u64, &40_000_i128);
@@ -3210,7 +3224,7 @@ mod tests {
         let meter_id = symbol_short!("UA_DEACT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         // Meter is now active
         assert!(client.check_access(&meter_id));
@@ -3240,13 +3254,13 @@ mod tests {
         let meter_id1 = String::from_slice(&env, "BM1".as_bytes());
         allowlist_and_register(&client, meter_id1.clone(), &user1);
         token_admin_client.mint(&user1, &10_000_i128);
-        client.make_payment(&meter_id1, &user1, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id1, &user1, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         let user2 = Address::generate(&env);
         let meter_id2 = String::from_slice(&env, "BM2".as_bytes());
         allowlist_and_register(&client, meter_id2.clone(), &user2);
         token_admin_client.mint(&user2, &10_000_i128);
-        client.make_payment(&meter_id2, &user2, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id2, &user2, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         // Deactivate the first meter
         client.deactivate_meter(&meter_id1);
@@ -3283,7 +3297,7 @@ mod tests {
         let meter_id = symbol_short!("DL_DEACT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         // Set a daily limit
         client.set_daily_limit(&meter_id, &500_i128);
@@ -3404,7 +3418,7 @@ mod tests {
         // Verify it works after payment
         let token_admin_client = token::StellarAssetClient::new(&env, &_token_address);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
 
         // Deactivate then reactivate
         client.set_active(&meter_id, &false);
@@ -3511,7 +3525,7 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly, &None);
         assert!(client.get_meter(&meter_id).active);
 
         client.expire_meter(&meter_id);
@@ -3540,7 +3554,7 @@ mod tests {
 
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         client.set_active(&meter_id, &false);
         // set_active(true) is the last invocation — events().all() returns only its events
         client.set_active(&meter_id, &true);
@@ -3568,7 +3582,7 @@ mod tests {
 
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         // set_active(false) is the last invocation — events().all() returns only its events
         client.set_active(&meter_id, &false);
 
@@ -3595,7 +3609,7 @@ mod tests {
 
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         // deactivate_meter is the last invocation
         client.deactivate_meter(&meter_id);
 
@@ -3622,7 +3636,7 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
 
         client.freeze_contract();
-        let result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        let result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         assert_eq!(result, Err(Ok(ContractError::ContractFrozen)));
     }
 
@@ -3636,7 +3650,7 @@ mod tests {
         let meter_id = String::from_str(&env, "FRZ_USG");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
 
         client.freeze_contract();
         let result = client.try_update_usage(&meter_id, &1_u64, &100_i128);
@@ -3656,12 +3670,12 @@ mod tests {
 
         // Freeze: payment blocked
         client.freeze_contract();
-        let frozen_result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        let frozen_result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         assert_eq!(frozen_result, Err(Ok(ContractError::ContractFrozen)));
 
         // Unfreeze: payment succeeds
         client.unfreeze_contract();
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         assert!(client.check_access(&meter_id));
     }
 
@@ -3676,9 +3690,9 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &10_000_i128);
 
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         // Same plan again — no plan_chg event expected.
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         let events_before = env.events().all();
         let has_plan_chg_yet = events_before.iter().any(|(_, topics, _)| {
             topics.len() >= 2 && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("plan_chg"))
@@ -3686,7 +3700,7 @@ mod tests {
         assert!(!has_plan_chg_yet, "plan_chg should not fire when plan is unchanged");
 
         // Switch to Weekly — should emit plan_chg.
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly, &None);
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, _)| {
             topics.len() >= 3
@@ -3708,7 +3722,7 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &10_000_i128);
 
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
         assert_eq!(client.get_meter_balance(&meter_id), 10_000);
 
         let reason = String::from_str(&env, "duplicate payment");
@@ -3727,7 +3741,7 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND2");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &5_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &5_000_i128, &PaymentPlan::UsageBased, &None);
 
         let reason = String::from_str(&env, "billing error");
         client.refund_payment(&meter_id, &1_000_i128, &user, &reason);
@@ -3748,7 +3762,7 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND3");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         let reason = String::from_str(&env, "abuse attempt");
         let result = client.try_refund_payment(&meter_id, &1_001_i128, &user, &reason);
@@ -3763,7 +3777,7 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND4");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         let reason = String::from_str(&env, "partial refund");
         client.refund_payment(&meter_id, &600_i128, &user, &reason);
@@ -3780,7 +3794,7 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND5");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         // A recipient who never paid towards this meter has nothing refundable,
         // regardless of the contract's overall token balance.
@@ -3798,7 +3812,7 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND6");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
 
         let reason = String::from_str(&env, "n/a");
         let result = client.try_refund_payment(&meter_id, &0_i128, &user, &reason);
@@ -3813,7 +3827,7 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND7");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
 
         // Cap total refunds to 500 stroops per 24h window.
         client.set_refund_limit(&500_i128);
@@ -3841,12 +3855,14 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND8");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
         assert!(client.get_meter(&meter_id).active);
 
         let reason = String::from_str(&env, "full refund");
         client.refund_payment(&meter_id, &1_000_i128, &user, &reason);
         assert!(!client.get_meter(&meter_id).active);
+    }
+
     // ── Issue #703: DST / Timezone independence tests ────────────────────────
 
     #[test]
@@ -3864,7 +3880,7 @@ mod tests {
         token_admin_client.mint(&user, &1_000_i128);
 
         // Pay for 24-hour Daily access
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
 
         // Verify expires_at is exactly now + 86400 seconds (1741482000)
         let meter = client.get_meter(&meter_id);

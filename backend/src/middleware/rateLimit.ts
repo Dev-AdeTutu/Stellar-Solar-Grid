@@ -12,6 +12,7 @@ import rateLimit from "express-rate-limit";
 import {
   RATE_LIMIT_WINDOW_MS,
   WRITE_RATE_LIMIT_MAX,
+  PAYMENTS_RATE_LIMIT_MAX,
   RATE_LIMIT_MESSAGE,
 } from "../config/rateLimits.js";
 
@@ -52,10 +53,20 @@ export const readLimiter = rateLimit({
   },
 });
 
+/**
+ * paymentsLimiter — stricter than writeLimiter because each payment hits the
+ * Stellar network and costs gas.
+ */
 export const paymentsLimiter = rateLimit({
-  windowMs,
-  max: parseInt(process.env.PAYMENTS_RATE_LIMIT_MAX ?? '10', 10),
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  max: PAYMENTS_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: 'Too many payment requests', code: 'RATE_LIMITED' },
+  handler: (_req, res) => {
+    res.setHeader(
+      "Retry-After",
+      String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)),
+    );
+    res.status(429).json({ error: RATE_LIMIT_MESSAGE, code: "RATE_LIMITED" });
+  },
 });

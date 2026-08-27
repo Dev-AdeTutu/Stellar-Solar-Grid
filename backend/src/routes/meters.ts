@@ -15,7 +15,6 @@ import {
 } from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { logger } from "../lib/logger.js";
-import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
 import {
   validateRequest,
   RegisterMeterSchema,
@@ -25,7 +24,6 @@ import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
 import { getMqttClient } from "../iot/mqttClient.js";
-import { logger } from "../lib/logger.js";
 
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
@@ -53,6 +51,16 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const page = Math.max(1, Number(req.query.page ?? 1) || 1);
       const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
+
+      // Optional filters — each is only applied when the caller supplies it.
+      const owner = req.query.owner;
+      const active = req.query.active;
+      const plan = req.query.plan;
+      const rawExpiresBefore = req.query.expiresBefore;
+      const expiresBeforeMs =
+        rawExpiresBefore !== undefined && Number.isFinite(Number(rawExpiresBefore))
+          ? Number(rawExpiresBefore)
+          : undefined;
 
       const result = await stellar.query("get_all_meters", []);
       let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];

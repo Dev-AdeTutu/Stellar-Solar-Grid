@@ -19,7 +19,21 @@ type PushSubscriptionInput = {
 
 // Cast is aligned with usageEvents store typing in this codebase.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = initUsageEventStore() as any;
+let db: any;
+
+/**
+ * Resolve the shared SQLite handle on first use rather than at import time.
+ * Importing this module (via pushNotifications) must not force the usage-event
+ * store open — doing so crashed as soon as anything loaded the module before
+ * the store existed.
+ */
+function getDb() {
+  if (!db) {
+    db = initUsageEventStore();
+    ensurePushSubscriptionTable();
+  }
+  return db;
+}
 
 function ensurePushSubscriptionTable() {
   db.exec(`
@@ -38,11 +52,9 @@ function ensurePushSubscriptionTable() {
   `);
 }
 
-ensurePushSubscriptionTable();
-
 export function upsertPushSubscription(input: PushSubscriptionInput): void {
   const now = new Date().toISOString();
-  db.prepare(
+  getDb().prepare(
     `
       INSERT INTO push_subscriptions (
         owner_address,
@@ -69,7 +81,7 @@ export function upsertPushSubscription(input: PushSubscriptionInput): void {
 }
 
 export function listPushSubscriptionsByOwner(ownerAddress: string): PushSubscriptionRecord[] {
-  return db
+  return getDb()
     .prepare(
       `
         SELECT
@@ -88,7 +100,7 @@ export function listPushSubscriptionsByOwner(ownerAddress: string): PushSubscrip
 }
 
 export function deletePushSubscriptionByEndpoint(endpoint: string): number {
-  const result = db
+  const result = getDb()
     .prepare("DELETE FROM push_subscriptions WHERE endpoint = ?")
     .run(endpoint);
   return result.changes;
