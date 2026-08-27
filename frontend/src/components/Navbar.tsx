@@ -37,7 +37,6 @@ export default function Navbar() {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [menuOpen]);
 
-  const toggleTheme = () => {
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
@@ -68,7 +67,6 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>
           {/* Language toggle */}
           <button
             onClick={toggleLocale}
@@ -86,7 +84,6 @@ export default function Navbar() {
 
         {/* Mobile: language toggle + wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <button onClick={toggleTheme} className="text-xl" title="Toggle Theme" aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}>
           <button
             onClick={toggleLocale}
             className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"

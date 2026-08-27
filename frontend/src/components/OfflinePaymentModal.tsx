@@ -1,8 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useModalA11y } from "@/hooks/useModalA11y";
 import { useState, useEffect } from "react";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { useOffline } from "@/hooks/useOffline";
 import { env } from "@/lib/env";
 
@@ -45,7 +44,7 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
   });
   const exampleMeter = meterId?.trim() || "METER1";
   const exampleSms = `PAY ${exampleMeter} 5 D`;
-  const smsShortcode = smsConfig?.shortcode ?? FALLBACK_SHORTCODE;
+  const smsShortcode = smsConfig?.shortcode ?? SMS_SHORTCODE;
 
   // Fetch the per-region/per-provider shortcode from the backend so
   // different deployments/telecom partners can show the correct code

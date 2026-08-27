@@ -1,4 +1,4 @@
-// File: /workspaces/Stellar-Solar-Grid/frontend/src/app/dashboard/provider/page.tsx
+// File: /home/user/Stellar-Solar-Grid/frontend/src/app/dashboard/provider/page.tsx
 import * as entry from '../../../../../src/app/dashboard/provider/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

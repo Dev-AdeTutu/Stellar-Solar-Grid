@@ -1,4 +1,4 @@
-import Redis from "ioredis";
+import { Redis } from "ioredis";
 import type { NextFunction, Request, Response, RequestHandler } from "express";
 import {
   PAYMENTS_RATE_LIMIT_MAX,

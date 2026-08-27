@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState, useCallback, useRef } from "react";
-import { useSearchParams, useRouter, usePathname } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { Skeleton } from "@/components/Skeleton";
@@ -27,6 +27,9 @@ const EXPLORER_BASE =
     : "https://stellar.expert/explorer/public/tx";
 
 const PAGE_SIZE = 10;
+// Safety bound on how many pages CSV export will walk via cursor before
+// giving up — prevents a runaway loop if the API ever misbehaves.
+const MAX_EXPORT_PAGES = 200;
 
 export const dynamic = "force-dynamic";
 
@@ -41,16 +44,18 @@ export default function HistoryPage() {
 function HistoryPageContent() {
   const { address } = useWalletStore();
   const { showToast } = useToast();
-  const router = useRouter();
-  const pathname = usePathname();
   const searchParams = useSearchParams();
-  const queryPage = parseInt(searchParams.get("page") || "1", 10);
-  const currentPage = Number.isFinite(queryPage) && queryPage > 0 ? queryPage : 1;
   const filterMeterId = searchParams.get("meterId");
-  const historySectionRef = useRef<HTMLDivElement | null>(null);
+  const historySectionRef = useRef<HTMLElement | null>(null);
 
   const [records, setRecords] = useState<PaymentRecord[]>([]);
-  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  // Issue #767: pagination is cursor-based, not offset-based (see
+  // services/paymentService.ts). `cursorStack[i]` is the cursor used to
+  // fetch the page at index `i`; `pageIndex` tracks which page is current so
+  // "Prev" can re-fetch an earlier cursor without losing our place.
+  const [cursorStack, setCursorStack] = useState<(string | undefined)[]>([undefined]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>("date");
@@ -66,21 +71,35 @@ function HistoryPageContent() {
       setError(e.message ?? "Failed to generate receipt");
     } finally {
       setDownloadingHash(null);
+    }
+  }
+
   const [exporting, setExporting] = useState(false);
 
   async function handleExportCsv() {
     if (!address) return;
     setExporting(true);
     try {
-      const data = await getPaymentHistory(address, 1, pagination.total || 10000, sortDir);
+      // Walk every page via cursor (rather than requesting one huge "page")
+      // so export isn't silently truncated by the server's per-request
+      // limit cap — see Issue #767.
+      const all: PaymentRecord[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < MAX_EXPORT_PAGES; i++) {
+        const data = await getPaymentHistory(address, cursor, 50, sortDir);
+        all.push(...data.payments);
+        if (!data.pagination?.hasMore || !data.pagination.nextCursor) break;
+        cursor = data.pagination.nextCursor;
+      }
 
-      const header = "Date,Meter ID,Amount (XLM),Plan,Transaction Hash";
-      const rows = data.payments.map((r) =>
+      const header = "Date,Meter ID,Amount (XLM),Plan,Note,Transaction Hash";
+      const rows = all.map((r) =>
         [
           new Date(r.date).toISOString(),
           r.meterId,
           r.amountXlm.toFixed(7),
           r.plan,
+          r.memo ? `"${r.memo.replace(/"/g, '""')}"` : "",
           r.txHash || "",
         ].join(","),
       );
@@ -96,7 +115,7 @@ function HistoryPageContent() {
       showToast({
         variant: "success",
         title: "Export Successful",
-        description: `Exported ${data.payments.length} records to CSV.`,
+        description: `Exported ${all.length} records to CSV.`,
       });
     } catch (e: any) {
       setError(e.message ?? "Failed to export history");
@@ -111,7 +130,7 @@ function HistoryPageContent() {
   }
 
   const fetchHistory = useCallback(
-    async (page: number) => {
+    async (cursor: string | undefined) => {
       if (!address) return;
       setLoading(true);
       setError(null);
@@ -119,7 +138,7 @@ function HistoryPageContent() {
         const serverSort = sortField === "date" ? sortDir : "desc";
         const data: PaymentHistoryResponse = await getPaymentHistory(
           address,
-          page,
+          cursor,
           PAGE_SIZE,
           serverSort,
         );
@@ -127,16 +146,12 @@ function HistoryPageContent() {
           throw new Error("Invalid response: missing payments data");
         }
         setRecords(data.payments);
-        setPagination({
-          page: data.pagination?.page ?? 1,
-          pages: data.pagination?.pages ?? 1,
-          total: data.pagination?.total ?? 0,
-        });
+        setHasMore(Boolean(data.pagination?.hasMore));
       } catch (e: any) {
         const errorMsg = e.message ?? "Failed to load payment history";
         setError(errorMsg);
         setRecords([]);
-        setPagination({ page: 1, pages: 1, total: 0 });
+        setHasMore(false);
       } finally {
         setLoading(false);
       }
@@ -144,24 +159,35 @@ function HistoryPageContent() {
     [address, sortField, sortDir],
   );
 
+  // Changing address or sort order invalidates the cursor stack — the
+  // underlying ordering is different, so start over from the first page.
   useEffect(() => {
-    fetchHistory(currentPage);
-  }, [fetchHistory, currentPage]);
+    setCursorStack([undefined]);
+    setPageIndex(0);
+    fetchHistory(undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address, sortField, sortDir]);
 
-  function handlePageChange(nextPage: number) {
+  function handlePageChange(direction: "next" | "prev") {
     if (loading) return;
-    if (nextPage < 1 || nextPage > pagination.pages) return;
-    if (nextPage === currentPage) return;
-
-    const params = new URLSearchParams(searchParams.toString());
-    if (nextPage === 1) {
-      params.delete("page");
+    if (direction === "next") {
+      if (!hasMore || records.length === 0) return;
+      const lastCursor = records[records.length - 1]?.cursor;
+      if (!lastCursor) return;
+      const nextIndex = pageIndex + 1;
+      setCursorStack((prev) => {
+        const next = prev.slice(0, nextIndex);
+        next[nextIndex] = lastCursor;
+        return next;
+      });
+      setPageIndex(nextIndex);
+      fetchHistory(lastCursor);
     } else {
-      params.set("page", String(nextPage));
+      if (pageIndex === 0) return;
+      const prevIndex = pageIndex - 1;
+      setPageIndex(prevIndex);
+      fetchHistory(cursorStack[prevIndex]);
     }
-
-    const nextQuery = params.toString();
-    router.replace(nextQuery ? `${pathname}?${nextQuery}` : pathname, { scroll: false } as any);
     historySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -194,12 +220,12 @@ function HistoryPageContent() {
   return (
     <>
       <Navbar />
-      <main id="main-content" tabIndex={-1} className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
-        <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">
-          Payment History
-        </h1>
-        <p className="text-gray-400 mb-6 text-sm">
-      <main ref={historySectionRef} className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
+      <main
+        ref={historySectionRef}
+        id="main-content"
+        tabIndex={-1}
+        className="min-h-screen px-4 py-8 max-w-5xl mx-auto"
+      >
         <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">Payment History</h1>
         <p className="text-gray-400 mb-3 text-sm">
           All <code className="text-solar-yellow">make_payment</code> transactions for your wallet.
@@ -285,6 +311,11 @@ function HistoryPageContent() {
                     </div>
                     <div className="text-xs text-gray-400">{new Date(r.date).toLocaleString()}</div>
                     <div className="text-xs text-gray-300 font-mono">Meter: {r.meterId}</div>
+                    {r.memo && (
+                      <div className="text-xs text-gray-400 italic truncate" title={r.memo}>
+                        “{r.memo}”
+                      </div>
+                    )}
                     {r.txHash && (
                       <a
                         href={`${EXPLORER_BASE}/${r.txHash}`}
@@ -339,26 +370,22 @@ function HistoryPageContent() {
                   </tr>
                 </thead>
                 <tbody>
-                  {loading && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
-                        Loading…
-                      </td>
-                  {loading && [0, 1, 2, 3, 4].map((i) => (
-                    <tr key={i} className="border-t border-white/5">
-                      <td className="px-3 py-3"><Skeleton width="80%" height={14} /></td>
-                      <td className="px-3 py-3"><Skeleton width="65%" height={14} /></td>
-                      <td className="px-3 py-3"><Skeleton width="50%" height={14} /></td>
-                      <td className="px-3 py-3"><Skeleton width="55%" height={20} /></td>
-                      <td className="px-3 py-3"><Skeleton width="70%" height={14} /></td>
-                    </tr>
-                  ))}
+                  {loading &&
+                    [0, 1, 2, 3, 4].map((i) => (
+                      <tr key={i} className="border-t border-white/5">
+                        <td className="px-3 py-3"><Skeleton width="80%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="65%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="50%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="55%" height={20} /></td>
+                        <td className="px-3 py-3"><Skeleton width="70%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="60%" height={14} /></td>
+                      </tr>
+                    ))}
                   {!loading && sorted.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
-                        No payment records found.
+                      <td colSpan={6}>
+                        <EmptyState />
                       </td>
-                      <td colSpan={5}><EmptyState /></td>
                     </tr>
                   )}
                   {!loading &&
@@ -370,7 +397,17 @@ function HistoryPageContent() {
                         <td className="px-3 py-3 text-gray-300 whitespace-nowrap text-xs">
                           {new Date(r.date).toLocaleString()}
                         </td>
-                        <td className="px-3 py-3 font-mono text-gray-200 text-xs">{r.meterId}</td>
+                        <td className="px-3 py-3 font-mono text-gray-200 text-xs">
+                          {r.meterId}
+                          {r.memo && (
+                            <div
+                              className="mt-0.5 max-w-[16rem] truncate font-sans italic text-gray-500"
+                              title={r.memo}
+                            >
+                              “{r.memo}”
+                            </div>
+                          )}
+                        </td>
                         <td className="px-3 py-3 text-solar-yellow font-semibold text-xs">
                           {formatXlmAmount(r.amountXlm)}
                         </td>
@@ -426,21 +463,19 @@ function HistoryPageContent() {
                   </button>
                 </div>
 
-                {pagination.pages > 1 && (
+                {(pageIndex > 0 || hasMore) && (
                   <div className="flex items-center gap-2">
                     <button
-                      disabled={currentPage <= 1 || loading}
-                      onClick={() => handlePageChange(currentPage - 1)}
+                      disabled={pageIndex <= 0 || loading}
+                      onClick={() => handlePageChange("prev")}
                       className="rounded-lg border border-white/10 px-4 py-2 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-30 disabled:cursor-not-allowed transition"
                     >
                       ← Prev
                     </button>
-                    <span className="px-2 text-xs">
-                      {currentPage} / {pagination.pages}
-                    </span>
+                    <span className="px-2 text-xs">Page {pageIndex + 1}</span>
                     <button
-                      disabled={currentPage >= pagination.pages || loading}
-                      onClick={() => handlePageChange(currentPage + 1)}
+                      disabled={!hasMore || loading}
+                      onClick={() => handlePageChange("next")}
                       className="rounded-lg border border-white/10 px-4 py-2 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-30 disabled:cursor-not-allowed transition"
                     >
                       Next →

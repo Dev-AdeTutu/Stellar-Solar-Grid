@@ -12,6 +12,9 @@ const PaymentSchema = z.object({
   meterId: z.string().min(1).max(64),
   amount: z.number().int().positive(),
   payer: z.string().length(56),
+  // Issue #766: optional free-text note (e.g. "August electricity"), capped
+  // to match the contract's MAX_MEMO_LEN.
+  memo: z.string().max(100).optional(),
 });
 
 interface IdempotencyRecord {
@@ -43,11 +46,18 @@ paymentsRouter.post(
         details: parsed.error.flatten(),
       });
     }
-    const { meterId, amount, payer } = parsed.data;
+    const { meterId, amount, payer, memo } = parsed.data;
+    // Issue #766: memo is an Option<String> contract-side — omit (scvVoid)
+    // when not provided, rather than passing an empty string.
+    const memoScVal =
+      memo && memo.trim().length > 0
+        ? StellarSdk.nativeToScVal(memo.trim(), { type: "string" })
+        : StellarSdk.xdr.ScVal.scvVoid();
     const hash = await adminInvoke("make_payment", [
       StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
       StellarSdk.nativeToScVal(BigInt(amount), { type: "i128" }),
       StellarSdk.nativeToScVal(payer, { type: "address" }),
+      memoScVal,
     ]);
 
 
@@ -68,13 +78,29 @@ export interface PaymentRecord {
   meterId: string;
   amountXlm: number;
   plan: string;
+  /** Optional free-text note attached to the payment (Issue #766). */
+  memo?: string;
+  /**
+   * Opaque, stable pagination cursor (the Soroban event's pagingToken).
+   * Unlike a numeric offset, this identifies a specific event and doesn't
+   * shift when other payments are inserted before/after it — see Issue #767.
+   */
+  cursor: string;
 }
 
 /**
- * GET /api/payments/:address?page=1&limit=10&sort=desc
+ * GET /api/payments/:address?cursor=<opaque>&limit=10&sort=desc
  *
  * Queries Soroban contract events for make_payment calls where payer === address.
  * Falls back to Horizon transaction history when events are unavailable.
+ *
+ * Issue #767: pagination is cursor-based, not offset-based. `cursor` is the
+ * `cursor` value of the last record from the previous page (omit for the
+ * first page). Because the cursor identifies a specific event rather than a
+ * numeric position, a payment inserted between two requests can't shift
+ * later pages — offset-based paging (`page=1` skip 0, `page=2` skip 10)
+ * duplicated or dropped records whenever the underlying event set changed
+ * between page requests.
  */
 paymentsRouter.get(
   "/:address",
@@ -85,13 +111,14 @@ paymentsRouter.get(
       return res.status(400).json({ error: "Invalid Stellar address" });
     }
 
-    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
     const limit = Math.min(
       50,
       Math.max(1, parseInt((req.query.limit as string) ?? "10", 10)),
     );
     const sort = req.query.sort === "asc" ? "asc" : "desc";
     const days = Math.min(90, Math.max(1, parseInt((req.query.days as string) ?? "30", 10)));
+    const rawCursor = req.query.cursor;
+    const cursor = typeof rawCursor === "string" && rawCursor.length > 0 ? rawCursor : undefined;
 
     try {
       StellarSdk.StrKey.decodeEd25519PublicKey(address);
@@ -101,16 +128,27 @@ paymentsRouter.get(
 
     try {
       const records = await fetchPaymentEvents(address, sort, days);
-      const total = records.length;
-      const start = (page - 1) * limit;
-      const paginated = records.slice(start, start + limit);
+
+      // Seek to the record immediately after the cursor. A cursor that no
+      // longer matches anything (e.g. it aged out of the `days` window)
+      // is treated as "start from the top" rather than an error, so a
+      // stale bookmark degrades gracefully instead of 400ing.
+      let startIndex = 0;
+      if (cursor) {
+        const idx = records.findIndex((r) => r.cursor === cursor);
+        if (idx >= 0) startIndex = idx + 1;
+      }
+
+      const paginated = records.slice(startIndex, startIndex + limit);
+      const hasMore = startIndex + limit < records.length;
+      const nextCursor = hasMore ? paginated[paginated.length - 1]?.cursor ?? null : null;
 
       return res.json({
         payments: paginated,
-        pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+        pagination: { limit, count: paginated.length, hasMore, nextCursor },
       });
     } catch (err: any) {
-      console.error("payments route error:", err);
+      logger.error("payments route error:", err);
       if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
         return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
       }
@@ -118,70 +156,6 @@ paymentsRouter.get(
     }
   }),
 );
-
-/**
- * GET /api/payments/history/:address?from=<unix_ts>&to=<unix_ts>&limit=50&page=1
- *
- * Returns payment history for a given address with optional date range filtering.
- * from/to are UNIX timestamps converted to ledger numbers.
- * limit is capped at 200 per page.
- * address must be a valid 56-char Stellar public key.
- */
-paymentsRouter.get(
-  "/history/:address",
-  asyncHandler(async (req, res) => {
-    const rawAddress = req.params.address;
-    const address = Array.isArray(rawAddress) ? rawAddress[0] : rawAddress;
-
-    // Validate address format (56 chars, Stellar public key)
-    if (typeof address !== "string" || address.length !== 56 || !address.startsWith("G")) {
-      return res.status(400).json({ error: "Invalid Stellar address format" });
-    }
-
-    try {
-      StellarSdk.StrKey.decodeEd25519PublicKey(address);
-    } catch {
-      return res.status(400).json({ error: "Invalid Stellar address" });
-    }
-
-    const from = req.query.from ? Number(req.query.from) : undefined;
-    const to = req.query.to ? Number(req.query.to) : undefined;
-    const limit = Math.min(200, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
-    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
-
-    // Validate timestamps
-    if ((from && !Number.isFinite(from)) || (to && !Number.isFinite(to))) {
-      return res.status(400).json({ error: "Invalid from/to timestamps" });
-    }
-
-    try {
-      const fromLedger = from ? await stellarService.timestampToLedger(from) : undefined;
-      const toLedger = to ? await stellarService.timestampToLedger(to) : undefined;
-
-      const events = await fetchPaymentEventsWithDateRange(address, fromLedger, toLedger);
-      
-      const total = events.length;
-      const start = (page - 1) * limit;
-      const paginated = events.slice(start, start + limit);
-
-      return res.json({
-        data: paginated,
-        address,
-        page,
-        limit,
-        total,
-        pages: Math.ceil(total / limit),
-      });
-    } catch (err: any) {
-      console.error("payments history route error:", err);
-      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
-        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
-      }
-      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
-    }
-  }),
-);
-
 
 /**
  * GET /api/payments/history/:address?from=<unix_ts>&to=<unix_ts>&limit=50&page=1
@@ -350,12 +324,30 @@ async function fetchPaymentEvents(
   }
 }
 
+/**
+ * Decode a `PaymentPlan` enum value from `scValToNative`'s output.
+ *
+ * Soroban encodes a data-less enum variant like `Daily` as a one-element
+ * tuple `(Symbol,)`, which `scValToNative` turns into a one-element array
+ * (`["Daily"]`) — not `{ Daily: [] }`. Reading that with `Object.keys(x)[0]`
+ * (as this used to) returns the array index key `"0"`, not the plan name.
+ */
+function decodePaymentPlan(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw) && typeof raw[0] === "string") return raw[0];
+  if (raw && typeof raw === "object") {
+    const key = Object.keys(raw)[0];
+    if (key) return key;
+  }
+  return "Unknown";
+}
+
 function parsePaymentEvent(
   event: any,
   filterAddress: string,
 ): PaymentRecord | null {
   // Contract events emitted by make_payment have topics:
-  // (EVT_NS, "payment", meter_id) and data: (payer, token_address, amount, plan)
+  // (EVT_NS, "payment", meter_id) and data: (payer, token_address, amount, plan, memo)
   const topics: StellarSdk.xdr.ScVal[] = (event.topic ?? []).map((t: string) =>
     StellarSdk.xdr.ScVal.fromXDR(t, "base64"),
   );
@@ -369,11 +361,14 @@ function parsePaymentEvent(
       ? meterVal.sym().toString()
       : "unknown";
 
-  // data is (payer, token_address, amount, plan)
+  // data is (payer, token_address, amount, plan, memo)
   const dataXdr = event.value ?? event.data;
   let amountXlm = 0;
   let plan = "Unknown";
   let payer: string | null = null;
+  // Issue #766: memo is an Option<String> on the contract side — absent
+  // (void) decodes as undefined/null here, present as a plain string.
+  let memo: string | undefined;
 
   if (dataXdr) {
     try {
@@ -387,7 +382,10 @@ function parsePaymentEvent(
             ? payerNative
             : payerNative?.toString() ?? null;
         amountXlm = Number(native[2]) / 10_000_000;
-        plan = Object.keys(native[3])[0] ?? "Unknown";
+        plan = decodePaymentPlan(native[3]);
+        if (native.length >= 5 && typeof native[4] === "string") {
+          memo = native[4];
+        }
       }
     } catch {
       // leave defaults
@@ -406,6 +404,8 @@ function parsePaymentEvent(
     meterId,
     amountXlm,
     plan,
+    ...(memo ? { memo } : {}),
+    cursor: event.pagingToken ?? event.id ?? `${date}:${event.txHash ?? ""}`,
   };
 }
 
