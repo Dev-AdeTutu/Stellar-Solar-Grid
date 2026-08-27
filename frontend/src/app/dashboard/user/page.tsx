@@ -166,14 +166,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
 
   useEffect(() => {
     setLoadingHistory(true);
-    fetch('/api/meters/' + meterId + '/history?limit=7')
+    fetch(`${API}/api/meters/${meterId}/history?page=1&pageSize=100`)
       .then(r => r.json())
       .then(d => {
         // Pass the raw ISO 8601 timestamp through — UsageChart formats it in
         // the viewer's local timezone (with a timezone indicator) itself, so
         // pre-formatting here would throw away the time-of-day and tz info.
-        const events: UsageDataPoint[] = (d.events || []).map((e: { recorded_at: string; units: number; cost?: number }) => ({
-          date: e.recorded_at,
+        const events: UsageDataPoint[] = (d.events || []).map((e: { received_at?: string; recorded_at?: string; units: number; cost?: number }) => ({
+          date: e.received_at ?? e.recorded_at ?? "",
           units: e.units,
           cost: e.cost,
         }));

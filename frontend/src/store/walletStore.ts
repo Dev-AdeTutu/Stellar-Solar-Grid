@@ -116,7 +116,6 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     if (!kit || !address) throw new Error("Wallet not connected");
     const { signedTxXdr } = await kit.signTransaction(xdr, {
       address,
-      networkPassphrase: process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
       networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
