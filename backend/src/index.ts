@@ -35,10 +35,11 @@ import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
+  countDeadLetterEvents,
   initUsageEventStore,
   startUsageEventRetryWorker,
-  countDeadLetterEvents,
 } from "./lib/usageEvents.js";
+import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
 
@@ -314,7 +315,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ── Server startup ───────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   initMeterNotesStore();
@@ -326,3 +327,19 @@ app.listen(PORT, () => {
     logger.error("Failed to start IoT bridge", { err });
   }
 });
+
+function shutdown(signal: string): void {
+  logger.info({ signal }, "SolarGrid backend shutting down");
+  httpServer.close(() => {
+    closeAllDatabases();
+  });
+
+  const forceExitTimer = setTimeout(() => {
+    closeAllDatabases();
+    process.exitCode = 1;
+  }, 10_000);
+  forceExitTimer.unref();
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
