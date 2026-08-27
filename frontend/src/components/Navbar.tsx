@@ -28,6 +28,15 @@ export default function Navbar() {
     document.documentElement.setAttribute("data-theme", savedTheme);
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [menuOpen]);
+
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
@@ -40,7 +49,7 @@ export default function Navbar() {
   }
 
   return (
-    <nav className="bg-solar-accent border-b border-white/10 relative z-50">
+    <nav aria-label="Main navigation" className="bg-solar-accent border-b border-white/10 relative z-50">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
         <Link href="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>

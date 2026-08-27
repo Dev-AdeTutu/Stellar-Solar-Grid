@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
 import { useToast } from "@/components/ToastProvider";
@@ -33,6 +33,9 @@ export default function PayPage() {
   const isOffline = useOffline();
 
   const [amount, setAmount] = useState("");
+  // Issue #766: optional free-text note attached to the payment on-chain.
+  const MEMO_MAX_LEN = 100;
+  const [memo, setMemo] = useState("");
   const [recentAmounts, setRecentAmounts] = useState<number[]>([]);
   const [status, setStatus] = useState<Status>("idle");
   const [showSmsModal, setShowSmsModal] = useState(false);
@@ -100,7 +103,26 @@ export default function PayPage() {
     setShowConfirm(true);
   }
 
+  // Issue #768: guards against a double-click submitting two transactions.
+  // `status === "loading"` alone isn't enough — the button's `disabled`
+  // attribute only updates once React commits the re-render, and a second
+  // click dispatched before that paint still lands on an enabled button.
+  // This ref is set synchronously on the very first call, before any
+  // `await` or state update, so a second call in the same tick is rejected
+  // immediately regardless of render timing.
+  const isSubmittingRef = useRef(false);
+
   async function confirmPayment() {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    try {
+      await submitPayment();
+    } finally {
+      isSubmittingRef.current = false;
+    }
+  }
+
+  async function submitPayment() {
     if (isOffline) {
       showToast({
         variant: "error",
@@ -117,7 +139,7 @@ export default function PayPage() {
 
     const amountNum = parseFloat(amount);
     try {
-      const hash = await makePayment(address, meterId.trim(), amountNum, plan);
+      const hash = await makePayment(address, meterId.trim(), amountNum, plan, memo);
       // Remember last 3 payment amounts in localStorage
       if (!isNaN(amountNum) && amountNum > 0) {
         setRecentAmounts((prev) => {
@@ -136,6 +158,7 @@ export default function PayPage() {
         actionLabel: "View transaction",
       });
       setAmount("");
+      setMemo("");
       setTxHash(hash);
     } catch (err: unknown) {
       const friendly = parseWalletError(err);
@@ -170,7 +193,7 @@ export default function PayPage() {
         </div>
       )}
 
-      <main className="min-h-screen flex items-start justify-center px-4 py-8 sm:py-16">
+      <main id="main-content" tabIndex={-1} className="min-h-screen flex items-start justify-center px-4 py-8 sm:py-16">
         <div className="w-full max-w-md">
           <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">Make a Payment</h1>
           <p className="text-gray-400 text-sm mb-6">
@@ -414,6 +437,28 @@ export default function PayPage() {
                   )}
                 </div>
 
+                {/* Memo (optional) */}
+                <div>
+                  <label
+                    htmlFor="payment-memo"
+                    className="block text-sm font-medium text-gray-300 mb-1.5"
+                  >
+                    Note <span className="text-gray-500 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="payment-memo"
+                    type="text"
+                    value={memo}
+                    onChange={(e) => setMemo(e.target.value.slice(0, MEMO_MAX_LEN))}
+                    placeholder="e.g. August electricity"
+                    maxLength={MEMO_MAX_LEN}
+                    className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+                  />
+                  <p className="mt-1.5 text-right text-xs text-gray-500">
+                    {memo.length}/{MEMO_MAX_LEN}
+                  </p>
+                </div>
+
               {/* Submit */}
               <button
                 type="button"
@@ -480,6 +525,12 @@ export default function PayPage() {
                     )}
                   </div>
                 </div>
+                {memo.trim() && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-gray-400 shrink-0">Note</span>
+                    <strong className="text-white text-right break-words">{memo.trim()}</strong>
+                  </div>
+                )}
               </div>
               <div className="mt-6 flex gap-3">
                 <button

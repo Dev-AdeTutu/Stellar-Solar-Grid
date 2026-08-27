@@ -4,6 +4,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OfflineBanner } from "@/components/OfflineBanner";
 import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { I18nProvider } from "@/components/I18nProvider";
+import { ContractPauseBanner } from "@/components/ContractPauseBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -32,6 +33,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
         <ErrorBoundary>
           <ToastProvider>
             <ServiceWorkerRegister />
@@ -39,6 +43,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {children}
           </ToastProvider>
           <I18nProvider>
+            <ContractPauseBanner />
             <ToastProvider>{children}</ToastProvider>
           </I18nProvider>
         </ErrorBoundary>

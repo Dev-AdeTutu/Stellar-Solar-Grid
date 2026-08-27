@@ -54,6 +54,9 @@ const MAX_BATCH_SIZE = Math.min(
 let bridgeStarted = false;
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = parseInt(
+  process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
+); // 0.1 XLM in stroops
+
 // Module-scope batch state so shutdown and flush share the same buffer
 let pending: Reading[] = [];
 let flushIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -242,7 +245,57 @@ function encodeBatch(readings: Reading[]): StellarSdk.xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvVec(entries);
 }
 
+// ── Duplicate message detection (Issue #765) ────────────────────────────────
+//
+// MQTT QoS 1/2 guarantees "at least once" delivery: if the broker never
+// receives our PUBACK/PUBREC (dropped ack, network blip, reconnect mid-flight)
+// it redelivers the same PUBLISH. Without a dedupe gate, a redelivered usage
+// message is processed twice and the meter is billed twice for the same
+// reading.
+//
+// Dedupe key is a hash of (topic, raw payload bytes) rather than the MQTT
+// packet messageId: messageId is only unique within a single broker session
+// and mqtt.js recycles it, so it can't reliably distinguish "same reading
+// resent" from "different reading that happens to reuse an old id" across
+// reconnects. Content hashing catches the actual duplicate regardless of
+// session boundaries.
+//
+// Entries expire after MQTT_DEDUPE_TTL_MS so the map can't grow unbounded on
+// a long-running bridge; a redelivery observed after the TTL window is
+// treated as a new message (broker retries for an unacked QoS 1/2 message
+// happen on the order of seconds, not minutes).
+const MQTT_DEDUPE_TTL_MS = Number(process.env.MQTT_DEDUPE_TTL_MS ?? 60_000);
+const recentMessageHashes = new Map<string, number>(); // hash -> expiresAt (ms)
+
+function messageDedupeKey(topic: string, payload: Buffer): string {
+  return crypto.createHash("sha1").update(topic).update(payload).digest("hex");
+}
+
+/**
+ * Returns true (and records the message) if this exact (topic, payload) was
+ * already processed within the TTL window; false if it's new.
+ */
+function isDuplicateMessage(topic: string, payload: Buffer): boolean {
+  const now = Date.now();
+  // Opportunistic cleanup — bounds map growth without a separate timer.
+  for (const [key, expiresAt] of recentMessageHashes) {
+    if (expiresAt <= now) recentMessageHashes.delete(key);
+  }
+
+  const key = messageDedupeKey(topic, payload);
+  if (recentMessageHashes.has(key)) {
+    return true;
+  }
+  recentMessageHashes.set(key, now + MQTT_DEDUPE_TTL_MS);
+  return false;
+}
+
 export async function processMqttMessage(topic: string, payload: Buffer) {
+  if (isDuplicateMessage(topic, payload)) {
+    logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+    return;
+  }
+
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -394,6 +447,13 @@ function startMqttBridge() {
     const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
     mqttMessages.inc({ topic: labelTopic });
     try {
+      // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
+      // missed ack) before they're persisted/submitted a second time.
+      if (isDuplicateMessage(topic, payload)) {
+        logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+        return;
+      }
+
       const meterId = topic.split("/")[2];
 
       let raw: unknown;
