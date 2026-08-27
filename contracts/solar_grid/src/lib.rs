@@ -1108,7 +1108,12 @@ impl SolarGridContract {
         let mut result: Map<Address, i128> = Map::new(&env);
         for collaborator in collabs.iter() {
             let bp = shares.get(collaborator.clone()).unwrap_or(0) as i128;
-            let payout = (amount * bp) / 10_000;
+            // Issue #695: Use checked_mul to prevent integer overflow
+            let payout = amount
+                .checked_mul(bp)
+                .ok_or(ContractError::InvalidAmount)?
+                .checked_div(10_000)
+                .ok_or(ContractError::InvalidAmount)?;
             result.set(collaborator, payout);
         }
         Ok(result)
@@ -1319,6 +1324,11 @@ impl SolarGridContract {
             return Err(ContractError::DailyLimitReached);
         }
         meter.day_spent = meter.day_spent.saturating_add(cost);
+
+        // Issue #695: Retrieve balance from storage with overflow protection
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        // Use saturating_sub to prevent underflow; clamp to 0 to ensure non-negative balance
         let new_balance = balance.saturating_sub(cost).max(0);
         env.storage().persistent().set(&bal_key, &new_balance);
         meter.units_used = meter.units_used.saturating_add(units);
