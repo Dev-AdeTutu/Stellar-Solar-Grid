@@ -48,6 +48,32 @@ components:
           type: string
           description: Stellar transaction hash
 
+    # ── Audit ─────────────────────────────────────────────────────────────────
+
+    AuditEntry:
+      type: object
+      description: A structured audit log entry for an admin-invoked action. Closes #744.
+      required: [timestamp, method, path, ip, keyHint]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp of the action
+        method:
+          type: string
+          description: HTTP method (e.g. POST)
+        path:
+          type: string
+          description: API route path (e.g. /api/allowlist)
+        params:
+          description: Request body at time of action (secrets excluded)
+        ip:
+          type: string
+          description: Requester IP address
+        keyHint:
+          type: string
+          description: Last 4 characters of the admin key used (e.g. ...ab12)
+
     # ── Meter ─────────────────────────────────────────────────────────────────
 
     MeterBalance:
@@ -1170,10 +1196,112 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
+  /api/admin/audit-logs:
+    get:
+      summary: Query audit log entries
+      description: |
+        Returns paginated audit log entries for admin-invoked actions.
+        Supports filtering by date range and event/path type.
+        Closes #744.
+      operationId: getAuditLogs
+      tags: [admin]
+      security:
+        - AdminKey: []
+      parameters:
+        - name: start
+          in: query
+          description: Inclusive lower bound (ISO-8601, e.g. 2025-01-01)
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          description: Inclusive upper bound (ISO-8601, e.g. 2025-12-31)
+          schema: { type: string, format: date-time }
+        - name: eventType
+          in: query
+          description: Filter by path substring (e.g. /api/meters)
+          schema: { type: string }
+        - name: limit
+          in: query
+          description: Max entries returned (default 500, max 1000)
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 500 }
+        - name: offset
+          in: query
+          description: Entries to skip for pagination (default 0)
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, total, limit, offset]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEntry"
+                  total:
+                    type: integer
+                    description: Total matching entries (before pagination)
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/admin/audit-logs/export:
+    get:
+      summary: Export audit log
+      description: |
+        Download the full (or filtered) audit log as CSV or JSON.
+        Useful for regulatory compliance submissions (closes #744).
+      operationId: exportAuditLogs
+      tags: [admin]
+      security:
+        - AdminKey: []
+      parameters:
+        - name: format
+          in: query
+          description: Export format
+          schema:
+            type: string
+            enum: [csv, json]
+            default: csv
+        - name: start
+          in: query
+          description: Inclusive lower bound (ISO-8601)
+          schema: { type: string, format: date-time }
+        - name: end
+          in: query
+          description: Inclusive upper bound (ISO-8601)
+          schema: { type: string, format: date-time }
+        - name: eventType
+          in: query
+          description: Filter by path substring
+          schema: { type: string }
+      responses:
+        "200":
+          description: Audit log file download
+          content:
+            text/csv:
+              schema: { type: string }
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEntry"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
 # ── Shared response components ────────────────────────────────────────────────
 
-  responses:
-    TxHash:
+  responses:    TxHash:
       description: On-chain transaction hash
       content:
         application/json:

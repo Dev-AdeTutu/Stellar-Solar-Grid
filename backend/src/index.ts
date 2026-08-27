@@ -25,9 +25,9 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
+import { auditLogsRouter } from "./routes/auditLogs.js";
 import { startIoTBridge } from "./iot/bridge.js";
-import { startLimitWatcher } from "./iot/limitWatcher.js";
-import { logger } from "./lib/logger.js";
+import { startLimitWatcher } from "./iot/limitWatcher.js";import { logger } from "./lib/logger.js";
 import { requestLogger } from "./lib/requestLogger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
@@ -217,6 +217,8 @@ app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/provider", providerRouter);
 app.use("/api/usage-events", usageEventsRouter);
+// Closes #744: audit log query and export endpoints (admin-only, requires X-Admin-Key).
+app.use("/api/admin/audit-logs", writeLimiter, auditLogsRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 

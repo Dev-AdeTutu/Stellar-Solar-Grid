@@ -15,8 +15,11 @@ interface WalletState {
   connectError: string | null;
   networkError: string | null;
   isConnecting: boolean;
+  /** Set to true when the user explicitly cancels a pending connection. */
+  connectCancelled: boolean;
   lastTopUpPerMeter: Record<string, bigint>;
   connect: () => Promise<void>;
+  cancelConnect: () => void;
   disconnect: () => void;
   clearConnectError: () => void;
   signTransaction: (xdr: string) => Promise<string>;
@@ -73,25 +76,50 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   connectError: null,
   networkError: null,
   isConnecting: false,
+  connectCancelled: false,
   lastTopUpPerMeter: {},
 
   connect: async () => {
-    set({ connectError: null, networkError: null, isConnecting: true });
+    set({ connectError: null, networkError: null, isConnecting: true, connectCancelled: false });
+
+    // Closes #743: race the wallet handshake against a 30-second timeout so the
+    // UI never hangs indefinitely when Freighter is installed but locked.
+    const CONNECTION_TIMEOUT_MS = 30_000;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error("Connection timeout. Wallet is locked — please unlock Freighter and try again."));
+      }, CONNECTION_TIMEOUT_MS);
+    });
+
     try {
       if (typeof window === "undefined" || !(window as any).freighter) {
         throw new Error("Freighter extension is not installed. Please install it to continue.");
       }
       const kit = buildKit();
-      await kit.openModal({
-        onWalletSelected: async (option) => {
-          kit.setWallet(option.id);
-          const { address } = await kit.getAddress();
-          if (!address || address.length < 10) throw new Error("No account found in selected wallet");
-          const networkError = await checkNetworkMismatch();
-          set({ address, kit, networkError });
-        },
+
+      const connectPromise = new Promise<void>((resolve, reject) => {
+        kit.openModal({
+          onWalletSelected: async (option) => {
+            try {
+              kit.setWallet(option.id);
+              const { address } = await kit.getAddress();
+              if (!address || address.length < 10) throw new Error("No account found in selected wallet");
+              const networkError = await checkNetworkMismatch();
+              set({ address, kit, networkError });
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          },
+        }).catch(reject);
       });
+
+      await Promise.race([connectPromise, timeoutPromise]);
     } catch (err: unknown) {
+      // Do not overwrite the error if the user explicitly cancelled
+      if (get().connectCancelled) return;
       const msg =
         err instanceof Error ? err.message : "Failed to connect wallet";
       const isNotInstalled =
@@ -103,11 +131,21 @@ export const useWalletStore = create<WalletState>((set, get) => ({
           : msg,
       });
     } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       set({ isConnecting: false });
     }
   },
 
-  disconnect: () => set({ address: null, kit: null, connectError: null, networkError: null }),
+  /** Closes #743: allow the user to abort a pending connection attempt. */
+  cancelConnect: () => {
+    set({
+      isConnecting: false,
+      connectCancelled: true,
+      connectError: null,
+    });
+  },
+
+  disconnect: () => set({ address: null, kit: null, connectError: null, networkError: null, connectCancelled: false }),
 
   clearConnectError: () => set({ connectError: null }),
 

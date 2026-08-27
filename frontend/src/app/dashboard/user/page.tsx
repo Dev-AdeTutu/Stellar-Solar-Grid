@@ -19,6 +19,7 @@ import {
 } from "@/services/pushService";
 import { env } from "@/lib/env";
 import { formatXLM } from "@/lib/format";
+import PaymentSchedule from "@/components/PaymentSchedule";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
@@ -353,6 +354,11 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">
         <UsageChart data={history} loading={loadingHistory} meterId={meterId} />
+      </div>
+
+      {/* Payment Schedule — closes #746 */}
+      <div className="pt-4 border-t border-white/10">
+        <PaymentSchedule meterId={meterId} />
       </div>
 
       {/* Actions */}

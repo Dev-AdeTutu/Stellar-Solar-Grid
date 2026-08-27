@@ -39,6 +39,12 @@ pub enum ContractError {
     NotPaused = 23,
     /// `make_payment`'s optional memo exceeds MAX_MEMO_LEN bytes.
     MemoTooLong = 24,
+    /// Timestamp arithmetic overflowed (e.g. payment duration too large).
+    /// Closes #745.
+    TimestampOverflow = 25,
+    /// Requested payment duration exceeds the maximum allowed cap.
+    /// Closes #745.
+    PaymentDurationTooLarge = 26,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -60,6 +66,9 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
 /// Max length (bytes) of the optional memo accepted by `make_payment` (Issue #766).
 const MAX_MEMO_LEN: u32 = 100;
+/// Maximum payment duration in seconds (10 years). Closes #745.
+/// Prevents timestamp overflow by capping extremely large durations.
+const MAX_PAYMENT_DURATION_SECS: u64 = 10 * 365 * SECONDS_PER_DAY;
 /// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
 const REFUND_LIMIT: Symbol = symbol_short!("RFND_LIM");
 const REFUND_WINDOW: Symbol = symbol_short!("RFND_WIN");
@@ -175,12 +184,15 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
 /// completely independent of local timezones or Daylight Saving Time (DST) changes.
 /// - Daily: exactly SECONDS_PER_DAY (86,400 seconds / 24 hours elapsed)
 /// - Weekly: exactly SECONDS_PER_WEEK (604,800 seconds / 7 days elapsed)
-/// - UsageBased: u64::MAX (no time expiry; saturating_add with any timestamp yields u64::MAX).
-fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
+/// - UsageBased: None (no time expiry — expiry is handled separately via u64::MAX sentinel).
+///
+/// Returns `None` for `UsageBased` so callers can use `u64::MAX` directly without
+/// risking overflow in `checked_add`. Closes #745.
+fn plan_duration_secs(plan: &PaymentPlan) -> Option<u64> {
     match plan {
-        PaymentPlan::Daily => SECONDS_PER_DAY,
-        PaymentPlan::Weekly => SECONDS_PER_WEEK,
-        PaymentPlan::UsageBased => u64::MAX,
+        PaymentPlan::Daily => Some(SECONDS_PER_DAY),
+        PaymentPlan::Weekly => Some(SECONDS_PER_WEEK),
+        PaymentPlan::UsageBased => None, // u64::MAX sentinel — no time expiry
     }
 }
 
@@ -849,7 +861,25 @@ impl SolarGridContract {
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         let now = env.ledger().timestamp();
-        let expires_at = now.saturating_add(plan_duration_secs(&plan));
+
+        // Closes #745: use checked arithmetic for all timestamp calculations to
+        // prevent overflow on edge-case durations. For UsageBased (no time expiry),
+        // the sentinel value u64::MAX is used directly. For timed plans, cap the
+        // duration to MAX_PAYMENT_DURATION_SECS (10 years) and require that
+        // `now + duration` does not overflow u64.
+        let expires_at = match plan_duration_secs(&plan) {
+            None => {
+                // UsageBased: no time expiry — use max sentinel value
+                u64::MAX
+            }
+            Some(duration) => {
+                if duration > MAX_PAYMENT_DURATION_SECS {
+                    return Err(ContractError::PaymentDurationTooLarge);
+                }
+                now.checked_add(duration)
+                    .ok_or(ContractError::TimestampOverflow)?
+            }
+        };
 
         // Track per-meter balance in contract storage
         let bal_key = DataKey::MeterBalance(meter_id.clone());
@@ -1706,8 +1736,13 @@ impl SolarGridContract {
                 deactivated = true;
             } else {
                 if meter.grace_expires_at.is_none() {
+                    // Closes #745: use checked_add for grace period timestamp to
+                    // prevent overflow if grace_period is set to an extreme value.
+                    let grace_exp = now
+                        .checked_add(grace_period)
+                        .unwrap_or(u64::MAX);
                     // Start grace period without compounding
-                    meter.grace_expires_at = Some(now.saturating_add(grace_period));
+                    meter.grace_expires_at = Some(grace_exp);
                     deactivated = false;
                 } else if let Some(grace_exp) = meter.grace_expires_at {
                     if now >= grace_exp {
