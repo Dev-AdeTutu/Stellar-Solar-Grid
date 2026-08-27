@@ -25,6 +25,7 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
+import { graphqlRouter } from "./routes/graphql.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -215,6 +216,7 @@ app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
+app.use("/api/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 app.use("/api/usage-events", usageEventsRouter);
 
