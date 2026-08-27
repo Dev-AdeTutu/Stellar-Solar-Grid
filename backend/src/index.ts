@@ -41,6 +41,8 @@ import {
 } from "./lib/usageEvents.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
+// Issue #696: Import idempotency cleanup for graceful shutdown
+import { _stopEvictionTimer } from "./middleware/idempotency.js";
 
 // ── Rate-limit config ────────────────────────────────────────────────────────
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -324,7 +326,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // ── Server startup ───────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   initMeterNotesStore();
@@ -336,3 +338,21 @@ app.listen(PORT, () => {
     logger.error("Failed to start IoT bridge", { err });
   }
 });
+
+// Issue #696: Graceful shutdown — clean up eviction timer and close server
+function gracefulShutdown(signal: string) {
+  logger.info({ signal }, "Received shutdown signal, starting graceful shutdown...");
+  _stopEvictionTimer();
+  httpServer.close(() => {
+    logger.info("Server closed gracefully");
+    process.exit(0);
+  });
+  // Force close after 10 seconds
+  setTimeout(() => {
+    logger.warn("Forcefully closing server after timeout");
+    process.exit(1);
+  }, 10_000);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
