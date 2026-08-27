@@ -21,10 +21,28 @@ const PLANS: { value: Plan; label: string; desc: string }[] = [
 ];
 
 const PLAN_AMOUNT_HINTS: Record<Plan, string> = {
-  Daily: "Suggested: 10 XLM/day",
-  Weekly: "Suggested: 50 XLM/week",
+  Daily: "Suggested: 10 XLM/day (pro-rated: 1 XLM = 24h)",
+  Weekly: "Suggested: 50 XLM/week (pro-rated: 1 XLM = 1.4 days)",
   Usage: "Amount (billed per kWh consumed)",
 };
+
+function getProratedServicePreview(amountStr: string, plan: Plan): string | null {
+  const val = parseFloat(amountStr);
+  if (isNaN(val) || val <= 0) return null;
+  if (plan === "Daily") {
+    const hours = val * 24;
+    if (hours >= 24) {
+      const days = (hours / 24).toFixed(1).replace(/\.0$/, "");
+      return `Extends service by ~${days} ${parseFloat(days) === 1 ? "day" : "days"} (pro-rated)`;
+    }
+    return `Extends service by ~${hours.toFixed(1).replace(/\.0$/, "")} hours (pro-rated)`;
+  }
+  if (plan === "Weekly") {
+    const days = (val * 1.4).toFixed(1).replace(/\.0$/, "");
+    return `Extends service by ~${days} ${parseFloat(days) === 1 ? "day" : "days"} (pro-rated)`;
+  }
+  return `Adds ${val.toFixed(2)} XLM usage balance (no time expiration)`;
+}
 
 export default function PayPage() {
   const { address, connect } = useWalletStore();
@@ -415,6 +433,12 @@ export default function PayPage() {
                     </span>
                   </div>
                   <p className="mt-1.5 text-xs text-gray-500">{PLAN_AMOUNT_HINTS[plan]}</p>
+                  {amount && parseFloat(amount) > 0 && (
+                    <div className="mt-2 rounded-lg bg-solar-yellow/10 border border-solar-yellow/30 p-2.5 text-xs text-solar-yellow flex items-center gap-2">
+                      <span>⏱️</span>
+                      <span className="font-medium">{getProratedServicePreview(amount, plan)}</span>
+                    </div>
+                  )}
                   {xlmRate && amount && (
                     <div className="mt-2 flex items-center justify-between">
                       <p className="text-xs text-gray-400">
