@@ -11,6 +11,7 @@ export interface MeterData {
   last_payment: bigint;
   expires_at: bigint;
   balance: bigint;
+  grace_expires_at?: bigint | null;
   meter_id?: string;
 }
 
@@ -134,6 +135,12 @@ export async function checkMeterAccess(meterId: string): Promise<boolean> {
   const retval = await client.query("check_access", [
     StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
   ]);
+  return StellarSdk.scValToNative(retval) as boolean;
+}
+
+/** Read the contract-wide emergency pause state for the global banner. */
+export async function isContractPaused(): Promise<boolean> {
+  const retval = await client.query("is_paused", []);
   return StellarSdk.scValToNative(retval) as boolean;
 }
 

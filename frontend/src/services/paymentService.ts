@@ -1,7 +1,6 @@
 import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
 import { env } from "@/lib/env";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
 const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 
 export interface PaymentRecord {
@@ -10,25 +9,41 @@ export interface PaymentRecord {
   meterId: string;
   amountXlm: number;
   plan: string;
+  /** Optional free-text note attached to the payment (Issue #766). */
+  memo?: string;
+  /** Opaque cursor identifying this record for pagination (Issue #767). */
+  cursor: string;
 }
 
 export interface PaymentHistoryResponse {
   payments: PaymentRecord[];
   pagination: {
-    page: number;
     limit: number;
-    total: number;
-    pages: number;
+    count: number;
+    hasMore: boolean;
+    /** Pass as `cursor` to fetch the next page; null when there isn't one. */
+    nextCursor: string | null;
   };
 }
 
+/**
+ * Fetches a page of payment history using cursor-based pagination.
+ *
+ * Issue #767: offset pagination (`page`/`total`) duplicated or dropped
+ * records whenever a payment was inserted between two page requests, because
+ * the "offset" a later page skipped was computed against a numeric position
+ * that could shift out from under it. Passing the previous page's
+ * `nextCursor` instead anchors each request to a specific, stable record.
+ */
 export async function getPaymentHistory(
   address: string,
-  page = 1,
+  cursor?: string,
   limit = 10,
   sort: "asc" | "desc" = "desc",
 ): Promise<PaymentHistoryResponse> {
-  const url = `${BACKEND_URL}/api/payments/${address}?page=${page}&limit=${limit}&sort=${sort}`;
+  const params = new URLSearchParams({ limit: String(limit), sort });
+  if (cursor) params.set("cursor", cursor);
+  const url = `${BACKEND_URL}/api/payments/${address}?${params.toString()}`;
   const res = await fetchWithTimeout(url);
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

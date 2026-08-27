@@ -10,9 +10,15 @@
 
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
-import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
+import {
+  persistAndSubmitUsageEvent,
+  insertSubmittedUsageEvents,
+  getKV,
+  setKV,
+  getTypicalWeeklyUsageStroops,
+} from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
-import { SIGNATURE_HEADER, signWebhookPayload } from "../lib/webhookSignature.js";
+import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -36,6 +42,10 @@ const EVENT_POLL_INTERVAL_MS = Number(
 
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
+
+const FALLBACK_LOW_BALANCE_THRESHOLD = parseInt(
+  process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
+); // 0.1 XLM in stroops
 
 // Module-scope batch state so shutdown and flush share the same buffer
 let pending: Reading[] = [];
@@ -148,31 +158,53 @@ async function checkAndNotifyLowBalance(meterId: string) {
     ]);
     const meter = StellarSdk.scValToNative(result) as {
       balance: bigint;
+      owner?: string;
       [key: string]: unknown;
     };
     const balance = Number(meter.balance);
+    const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
+    const dynamicThreshold =
+      weeklyTypicalStroops > 0
+        ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
+        : FALLBACK_LOW_BALANCE_THRESHOLD;
 
-    if (balance <= LOW_BALANCE_THRESHOLD) {
+    if (balance <= dynamicThreshold) {
+      const ownerAddress = typeof meter.owner === "string" ? meter.owner : "";
       const body = JSON.stringify({
         event: "low_balance",
         meter_id: meterId,
         balance,
-        threshold: LOW_BALANCE_THRESHOLD,
+        threshold: dynamicThreshold,
+        weekly_typical_stroops: weeklyTypicalStroops,
         timestamp: new Date().toISOString(),
       });
 
-      if (webhookUrl) {
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-        };
-        // Closes #688: sign with the legacy single-URL secret when
-        // configured, falling back to the global WEBHOOK_SECRET env var.
-        const secret = process.env.PROVIDER_WEBHOOK_SECRET ?? process.env.WEBHOOK_SECRET;
-        if (secret) {
-          headers[SIGNATURE_HEADER] = signWebhookPayload(secret, body);
-        } else {
-          logger.warn("PROVIDER_WEBHOOK_URL configured without a signing secret", { webhookUrl });
-        }
+      const urls = getWebhookUrls();
+      if (urls.size > 0) {
+        // Fire webhooks with automatic retry
+        await Promise.all([...urls].map((url) => fireWebhook(url, body)));
+      }
+
+      if (ownerAddress) {
+        await sendLowBalanceNotification({
+          ownerAddress,
+          meterId,
+          balanceStroops: balance,
+          thresholdStroops: dynamicThreshold,
+          weeklyTypicalStroops,
+        });
+      }
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const secret = process.env.PROVIDER_WEBHOOK_SECRET;
+      if (secret) {
+        const signature = crypto
+          .createHmac("sha256", secret)
+          .update(body)
+          .digest("hex");
+        headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
+      }
 
         await fetch(webhookUrl, {
           method: "POST",
@@ -188,7 +220,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
         [...urls].map((url) => fireWebhook(url, body)),
       );
 
-      logger.info("Low balance webhook fired", { meterId, balance });
+      logger.info("Low balance notifications fired", { meterId, balance });
     }
   } catch (err) {
     logger.error("Low balance webhook check failed", { meterId, err });
@@ -207,7 +239,57 @@ function encodeBatch(readings: Reading[]): StellarSdk.xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvVec(entries);
 }
 
+// ── Duplicate message detection (Issue #765) ────────────────────────────────
+//
+// MQTT QoS 1/2 guarantees "at least once" delivery: if the broker never
+// receives our PUBACK/PUBREC (dropped ack, network blip, reconnect mid-flight)
+// it redelivers the same PUBLISH. Without a dedupe gate, a redelivered usage
+// message is processed twice and the meter is billed twice for the same
+// reading.
+//
+// Dedupe key is a hash of (topic, raw payload bytes) rather than the MQTT
+// packet messageId: messageId is only unique within a single broker session
+// and mqtt.js recycles it, so it can't reliably distinguish "same reading
+// resent" from "different reading that happens to reuse an old id" across
+// reconnects. Content hashing catches the actual duplicate regardless of
+// session boundaries.
+//
+// Entries expire after MQTT_DEDUPE_TTL_MS so the map can't grow unbounded on
+// a long-running bridge; a redelivery observed after the TTL window is
+// treated as a new message (broker retries for an unacked QoS 1/2 message
+// happen on the order of seconds, not minutes).
+const MQTT_DEDUPE_TTL_MS = Number(process.env.MQTT_DEDUPE_TTL_MS ?? 60_000);
+const recentMessageHashes = new Map<string, number>(); // hash -> expiresAt (ms)
+
+function messageDedupeKey(topic: string, payload: Buffer): string {
+  return crypto.createHash("sha1").update(topic).update(payload).digest("hex");
+}
+
+/**
+ * Returns true (and records the message) if this exact (topic, payload) was
+ * already processed within the TTL window; false if it's new.
+ */
+function isDuplicateMessage(topic: string, payload: Buffer): boolean {
+  const now = Date.now();
+  // Opportunistic cleanup — bounds map growth without a separate timer.
+  for (const [key, expiresAt] of recentMessageHashes) {
+    if (expiresAt <= now) recentMessageHashes.delete(key);
+  }
+
+  const key = messageDedupeKey(topic, payload);
+  if (recentMessageHashes.has(key)) {
+    return true;
+  }
+  recentMessageHashes.set(key, now + MQTT_DEDUPE_TTL_MS);
+  return false;
+}
+
 export async function processMqttMessage(topic: string, payload: Buffer) {
+  if (isDuplicateMessage(topic, payload)) {
+    logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+    return;
+  }
+
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -320,6 +402,13 @@ function startMqttBridge() {
     const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
     mqttMessages.inc({ topic: labelTopic });
     try {
+      // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
+      // missed ack) before they're persisted/submitted a second time.
+      if (isDuplicateMessage(topic, payload)) {
+        logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+        return;
+      }
+
       const meterId = topic.split("/")[2];
 
       let raw: unknown;
@@ -347,6 +436,29 @@ function startMqttBridge() {
         cost,
       });
 
+      const event = await persistAndSubmitUsageEvent({
+        meterId,
+        units,
+        cost,
+        sourceTopic: topic,
+      });
+
+      if (event.on_chain_tx_hash) {
+        logger.info("Usage recorded on-chain", {
+          meterId,
+          eventId: event.id,
+          txHash: event.on_chain_tx_hash,
+        });
+        // Check if balance is low after usage update
+        checkAndNotifyLowBalance(meterId).catch(err => {
+          logger.error("Low balance check failed", { err });
+        });
+      } else {
+        logger.warn("Usage event queued for retry", {
+          meterId,
+          eventId: event.id,
+        });
+      }
       // Issue #601: queue for the next priority-ordered batch flush instead
       // of submitting immediately, so near-zero-balance meters can be
       // sequenced first within the batch.

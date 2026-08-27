@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import { MeterStatusBadge } from "@/components/MeterStatusBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import { useToast } from "@/components/ToastProvider";
@@ -20,7 +21,17 @@ function isValidStellarAddress(addr: string): boolean {
 
 type Status = "idle" | "loading";
 
+export const dynamic = "force-dynamic";
+
 export default function ProviderDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderDashboardPageContent />
+    </Suspense>
+  );
+}
+
+function ProviderDashboardPageContent() {
   const { showToast } = useToast();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -167,7 +178,7 @@ export default function ProviderDashboardPage() {
   return (
     <ErrorBoundary>
       <Navbar />
-      <main className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
+      <main id="main-content" tabIndex={-1} className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
         <div className="w-full max-w-md">
           <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">
             Provider Dashboard

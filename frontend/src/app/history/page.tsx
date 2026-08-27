@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useSearchParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useCallback, useRef } from "react";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { Skeleton } from "@/components/Skeleton";
@@ -12,7 +12,9 @@ import {
   type PaymentRecord,
   type PaymentHistoryResponse,
 } from "@/services/paymentService";
+import { downloadPaymentReceipt } from "@/lib/receipt";
 import { env } from "@/lib/env";
+import { formatXlmAmount } from "@/lib/format";
 
 type SortField = "date" | "amountXlm" | "plan" | "meterId";
 type SortDir = "asc" | "desc";
@@ -25,45 +27,79 @@ const EXPLORER_BASE =
     : "https://stellar.expert/explorer/public/tx";
 
 const PAGE_SIZE = 10;
+// Safety bound on how many pages CSV export will walk via cursor before
+// giving up — prevents a runaway loop if the API ever misbehaves.
+const MAX_EXPORT_PAGES = 200;
+
+export const dynamic = "force-dynamic";
 
 export default function HistoryPage() {
+  return (
+    <Suspense fallback={null}>
+      <HistoryPageContent />
+    </Suspense>
+  );
+}
+
+function HistoryPageContent() {
   const { address } = useWalletStore();
   const { showToast } = useToast();
-  const router = useRouter();
   const searchParams = useSearchParams();
-  const queryPage = parseInt(searchParams.get("page") || "1");
   const filterMeterId = searchParams.get("meterId");
+  const historySectionRef = useRef<HTMLElement | null>(null);
 
   const [records, setRecords] = useState<PaymentRecord[]>([]);
-  const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
+  // Issue #767: pagination is cursor-based, not offset-based (see
+  // services/paymentService.ts). `cursorStack[i]` is the cursor used to
+  // fetch the page at index `i`; `pageIndex` tracks which page is current so
+  // "Prev" can re-fetch an earlier cursor without losing our place.
+  const [cursorStack, setCursorStack] = useState<(string | undefined)[]>([undefined]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const [exporting, setExporting] = useState(false);
+  const [downloadingHash, setDownloadingHash] = useState<string | null>(null);
 
-  // Sync page to URL
-  useEffect(() => {
-    if (pagination.page > 1) {
-      router.push(`?page=${pagination.page}`, { scroll: false } as any);
-    } else if (queryPage > 1) {
-      router.push("", { scroll: false } as any);
+  async function handleDownloadReceipt(record: PaymentRecord) {
+    if (!record.txHash || downloadingHash) return;
+    setDownloadingHash(record.txHash);
+    try {
+      await downloadPaymentReceipt(record, `${EXPLORER_BASE}/${record.txHash}`);
+    } catch (e: any) {
+      setError(e.message ?? "Failed to generate receipt");
+    } finally {
+      setDownloadingHash(null);
     }
-  }, [pagination.page, queryPage, router]);
+  }
+
+  const [exporting, setExporting] = useState(false);
 
   async function handleExportCsv() {
     if (!address) return;
     setExporting(true);
     try {
-      const data = await getPaymentHistory(address, 1, pagination.total || 10000, sortDir);
+      // Walk every page via cursor (rather than requesting one huge "page")
+      // so export isn't silently truncated by the server's per-request
+      // limit cap — see Issue #767.
+      const all: PaymentRecord[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < MAX_EXPORT_PAGES; i++) {
+        const data = await getPaymentHistory(address, cursor, 50, sortDir);
+        all.push(...data.payments);
+        if (!data.pagination?.hasMore || !data.pagination.nextCursor) break;
+        cursor = data.pagination.nextCursor;
+      }
 
-      const header = "Date,Meter ID,Amount (XLM),Plan,Transaction Hash";
-      const rows = data.payments.map((r) =>
+      const header = "Date,Meter ID,Amount (XLM),Plan,Note,Transaction Hash";
+      const rows = all.map((r) =>
         [
           new Date(r.date).toISOString(),
           r.meterId,
           r.amountXlm.toFixed(7),
           r.plan,
+          r.memo ? `"${r.memo.replace(/"/g, '""')}"` : "",
           r.txHash || "",
         ].join(","),
       );
@@ -79,7 +115,7 @@ export default function HistoryPage() {
       showToast({
         variant: "success",
         title: "Export Successful",
-        description: `Exported ${data.payments.length} records to CSV.`,
+        description: `Exported ${all.length} records to CSV.`,
       });
     } catch (e: any) {
       setError(e.message ?? "Failed to export history");
@@ -94,7 +130,7 @@ export default function HistoryPage() {
   }
 
   const fetchHistory = useCallback(
-    async (page: number) => {
+    async (cursor: string | undefined) => {
       if (!address) return;
       setLoading(true);
       setError(null);
@@ -102,7 +138,7 @@ export default function HistoryPage() {
         const serverSort = sortField === "date" ? sortDir : "desc";
         const data: PaymentHistoryResponse = await getPaymentHistory(
           address,
-          page,
+          cursor,
           PAGE_SIZE,
           serverSort,
         );
@@ -110,16 +146,12 @@ export default function HistoryPage() {
           throw new Error("Invalid response: missing payments data");
         }
         setRecords(data.payments);
-        setPagination({
-          page: data.pagination?.page ?? 1,
-          pages: data.pagination?.pages ?? 1,
-          total: data.pagination?.total ?? 0,
-        });
+        setHasMore(Boolean(data.pagination?.hasMore));
       } catch (e: any) {
         const errorMsg = e.message ?? "Failed to load payment history";
         setError(errorMsg);
         setRecords([]);
-        setPagination({ page: 1, pages: 1, total: 0 });
+        setHasMore(false);
       } finally {
         setLoading(false);
       }
@@ -127,9 +159,37 @@ export default function HistoryPage() {
     [address, sortField, sortDir],
   );
 
+  // Changing address or sort order invalidates the cursor stack — the
+  // underlying ordering is different, so start over from the first page.
   useEffect(() => {
-    fetchHistory(queryPage);
-  }, [fetchHistory, queryPage]);
+    setCursorStack([undefined]);
+    setPageIndex(0);
+    fetchHistory(undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [address, sortField, sortDir]);
+
+  function handlePageChange(direction: "next" | "prev") {
+    if (loading) return;
+    if (direction === "next") {
+      if (!hasMore || records.length === 0) return;
+      const lastCursor = records[records.length - 1]?.cursor;
+      if (!lastCursor) return;
+      const nextIndex = pageIndex + 1;
+      setCursorStack((prev) => {
+        const next = prev.slice(0, nextIndex);
+        next[nextIndex] = lastCursor;
+        return next;
+      });
+      setPageIndex(nextIndex);
+      fetchHistory(lastCursor);
+    } else {
+      if (pageIndex === 0) return;
+      const prevIndex = pageIndex - 1;
+      setPageIndex(prevIndex);
+      fetchHistory(cursorStack[prevIndex]);
+    }
+    historySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   function handleSort(field: SortField) {
     if (field === sortField) {
@@ -160,7 +220,12 @@ export default function HistoryPage() {
   return (
     <>
       <Navbar />
-      <main className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
+      <main
+        ref={historySectionRef}
+        id="main-content"
+        tabIndex={-1}
+        className="min-h-screen px-4 py-8 max-w-5xl mx-auto"
+      >
         <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">Payment History</h1>
         <p className="text-gray-400 mb-3 text-sm">
           All <code className="text-solar-yellow">make_payment</code> transactions for your wallet.
@@ -240,12 +305,17 @@ export default function HistoryPage() {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-solar-yellow font-bold text-base">
-                        {r.amountXlm.toFixed(4)} XLM
+                        {formatXlmAmount(r.amountXlm)} XLM
                       </span>
                       <PlanBadge plan={r.plan} />
                     </div>
                     <div className="text-xs text-gray-400">{new Date(r.date).toLocaleString()}</div>
                     <div className="text-xs text-gray-300 font-mono">Meter: {r.meterId}</div>
+                    {r.memo && (
+                      <div className="text-xs text-gray-400 italic truncate" title={r.memo}>
+                        “{r.memo}”
+                      </div>
+                    )}
                     {r.txHash && (
                       <a
                         href={`${EXPLORER_BASE}/${r.txHash}`}
@@ -255,6 +325,17 @@ export default function HistoryPage() {
                       >
                         {r.txHash.slice(0, 10)}…{r.txHash.slice(-8)} ↗
                       </a>
+                    )}
+                    {r.txHash && (
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadReceipt(r)}
+                        disabled={downloadingHash === r.txHash}
+                        aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
+                        className="w-full rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50"
+                      >
+                        {downloadingHash === r.txHash ? "Generating…" : "Download Receipt"}
+                      </button>
                     )}
                   </div>
                 ))}
@@ -283,21 +364,28 @@ export default function HistoryPage() {
                     <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 whitespace-nowrap">
                       Tx Hash
                     </th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 whitespace-nowrap">
+                      Receipt
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {loading && [0, 1, 2, 3, 4].map((i) => (
-                    <tr key={i} className="border-t border-white/5">
-                      <td className="px-3 py-3"><Skeleton width="80%" height={14} /></td>
-                      <td className="px-3 py-3"><Skeleton width="65%" height={14} /></td>
-                      <td className="px-3 py-3"><Skeleton width="50%" height={14} /></td>
-                      <td className="px-3 py-3"><Skeleton width="55%" height={20} /></td>
-                      <td className="px-3 py-3"><Skeleton width="70%" height={14} /></td>
-                    </tr>
-                  ))}
+                  {loading &&
+                    [0, 1, 2, 3, 4].map((i) => (
+                      <tr key={i} className="border-t border-white/5">
+                        <td className="px-3 py-3"><Skeleton width="80%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="65%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="50%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="55%" height={20} /></td>
+                        <td className="px-3 py-3"><Skeleton width="70%" height={14} /></td>
+                        <td className="px-3 py-3"><Skeleton width="60%" height={14} /></td>
+                      </tr>
+                    ))}
                   {!loading && sorted.length === 0 && (
                     <tr>
-                      <td colSpan={5}><EmptyState /></td>
+                      <td colSpan={6}>
+                        <EmptyState />
+                      </td>
                     </tr>
                   )}
                   {!loading &&
@@ -309,9 +397,19 @@ export default function HistoryPage() {
                         <td className="px-3 py-3 text-gray-300 whitespace-nowrap text-xs">
                           {new Date(r.date).toLocaleString()}
                         </td>
-                        <td className="px-3 py-3 font-mono text-gray-200 text-xs">{r.meterId}</td>
+                        <td className="px-3 py-3 font-mono text-gray-200 text-xs">
+                          {r.meterId}
+                          {r.memo && (
+                            <div
+                              className="mt-0.5 max-w-[16rem] truncate font-sans italic text-gray-500"
+                              title={r.memo}
+                            >
+                              “{r.memo}”
+                            </div>
+                          )}
+                        </td>
                         <td className="px-3 py-3 text-solar-yellow font-semibold text-xs">
-                          {r.amountXlm.toFixed(4)}
+                          {formatXlmAmount(r.amountXlm)}
                         </td>
                         <td className="px-3 py-3">
                           <PlanBadge plan={r.plan} />
@@ -327,6 +425,21 @@ export default function HistoryPage() {
                             >
                               {r.txHash.slice(0, 8)}…{r.txHash.slice(-6)}
                             </a>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-xs">
+                          {r.txHash ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadReceipt(r)}
+                              disabled={downloadingHash === r.txHash}
+                              aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
+                              className="rounded-lg border border-white/10 px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {downloadingHash === r.txHash ? "Generating…" : "Download"}
+                            </button>
                           ) : (
                             <span className="text-gray-600">—</span>
                           )}
@@ -350,21 +463,19 @@ export default function HistoryPage() {
                   </button>
                 </div>
 
-                {pagination.pages > 1 && (
+                {(pageIndex > 0 || hasMore) && (
                   <div className="flex items-center gap-2">
                     <button
-                      disabled={pagination.page <= 1 || loading}
-                      onClick={() => fetchHistory(pagination.page - 1)}
+                      disabled={pageIndex <= 0 || loading}
+                      onClick={() => handlePageChange("prev")}
                       className="rounded-lg border border-white/10 px-4 py-2 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-30 disabled:cursor-not-allowed transition"
                     >
                       ← Prev
                     </button>
-                    <span className="px-2 text-xs">
-                      {pagination.page} / {pagination.pages}
-                    </span>
+                    <span className="px-2 text-xs">Page {pageIndex + 1}</span>
                     <button
-                      disabled={pagination.page >= pagination.pages || loading}
-                      onClick={() => fetchHistory(pagination.page + 1)}
+                      disabled={!hasMore || loading}
+                      onClick={() => handlePageChange("next")}
                       className="rounded-lg border border-white/10 px-4 py-2 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-30 disabled:cursor-not-allowed transition"
                     >
                       Next →

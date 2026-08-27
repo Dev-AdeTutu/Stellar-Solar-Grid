@@ -1,7 +1,9 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { server, CONTRACT_ID } from "../lib/stellar.js";
+import { server, CONTRACT_ID, stellarService } from "../lib/stellar.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { logger } from "../lib/logger.js";
+import { register } from "../lib/metrics.js";
 
 export const statsRouter = Router();
 
@@ -18,6 +20,61 @@ const revenueHistoryCache = new Map<
   number,
   { data: RevenueHistoryEntry[]; ts: number }
 >();
+
+/** Billing plans reported by /meters-by-plan, keyed exactly as the contract names them. */
+type PlanKey = "Daily" | "Weekly" | "UsageBased";
+
+type PlanBreakdown = Record<PlanKey, number> & { total: number };
+
+function emptyPlanBreakdown(): PlanBreakdown {
+  return { Daily: 0, Weekly: 0, UsageBased: 0, total: 0 };
+}
+
+/**
+ * scValToNative decodes a Soroban enum either as its bare name ("Daily") or as
+ * a single-key object ({ Daily: [] }), so accept both. Unknown plans return
+ * null and are left out of the breakdown rather than silently miscounted.
+ */
+function normalizePlan(raw: unknown): PlanKey | null {
+  let name: string | undefined;
+  if (typeof raw === "string") {
+    name = raw;
+  } else if (raw && typeof raw === "object") {
+    name = Object.keys(raw)[0];
+  }
+  switch (name) {
+    case "Daily":
+      return "Daily";
+    case "Weekly":
+      return "Weekly";
+    case "Usage":
+    case "UsageBased":
+      return "UsageBased";
+    default:
+      return null;
+  }
+}
+
+interface ContractStats {
+  totalMeters: number;
+  activeMeters: number;
+  inactiveMeters: number;
+  totalUnits: number;
+  avgUnitsPerMeter: number;
+  totalRevenue: number;
+  avgRevenue: number;
+}
+
+interface MetricsSummary {
+  mqttMessages: number;
+  contractCalls: number;
+  activeMeters: number;
+  paymentVolumeXlm: number;
+}
+
+let meterPlanCache: { data: PlanBreakdown; expiresAt: number } | null = null;
+let contractCache: { data: ContractStats; expiresAt: number } | null = null;
+let metricsCache: { data: MetricsSummary; expiresAt: number } | null = null;
 
 /**
  * GET /api/stats/revenue-history?days=30

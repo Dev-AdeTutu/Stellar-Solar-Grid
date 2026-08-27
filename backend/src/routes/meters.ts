@@ -3,6 +3,7 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { StellarService, server } from "../lib/stellar.js";
 import {
   getUsageHistory,
+  getTypicalWeeklyUsageStroops,
   persistAndSubmitUsageEvent,
   initUsageEventStore,
 } from "../lib/usageEvents.js";
@@ -16,16 +17,18 @@ import { asyncHandler } from "../lib/asyncHandler.js";
 import {
   validateRequest,
   RegisterMeterSchema,
+  BatchRegisterMetersSchema,
   MeterNoteSchema,
 } from "../lib/validation.js";
+import { logger } from "../lib/logger.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
 import { getMqttClient } from "../iot/mqttClient.js";
-import { logger } from "../lib/logger.js";
 
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
+const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
 export function createMeterRouter(stellar: StellarService) {
   const meterRouter = Router();
@@ -49,6 +52,16 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const page = Math.max(1, Number(req.query.page ?? 1) || 1);
       const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
+
+      // Optional filters — each is only applied when the caller supplies it.
+      const owner = req.query.owner;
+      const active = req.query.active;
+      const plan = req.query.plan;
+      const rawExpiresBefore = req.query.expiresBefore;
+      const expiresBeforeMs =
+        rawExpiresBefore !== undefined && Number.isFinite(Number(rawExpiresBefore))
+          ? Number(rawExpiresBefore)
+          : undefined;
 
       const result = await stellar.query("get_all_meters", []);
       let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
@@ -475,11 +488,19 @@ export function createMeterRouter(stellar: StellarService) {
           StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
         ]);
         const meter = StellarSdk.scValToNative(result) as any;
+        const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
+        const lowBalanceThresholdStroops =
+          weeklyTypicalStroops > 0
+            ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
+            : FALLBACK_LOW_BALANCE_THRESHOLD;
         const payload = {
           meter_id: meterId,
           balance: meter.balance,
           units_used: meter.units_used,
           active: meter.active,
+          weekly_typical_stroops: weeklyTypicalStroops,
+          low_balance_threshold_stroops: lowBalanceThresholdStroops,
+          is_low_balance: Number(meter.balance) <= lowBalanceThresholdStroops,
         };
         balanceCache.set(meterId, { data: payload, ts: Date.now() });
         res.json(payload);
@@ -710,6 +731,37 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(owner, { type: "address" }),
       ]);
       res.json({ hash });
+    }),
+  );
+
+  /** POST /api/meters/batch — register multiple meters in a single transaction (admin only) */
+  meterRouter.post(
+    "/batch",
+    validateRequest({ body: BatchRegisterMetersSchema }),
+    asyncHandler(async (req, res) => {
+      const { meters } = req.body as { meters: { meter_id: string; owner: string }[] };
+
+      const seen = new Set<string>();
+      const duplicates = meters
+        .map((m) => m.meter_id)
+        .filter((id) => (seen.has(id) ? true : (seen.add(id), false)));
+      if (duplicates.length > 0) {
+        return res.status(400).json({
+          error: "Duplicate meter_id values in batch",
+          duplicates: [...new Set(duplicates)],
+        });
+      }
+
+      const entries = meters.map(({ meter_id, owner }) =>
+        StellarSdk.xdr.ScVal.scvVec([
+          StellarSdk.nativeToScVal(meter_id, { type: "symbol" }),
+          StellarSdk.nativeToScVal(owner, { type: "address" }),
+        ]),
+      );
+      const encoded = StellarSdk.xdr.ScVal.scvVec(entries);
+
+      const hash = await stellar.invoke("batch_register_meters", [encoded]);
+      res.json({ hash, meter_ids: meters.map((m) => m.meter_id) });
     }),
   );
 

@@ -24,12 +24,21 @@ export async function makePayment(
   meterId: string,
   amountXlm: number,
   plan: "Daily" | "Weekly" | "Usage",
+  memo?: string,
 ): Promise<string> {
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
+  // Issue #766: memo is an Option<String> on the contract side — omit
+  // (scvVoid) rather than passing an empty string when the user left it blank.
+  const trimmedMemo = memo?.trim();
+  const memoScVal =
+    trimmedMemo && trimmedMemo.length > 0
+      ? StellarSdk.nativeToScVal(trimmedMemo, { type: "string" })
+      : StellarSdk.xdr.ScVal.scvVoid();
   return contractInvoke(sourceAddress, "make_payment", [
     StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
     StellarSdk.nativeToScVal(sourceAddress, { type: "address" }),
     StellarSdk.nativeToScVal(amountStroops, { type: "i128" }),
     StellarSdk.nativeToScVal(plan, { type: "symbol" }),
+    memoScVal,
   ]);
 }

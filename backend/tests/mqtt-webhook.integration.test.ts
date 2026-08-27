@@ -21,7 +21,7 @@ process.env.MQTT_BROKER = "mqtt://localhost:11883";
 process.env.LOW_BALANCE_THRESHOLD = "1000000";
 process.env.USAGE_EVENTS_DB_PATH = ":memory:";
 process.env.WEBHOOKS_DB_PATH = ":memory:";
-process.env.WEBHOOK_SECRET = "test-suite-shared-webhook-secret";
+process.env.PROVIDER_WEBHOOK_URL = "https://legacy-provider.example.com/hook";
 
 // ── Mocks (hoisted before all imports) ───────────────────────────────────────
 
@@ -78,6 +78,7 @@ vi.mock("../src/lib/usageEvents.js", () => {
     persistAndSubmitUsageEvent: vi.fn().mockResolvedValue(submittedEvent),
     insertSubmittedUsageEvents: vi.fn(),
     getKV: vi.fn().mockReturnValue(null),
+    getTypicalWeeklyUsageStroops: vi.fn().mockReturnValue(0),
     setKV: vi.fn(),
     initUsageEventStore: vi.fn(),
     startUsageEventRetryWorker: vi.fn(),
@@ -91,8 +92,12 @@ vi.mock("../src/lib/usageEvents.js", () => {
 
 import { processMqttMessage } from "../src/iot/bridge.js";
 import { contractQuery } from "../src/lib/stellar.js";
-import { registerWebhook, unregisterWebhook, getWebhookUrls } from "../src/lib/webhookRegistry.js";
-import { verifyWebhookSignature, SIGNATURE_HEADER } from "../src/lib/webhookSignature.js";
+import {
+  registerWebhook,
+  unregisterWebhook,
+  getAllWebhooks,
+  getWebhookUrls,
+} from "../src/lib/webhookRegistry.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 const TEST_PROVIDER_ID = "test-provider";
@@ -101,6 +106,7 @@ const TEST_PROVIDER_ID = "test-provider";
 
 const MOCK_METER_ID = "TEST_METER_001";
 const TOPIC = `solargrid/meters/${MOCK_METER_ID}/usage`;
+const PROVIDER_ID = "test-provider";
 const LOW_BALANCE = 500_000;    // below 1_000_000 threshold
 const HIGH_BALANCE = 5_000_000; // above threshold
 
@@ -136,8 +142,8 @@ function installFetchSpy() {
 
 /** Clears the webhook registry (both DB rows and any pending state) so tests don't bleed into each other. */
 function clearWebhookRegistry() {
-  for (const url of getWebhookUrls()) {
-    unregisterWebhook(TEST_PROVIDER_ID, url);
+  for (const hook of getAllWebhooks()) {
+    unregisterWebhook(hook.provider_id, hook.url);
   }
 }
 
@@ -158,7 +164,7 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
 
   it("fires a signed webhook POST when meter balance drops below LOW_BALANCE_THRESHOLD", async () => {
     const WEBHOOK_URL = "https://provider.example.com/webhooks/low-balance";
-    const { secret } = registerWebhook(TEST_PROVIDER_ID, WEBHOOK_URL);
+    registerWebhook(PROVIDER_ID, WEBHOOK_URL);
 
     vi.mocked(contractQuery).mockResolvedValue(makeMeterScVal(LOW_BALANCE));
 
@@ -195,7 +201,7 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
 
   it("does NOT fire a webhook when balance is above the threshold", async () => {
     const WEBHOOK_URL = "https://provider.example.com/webhooks/high-balance";
-    registerWebhook(TEST_PROVIDER_ID, WEBHOOK_URL);
+    registerWebhook(PROVIDER_ID, WEBHOOK_URL);
 
     vi.mocked(contractQuery).mockResolvedValueOnce(makeMeterScVal(HIGH_BALANCE));
 
@@ -213,8 +219,8 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
   it("fires webhooks to ALL registered URLs when balance is low", async () => {
     const URL_A = "https://a.example.com/hook";
     const URL_B = "https://b.example.com/hook";
-    registerWebhook(TEST_PROVIDER_ID, URL_A);
-    registerWebhook(TEST_PROVIDER_ID, URL_B);
+    registerWebhook(PROVIDER_ID, URL_A);
+    registerWebhook(PROVIDER_ID, URL_B);
 
     vi.mocked(contractQuery).mockResolvedValue(makeMeterScVal(LOW_BALANCE));
 
@@ -249,13 +255,13 @@ describe("webhook registry", () => {
   beforeEach(clearWebhookRegistry);
 
   it("registerWebhook adds URL to the registry", () => {
-    registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh");
+    registerWebhook(PROVIDER_ID, "https://example.com/wh");
     expect(getWebhookUrls().has("https://example.com/wh")).toBe(true);
   });
 
   it("registerWebhook is idempotent (no duplicates)", () => {
-    registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh");
-    registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh");
+    registerWebhook(PROVIDER_ID, "https://example.com/wh");
+    registerWebhook(PROVIDER_ID, "https://example.com/wh");
     expect(getWebhookUrls().size).toBe(1);
   });
 

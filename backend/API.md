@@ -49,6 +49,18 @@ To also remove volumes (e.g., for a clean restart):
 docker-compose down -v
 ```
 
+## Request/Response Logging
+
+All requests are logged by `requestLogger` middleware (`backend/src/lib/requestLogger.ts`):
+
+- Every request gets a unique `request_id` (also returned as the `X-Request-Id`
+  response header) linking its request and response log lines.
+- Sensitive fields (secrets, tokens, passwords, API keys) are redacted from
+  logged request bodies.
+- Errors (status >= 400) are always logged; successful requests are sampled
+  at 10% by default to limit log volume.
+- Disable entirely by setting `LOG_REQUESTS=false`.
+
 ## Idempotency
 
 Payment endpoints support the `Idempotency-Key` header to prevent duplicate submissions on network retries.
@@ -90,6 +102,31 @@ Submit a payment for a meter.
 ```json
 { "hash": "<transaction-hash>" }
 ```
+
+## Batch Meter Registration
+
+### `POST /api/meters/batch`
+
+Registers up to 100 meters in a single on-chain transaction (admin only),
+wrapping the contract's `batch_register_meters` function.
+
+Request body:
+
+```json
+{
+  "meters": [
+    { "meter_id": "METER1", "owner": "GABC...XYZ" },
+    { "meter_id": "METER2", "owner": "GDEF...UVW" }
+  ]
+}
+```
+
+- Rejects (400) if `meters` is empty, exceeds 100 entries, or contains
+  duplicate `meter_id` values within the request.
+- Entries whose owner is not allowlisted, or whose `meter_id` already exists
+  on-chain, are skipped rather than failing the whole batch (see the
+  `batch_skip` event in `contracts/README.md`).
+- Response: `{ "hash": "<tx_hash>", "meter_ids": [...] }`.
 
 ## Low-Balance Webhook Notifications
 
@@ -212,8 +249,10 @@ Set the following environment variables:
 | Variable                | Required | Default | Description                                    |
 | ----------------------- | -------- | ------- | ---------------------------------------------- |
 | `PROVIDER_WEBHOOK_URL`  | No       | -       | Webhook endpoint URL for low-balance alerts    |
-| `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Balance threshold in stroops (0.1 XLM default) |
-| `WEBHOOK_SECRET`        | No       | -       | Fallback HMAC signing secret used when a webhook has no per-provider secret registered |
+| `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Fallback threshold (used when no 7-day usage history exists) |
+| `WEB_PUSH_VAPID_SUBJECT` | No      | -       | VAPID subject for Web Push (`mailto:...`) |
+| `WEB_PUSH_VAPID_PUBLIC_KEY` | No   | -       | VAPID public key sent to browsers |
+| `WEB_PUSH_VAPID_PRIVATE_KEY` | No  | -       | VAPID private key used to sign push sends |
 
 ### Register Webhook Endpoint
 
@@ -261,7 +300,11 @@ A request without a valid `X-Admin-Key` header returns `401 Unauthorized`.
 
 ### Webhook Payload
 
-When a meter's balance drops below the threshold after a usage update, the bridge fires a POST request to the registered webhook URL.
+When a meter's balance drops below the alert threshold after a usage update, the bridge fires a POST request to the registered webhook URL.
+
+Alert threshold rule:
+- `threshold = 10% of typical weekly usage (last 7 days summed cost)`
+- If no recent usage exists, fallback to `LOW_BALANCE_THRESHOLD`
 
 **Payload**
 
@@ -270,7 +313,8 @@ When a meter's balance drops below the threshold after a usage update, the bridg
   "event": "low_balance",
   "meter_id": "METER123",
   "balance": 500000,
-  "threshold": 1000000,
+  "threshold": 800000,
+  "weekly_typical_stroops": 8000000,
   "timestamp": "2025-05-27T10:30:00.000Z"
 }
 ```
@@ -282,8 +326,38 @@ When a meter's balance drops below the threshold after a usage update, the bridg
 | `event`     | string | Always `"low_balance"`           |
 | `meter_id`  | string | The meter identifier             |
 | `balance`   | number | Current meter balance in stroops |
-| `threshold` | number | Configured threshold in stroops  |
+| `threshold` | number | Computed threshold in stroops  |
+| `weekly_typical_stroops` | number | Last-7-days usage cost sum in stroops |
 | `timestamp` | string | ISO 8601 timestamp of the event  |
+
+## Push Subscription API
+
+### `GET /api/push/config`
+
+Returns push feature status and the VAPID public key for browser subscription.
+
+### `POST /api/push/subscribe`
+
+Stores/updates a browser push subscription for a Stellar owner address.
+
+Body:
+
+```json
+{
+  "ownerAddress": "G...",
+  "subscription": {
+    "endpoint": "https://...",
+    "keys": {
+      "p256dh": "...",
+      "auth": "..."
+    }
+  }
+}
+```
+
+### `POST /api/push/unsubscribe`
+
+Deletes a stored push subscription by endpoint.
 
 **Error Handling**
 

@@ -44,6 +44,70 @@ let retryTimerHandle: NodeJS.Timeout | null = null;
 let isShuttingDown = false;
 let db: any;
 
+// ── Circuit breaker ──────────────────────────────────────────────────────────
+// After CIRCUIT_FAILURE_THRESHOLD consecutive delivery failures to a given
+// URL, stop attempting deliveries to it for CIRCUIT_COOLDOWN_MS. This avoids
+// hammering an endpoint that's known to be down and lets it recover.
+const CIRCUIT_FAILURE_THRESHOLD = 10;
+const CIRCUIT_COOLDOWN_MS = 5 * 60 * 1000;
+
+const consecutiveFailures = new Map<string, number>();
+const circuitOpenUntil = new Map<string, number>();
+
+/** True if the circuit for `url` is currently open (deliveries paused). */
+function isCircuitOpen(url: string): boolean {
+  const openUntil = circuitOpenUntil.get(url);
+  if (openUntil === undefined) return false;
+  if (Date.now() >= openUntil) {
+    // Cooldown elapsed — close the circuit and give the endpoint a fresh start.
+    circuitOpenUntil.delete(url);
+    consecutiveFailures.set(url, 0);
+    return false;
+  }
+  return true;
+}
+
+function recordDeliverySuccess(url: string): void {
+  consecutiveFailures.set(url, 0);
+  circuitOpenUntil.delete(url);
+}
+
+function recordDeliveryFailure(url: string): void {
+  const count = (consecutiveFailures.get(url) ?? 0) + 1;
+  consecutiveFailures.set(url, count);
+  if (count >= CIRCUIT_FAILURE_THRESHOLD && !circuitOpenUntil.has(url)) {
+    const openUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+    circuitOpenUntil.set(url, openUntil);
+    logger.error("Webhook circuit breaker opened after consecutive failures", {
+      url,
+      consecutiveFailures: count,
+      cooldownMs: CIRCUIT_COOLDOWN_MS,
+      resumesAt: new Date(openUntil).toISOString(),
+    });
+  }
+}
+
+/** Exposed for observability/tests. */
+export function getCircuitBreakerState(url: string): {
+  open: boolean;
+  consecutiveFailures: number;
+  openUntil: string | null;
+} {
+  return {
+    open: isCircuitOpen(url),
+    consecutiveFailures: consecutiveFailures.get(url) ?? 0,
+    openUntil: circuitOpenUntil.has(url)
+      ? new Date(circuitOpenUntil.get(url)!).toISOString()
+      : null,
+  };
+}
+
+/** Reset all circuit breaker state. Exposed for tests. */
+export function resetCircuitBreakers(): void {
+  consecutiveFailures.clear();
+  circuitOpenUntil.clear();
+}
+
 function openDatabase() {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const database = new Database(DB_PATH);
@@ -233,6 +297,17 @@ async function fireWebhookInternal(
 ): Promise<void> {
   // Fall back to the current async context's request ID when not explicitly supplied
   const effectiveCorrelationId = correlationId ?? getReqId();
+
+  if (isCircuitOpen(url)) {
+    logger.warn("Webhook circuit breaker open, skipping delivery", {
+      url,
+      attempt: attempt + 1,
+      attemptedAt: new Date().toISOString(),
+      correlationId: effectiveCorrelationId,
+    });
+    return;
+  }
+
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (effectiveCorrelationId) {
     headers["X-Request-ID"] = effectiveCorrelationId;
@@ -273,6 +348,7 @@ async function fireWebhookInternal(
     }
 
     succeeded = true;
+    recordDeliverySuccess(url);
     webhookDeliveries.inc({ status: "success", attempt: String(attempt + 1) });
 
     if (attempt > 0) {
@@ -280,11 +356,14 @@ async function fireWebhookInternal(
     }
   } catch (err: any) {
     deliveryError = err.message;
+    recordDeliveryFailure(url);
     webhookDeliveries.inc({ status: "failure", attempt: String(attempt + 1) });
     logger.warn("Webhook delivery failed", {
       url,
       attempt: attempt + 1,
       maxRetries: MAX_RETRIES,
+      attemptedAt,
+      httpStatus,
       error: err.message,
       correlationId: effectiveCorrelationId,
     });
@@ -300,6 +379,7 @@ async function fireWebhookInternal(
       logger.error("Webhook delivery failed permanently after max retries", {
         url,
         attempts: MAX_RETRIES + 1,
+        httpStatus,
         correlationId: effectiveCorrelationId,
       });
     }

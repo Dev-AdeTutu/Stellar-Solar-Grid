@@ -4,10 +4,11 @@ import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
 import timeout from "connect-timeout";
 import helmet from "helmet";
+import compression from "compression";
+import mqtt from "mqtt";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
-import { createRequire } from "module";
 
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
@@ -19,16 +20,18 @@ import { allowlistRouter } from "./routes/allowlist.js";
 import { adminLoginRouter } from "./routes/adminLogin.js";
 import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
-import { adminLoginRouter } from "./routes/adminLogin.js";
-import { allowlistRouter } from "./routes/allowlist.js";
-import { collaboratorRouter } from "./routes/collaborators.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
+import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
+import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
+import { requestLogger } from "./lib/requestLogger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
+import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
@@ -59,10 +62,12 @@ const REQUIRED_ENV = [
   "CONTRACT_ID",
   "ADMIN_SECRET_KEY",
   "ADMIN_API_KEY",
-  "STELLAR_RPC_URL",
   "MQTT_BROKER",
 ];
 const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (!process.env.STELLAR_RPC_URL && !process.env.STELLAR_RPC_URLS) {
+  missing.push("STELLAR_RPC_URL (or STELLAR_RPC_URLS)");
+}
 if (missing.length > 0) {
   logger.fatal(
     { missing },
@@ -141,6 +146,7 @@ app.use((req: any, _res: any, next: any) => {
   if (!req.timedout) next();
 });
 
+app.use(requestLogger());
 // ── Rate limiters ─────────────────────────────────────────────────────────────
 // Env-var parsing is centralised in config/rateLimits.ts (closes #539).
 
@@ -148,22 +154,6 @@ app.use((req: any, _res: any, next: any) => {
 const globalReadLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: RATE_LIMIT_MAX,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (_req, res) => {
-    res.setHeader(
-      "Retry-After",
-      String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)),
-    );
-    res.status(429).json({ error: RATE_LIMIT_MESSAGE, code: "RATE_LIMITED" });
-  },
-});
-
-// Payments-specific limiter — stricter than the general write limiter because
-// each payment hits the Stellar network and costs gas.
-const paymentsLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: PAYMENTS_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
   handler: (_req, res) => {
@@ -213,13 +203,16 @@ try {
 }
 
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
-app.use("/api/meters", createMeterRouter(stellarService));
-app.use("/api/payments", writeLimiter, paymentsRouter);
+// Body parsing above makes payer/owner available before this limiter runs.
+// Missing payer identities remain governed by the global IP limiter.
+app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
+app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
+app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
@@ -240,7 +233,7 @@ app.get("/health", async (_req, res) => {
     checks.stellar = "error";
   }
 
-  let mqttOk = false;
+  const broker = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
   try {
     const client = mqtt.connect(broker, { reconnectPeriod: 0, connectTimeout: 3000 });
     const ok = await new Promise<boolean>((resolve) => {
@@ -282,9 +275,12 @@ app.use((err: any, req: any, res: any, next: any) => {
       .status(504)
       .json({ error: "Request timed out", code: "TIMEOUT", requestId: getReqId() });
   }
+  return next(err);
+});
 
 // #423: 413 payload too large handler + global error handler (#418).
 app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const requestId = getReqId();
   logger.error({ error: err.message, stack: err.stack }, "Unhandled error");
 
   if (err.type === "entity.too.large") {

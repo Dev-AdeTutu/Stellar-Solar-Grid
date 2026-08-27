@@ -55,6 +55,9 @@ Emitted when a meter is deactivated (balance drained to zero or via `set_active(
 - **Data:** `()` (empty)
 
 Emitted when a meter ID in `batch_update_usage` is not found and skipped.
+Also emitted (with the same shape) by `batch_register_meters` for each entry
+skipped because the meter ID already exists, is duplicated within the batch,
+or the owner is not on the allowlist.
 
 #### revenue_withdrawn
 - **Topic 0:** `rev_wdrl` (symbol_short)
