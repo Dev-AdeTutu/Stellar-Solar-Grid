@@ -30,6 +30,7 @@ import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
+import { requestLogger } from "./lib/requestLogger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
@@ -145,6 +146,7 @@ app.use((req: any, _res: any, next: any) => {
   if (!req.timedout) next();
 });
 
+app.use(requestLogger());
 // ── Rate limiters ─────────────────────────────────────────────────────────────
 // Env-var parsing is centralised in config/rateLimits.ts (closes #539).
 

@@ -12,6 +12,7 @@ import {
   type PaymentRecord,
   type PaymentHistoryResponse,
 } from "@/services/paymentService";
+import { downloadPaymentReceipt } from "@/lib/receipt";
 import { env } from "@/lib/env";
 import { formatXlmAmount } from "@/lib/format";
 
@@ -54,6 +55,17 @@ function HistoryPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [downloadingHash, setDownloadingHash] = useState<string | null>(null);
+
+  async function handleDownloadReceipt(record: PaymentRecord) {
+    if (!record.txHash || downloadingHash) return;
+    setDownloadingHash(record.txHash);
+    try {
+      await downloadPaymentReceipt(record, `${EXPLORER_BASE}/${record.txHash}`);
+    } catch (e: any) {
+      setError(e.message ?? "Failed to generate receipt");
+    } finally {
+      setDownloadingHash(null);
   const [exporting, setExporting] = useState(false);
 
   async function handleExportCsv() {
@@ -182,6 +194,11 @@ function HistoryPageContent() {
   return (
     <>
       <Navbar />
+      <main id="main-content" tabIndex={-1} className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
+        <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">
+          Payment History
+        </h1>
+        <p className="text-gray-400 mb-6 text-sm">
       <main ref={historySectionRef} className="min-h-screen px-4 py-8 max-w-5xl mx-auto">
         <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-1">Payment History</h1>
         <p className="text-gray-400 mb-3 text-sm">
@@ -278,6 +295,17 @@ function HistoryPageContent() {
                         {r.txHash.slice(0, 10)}…{r.txHash.slice(-8)} ↗
                       </a>
                     )}
+                    {r.txHash && (
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadReceipt(r)}
+                        disabled={downloadingHash === r.txHash}
+                        aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
+                        className="w-full rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50"
+                      >
+                        {downloadingHash === r.txHash ? "Generating…" : "Download Receipt"}
+                      </button>
+                    )}
                   </div>
                 ))}
             </div>
@@ -305,9 +333,17 @@ function HistoryPageContent() {
                     <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 whitespace-nowrap">
                       Tx Hash
                     </th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-400 whitespace-nowrap">
+                      Receipt
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
+                  {loading && (
+                    <tr>
+                      <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                        Loading…
+                      </td>
                   {loading && [0, 1, 2, 3, 4].map((i) => (
                     <tr key={i} className="border-t border-white/5">
                       <td className="px-3 py-3"><Skeleton width="80%" height={14} /></td>
@@ -319,6 +355,9 @@ function HistoryPageContent() {
                   ))}
                   {!loading && sorted.length === 0 && (
                     <tr>
+                      <td colSpan={6} className="px-4 py-10 text-center text-gray-500">
+                        No payment records found.
+                      </td>
                       <td colSpan={5}><EmptyState /></td>
                     </tr>
                   )}
@@ -349,6 +388,21 @@ function HistoryPageContent() {
                             >
                               {r.txHash.slice(0, 8)}…{r.txHash.slice(-6)}
                             </a>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-xs">
+                          {r.txHash ? (
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadReceipt(r)}
+                              disabled={downloadingHash === r.txHash}
+                              aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
+                              className="rounded-lg border border-white/10 px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50 whitespace-nowrap"
+                            >
+                              {downloadingHash === r.txHash ? "Generating…" : "Download"}
+                            </button>
                           ) : (
                             <span className="text-gray-600">—</span>
                           )}

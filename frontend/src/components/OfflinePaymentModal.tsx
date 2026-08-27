@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { useState, useEffect } from "react";
 import { useOffline } from "@/hooks/useOffline";
 import { env } from "@/lib/env";
@@ -30,6 +32,7 @@ const PLANS = [
 export default function OfflinePaymentModal({ meterId, region, onClose }: Props) {
   const isOffline = useOffline();
   const [copied, setCopied] = useState(false);
+  const panelRef = useModalA11y<HTMLDivElement>(onClose);
   const [copyFailed, setCopyFailed] = useState(false);
   const [smsConfig, setSmsConfig] = useState<SmsProviderConfig | null>(() => {
     if (typeof window === "undefined") return null;
@@ -107,8 +110,11 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
       />
 
       {/* Panel — slides up from bottom on mobile */}
-      <div className="relative w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-solar-accent border border-white/10 shadow-2xl overflow-hidden">
-
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-solar-accent border border-white/10 shadow-2xl overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 bg-yellow-900/20">
           <div className="flex items-center gap-2">

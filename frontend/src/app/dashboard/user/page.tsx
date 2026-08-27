@@ -491,7 +491,7 @@ export default function UserDashboardPage() {
   return (
     <ErrorBoundary>
       <Navbar />
-      <main className="min-h-screen px-4 py-8 max-w-3xl mx-auto">
+      <main id="main-content" tabIndex={-1} className="min-h-screen px-4 py-8 max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
           <div>

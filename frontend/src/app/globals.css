@@ -51,6 +51,33 @@ button, a {
   touch-action: manipulation;
 }
 
+/* Skip-to-content link: visually hidden until keyboard-focused */
+.skip-link {
+  position: absolute;
+  top: -100%;
+  left: 0.5rem;
+  z-index: 100;
+  padding: 0.75rem 1.25rem;
+  background: #facc15;
+  color: #0d1b2a;
+  font-weight: 600;
+  font-size: 0.875rem;
+  border-radius: 0 0 0.5rem 0.5rem;
+  transition: top 0.15s ease-in-out;
+}
+
+.skip-link:focus {
+  top: 0;
+}
+
+/* High-contrast, clearly visible focus indicator for keyboard navigation.
+   :focus-visible avoids showing the ring on mouse clicks. */
+:focus-visible {
+  outline: 3px solid #facc15;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 /* Ensure inputs don't zoom on focus on iOS (font-size >= 16px) */
 input, select, textarea {
   font-size: 16px;
