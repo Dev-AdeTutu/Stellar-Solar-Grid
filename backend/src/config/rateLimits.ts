@@ -9,16 +9,16 @@
  * in one place.
  */
 
-/** Window duration in milliseconds (default: 60 s). */
+/** Anonymous request window in milliseconds (default: 15 minutes). */
 export const RATE_LIMIT_WINDOW_MS = Number(
-  process.env.RATE_LIMIT_WINDOW_MS ?? 60 * 1000,
+  process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000,
 );
 
 /**
- * Maximum requests per window for the general / global limiter (default: 60).
+ * Maximum requests per window for the general / global limiter (default: 100).
  * This is also used as the ceiling for read-heavy routes.
  */
-export const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 60);
+export const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX ?? 100);
 
 /**
  * Maximum write requests per window for the strict write limiter (default:
@@ -31,12 +31,15 @@ export const WRITE_RATE_LIMIT_MAX = Number(
 );
 
 /**
- * Maximum payment requests per window (default: 10).  Payments hit the
- * Stellar network and cost gas, so they get a tighter budget than generic
- * writes.
+ * Maximum payer-scoped payment and meter-management requests per hour
+ * (default: 50). Payments hit the Stellar network and cost gas, so they get a
+ * tighter budget than generic anonymous reads.
  */
+export const PAYMENTS_RATE_LIMIT_WINDOW_MS = Number(
+  process.env.PAYMENTS_RATE_LIMIT_WINDOW_MS ?? 60 * 60 * 1000,
+);
 export const PAYMENTS_RATE_LIMIT_MAX = Number(
-  process.env.PAYMENTS_RATE_LIMIT_MAX ?? 10,
+  process.env.PAYMENTS_RATE_LIMIT_MAX ?? 50,
 );
 
 /** Human-readable message returned to clients that exceed any limiter. */

@@ -14,12 +14,13 @@ import {
   deleteMeterNote,
 } from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { logger } from "../lib/logger.js";
 import {
   validateRequest,
   RegisterMeterSchema,
+  BatchRegisterMetersSchema,
   MeterNoteSchema,
 } from "../lib/validation.js";
+import { logger } from "../lib/logger.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
@@ -730,6 +731,37 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(owner, { type: "address" }),
       ]);
       res.json({ hash });
+    }),
+  );
+
+  /** POST /api/meters/batch — register multiple meters in a single transaction (admin only) */
+  meterRouter.post(
+    "/batch",
+    validateRequest({ body: BatchRegisterMetersSchema }),
+    asyncHandler(async (req, res) => {
+      const { meters } = req.body as { meters: { meter_id: string; owner: string }[] };
+
+      const seen = new Set<string>();
+      const duplicates = meters
+        .map((m) => m.meter_id)
+        .filter((id) => (seen.has(id) ? true : (seen.add(id), false)));
+      if (duplicates.length > 0) {
+        return res.status(400).json({
+          error: "Duplicate meter_id values in batch",
+          duplicates: [...new Set(duplicates)],
+        });
+      }
+
+      const entries = meters.map(({ meter_id, owner }) =>
+        StellarSdk.xdr.ScVal.scvVec([
+          StellarSdk.nativeToScVal(meter_id, { type: "symbol" }),
+          StellarSdk.nativeToScVal(owner, { type: "address" }),
+        ]),
+      );
+      const encoded = StellarSdk.xdr.ScVal.scvVec(entries);
+
+      const hash = await stellar.invoke("batch_register_meters", [encoded]);
+      res.json({ hash, meter_ids: meters.map((m) => m.meter_id) });
     }),
   );
 

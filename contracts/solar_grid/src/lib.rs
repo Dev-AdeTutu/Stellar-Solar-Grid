@@ -31,8 +31,14 @@ pub enum ContractError {
     CollaboratorNotFound = 18,
     RefundExceedsPayments = 19,
     RefundLimitExceeded = 20,
+    /// The contract-wide emergency pause is active.
+    ContractPaused = 21,
+    /// The contract is already paused.
+    AlreadyPaused = 22,
+    /// The contract is not currently paused.
+    NotPaused = 23,
     /// `make_payment`'s optional memo exceeds MAX_MEMO_LEN bytes.
-    MemoTooLong = 21,
+    MemoTooLong = 24,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -57,6 +63,11 @@ const MAX_MEMO_LEN: u32 = 100;
 /// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
 const REFUND_LIMIT: Symbol = symbol_short!("RFND_LIM");
 const REFUND_WINDOW: Symbol = symbol_short!("RFND_WIN");
+/// Contract-wide emergency pause state and timestamp.
+const PAUSED: Symbol = symbol_short!("PAUSED");
+const PAUSED_AT: Symbol = symbol_short!("PAUSE_AT");
+/// A pause automatically expires after 48 hours (Unix seconds).
+const MAX_PAUSE_DURATION: u64 = 48 * 60 * 60;
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -254,6 +265,9 @@ impl SolarGridContract {
     /// - `owner` must co-sign the registration (require_auth), confirming they
     ///   consent to being the meter owner.
     pub fn register_meter(env: Env, meter_id: String, owner: Address) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
         Self::require_admin(&env)?;
         let allowlist = Self::get_allowlist(env.clone())?;
         if !allowlist.contains(&owner) {
@@ -307,6 +321,84 @@ impl SolarGridContract {
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_reg"), meter_id), owner);
         Ok(())
+    }
+
+    /// Register multiple new smart meters in a single transaction.
+    ///
+    /// Accepts a vector of `(meter_id, owner)` tuples. Each entry is skipped
+    /// (rather than aborting the whole batch) if the meter_id already exists,
+    /// is duplicated within the batch, or the owner is not on the allowlist;
+    /// a `batch_skip` event is emitted for each skip and `meter_registered`
+    /// for each success. Returns one bool per input entry (true = registered)
+    /// in the same order as the input. Admin-only. Maximum batch size: 100.
+    pub fn batch_register_meters(
+        env: Env,
+        meters: Vec<(String, Address)>,
+    ) -> Result<Vec<bool>, ContractError> {
+        Self::require_admin(&env)?;
+        if meters.len() > 100 {
+            return Err(ContractError::BatchTooLarge);
+        }
+        let allowlist = Self::get_allowlist(env.clone())?;
+        let now = env.ledger().timestamp();
+
+        let mut global_list: Vec<String> = env
+            .storage()
+            .instance()
+            .get(&METER_LIST)
+            .unwrap_or_else(|| vec![&env]);
+
+        let mut seen: Vec<String> = vec![&env];
+        let mut results: Vec<bool> = vec![&env];
+
+        for (meter_id, owner) in meters.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            if seen.contains(&meter_id)
+                || env.storage().persistent().has(&key)
+                || !allowlist.contains(&owner)
+            {
+                env.events().publish(
+                    (symbol_short!("btch_skip"), EVT_NS, meter_id.clone()),
+                    (),
+                );
+                results.push_back(false);
+                continue;
+            }
+            seen.push_back(meter_id.clone());
+
+            let meter = Meter {
+                version: 2,
+                owner: owner.clone(),
+                active: false,
+                units_used: 0,
+                plan: PaymentPlan::Daily,
+                last_payment: now,
+                expires_at: now,
+                daily_limit: 0,
+                day_spent: 0,
+                day_start: now,
+                grace_expires_at: None,
+            };
+            env.storage().persistent().set(&key, &meter);
+
+            let owner_key = DataKey::OwnerMeters(owner.clone());
+            let mut owner_list: Vec<String> = env
+                .storage()
+                .persistent()
+                .get(&owner_key)
+                .unwrap_or_else(|| vec![&env]);
+            owner_list.push_back(meter_id.clone());
+            env.storage().persistent().set(&owner_key, &owner_list);
+
+            global_list.push_back(meter_id.clone());
+
+            env.events()
+                .publish(("meter", "registered"), (meter_id.clone(), owner.clone()));
+            results.push_back(true);
+        }
+
+        env.storage().instance().set(&METER_LIST, &global_list);
+        Ok(results)
     }
 
     /// Get all meter IDs registered under a given owner address.
@@ -637,6 +729,83 @@ impl SolarGridContract {
             .unwrap_or(false))
     }
 
+    // ── Issue #672: emergency pause ───────────────────────────────────────────
+
+    /// Pause payments and meter registration for up to 48 hours.
+    ///
+    /// Usage reporting and all read-only methods remain available while paused,
+    /// allowing the oracle and dashboards to continue operating during an
+    /// incident. The pause is admin-only and emits the compact on-chain event
+    /// topic `paused` (logical event name: `contract_paused`).
+    pub fn pause(env: Env) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+
+        // A stale pause is cleared before evaluating whether a new pause is
+        // already active. This makes the expiry deterministic even if no
+        // transaction touched the contract during the 48-hour window.
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::AlreadyPaused);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().set(&PAUSED, &true);
+        env.storage().instance().set(&PAUSED_AT, &now);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "contract_paused")),
+            (Self::get_admin(&env)?, now, MAX_PAUSE_DURATION),
+        );
+        Ok(())
+    }
+
+    /// Resume payments and meter registration before the automatic expiry.
+    /// Admin-only; emits the compact topic `unpaused` (logical event name:
+    /// `contract_unpaused`).
+    pub fn unpause(env: Env) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if !Self::pause_is_active(&env) {
+            return Err(ContractError::NotPaused);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage().instance().remove(&PAUSED);
+        env.storage().instance().remove(&PAUSED_AT);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "contract_unpaused")),
+            (Self::get_admin(&env)?, now),
+        );
+        Ok(())
+    }
+
+    /// Return whether the emergency pause is active. A pause older than the
+    /// 48-hour maximum is treated as expired automatically.
+    pub fn is_paused(env: Env) -> Result<bool, ContractError> {
+        Self::require_initialized(&env)?;
+        Ok(Self::pause_is_active(&env))
+    }
+
+    /// Read the pause flag and clear it when the maximum duration has elapsed.
+    /// This helper is called by state-changing guards as well as the view method
+    /// so the policy remains enforced even when no explicit `unpause` is sent.
+    fn pause_is_active(env: &Env) -> bool {
+        let paused: bool = env.storage().instance().get(&PAUSED).unwrap_or(false);
+        if !paused {
+            return false;
+        }
+
+        let paused_at: u64 = env.storage().instance().get(&PAUSED_AT).unwrap_or(0);
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(paused_at) >= MAX_PAUSE_DURATION {
+            env.storage().instance().remove(&PAUSED);
+            env.storage().instance().remove(&PAUSED_AT);
+            env.events().publish(
+                (EVT_NS, Symbol::new(env, "contract_unpaused")),
+                (now, true),
+            );
+            return false;
+        }
+        true
+    }
+
     /// Make a payment to top up a meter's balance and activate it.
     /// `amount` is in the token's smallest unit. `plan` sets the billing cycle.
     /// `memo` is an optional free-text note (e.g. "August electricity") capped
@@ -653,6 +822,9 @@ impl SolarGridContract {
         plan: PaymentPlan,
         memo: Option<String>,
     ) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
         if env
             .storage()
             .instance()

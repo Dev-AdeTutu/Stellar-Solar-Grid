@@ -193,7 +193,7 @@ export default function PayPage() {
         </div>
       )}
 
-      <main className="min-h-screen flex items-start justify-center px-4 py-8 sm:py-16">
+      <main id="main-content" tabIndex={-1} className="min-h-screen flex items-start justify-center px-4 py-8 sm:py-16">
         <div className="w-full max-w-md">
           <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">Make a Payment</h1>
           <p className="text-gray-400 text-sm mb-6">

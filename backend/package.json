@@ -28,6 +28,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.2.0",
+    "ioredis": "^6.0.0",
     "jsonwebtoken": "^9.0.2",
     "mqtt": "^5.7.0",
     "pino": "^10.3.1",
