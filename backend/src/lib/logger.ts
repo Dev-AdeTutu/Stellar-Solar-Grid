@@ -1,5 +1,6 @@
 import winston from "winston";
 import { getReqId } from "./requestContext.js";
+import { sanitizeForLogging } from "./errorSanitizer.js";
 
 const isProduction = process.env.NODE_ENV === "production";
 
@@ -23,16 +24,22 @@ const winstonLogger = winston.createLogger({
 type Meta = Record<string, unknown>;
 
 /**
- * Merge the current request's correlation ID (if any) into log meta.
- * This ensures every log line within an async request context automatically
- * carries { requestId } without callers having to thread it through.
+ * Merge the current request's correlation ID (if any) into log meta, and
+ * strip anything sensitive out of it first.
+ *
+ * Closes #748: callers across the codebase routinely pass a raw Error (or
+ * an object containing one, a request payload, an MQTT message, etc.) as
+ * `meta`. Sanitizing centrally here — rather than at each of the ~50
+ * call sites — means every logger.* call is protected, including ones
+ * added in the future.
  */
 function withRequestId(meta: Meta): Meta {
   const requestId = getReqId();
+  const safeMeta = sanitizeForLogging(meta) as Meta;
   if (requestId) {
-    return { requestId, ...meta };
+    return { requestId, ...safeMeta };
   }
-  return meta;
+  return safeMeta;
 }
 
 // Pino-style: logger.info({ meta }, "msg") or logger.info("msg")

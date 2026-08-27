@@ -18,6 +18,7 @@ import {
   validateRequest,
   RegisterMeterSchema,
   BatchRegisterMetersSchema,
+  BulkMeterStatusSchema,
   MeterNoteSchema,
 } from "../lib/validation.js";
 import { logger } from "../lib/logger.js";
@@ -592,6 +593,69 @@ export function createMeterRouter(stellar: StellarService) {
         errors: Object.keys(errors).length > 0 ? errors : undefined,
         count: balances.length,
         requested: ids.length,
+      });
+    }),
+  );
+
+  /**
+   * POST /api/meters/bulk — batch status query for multiple meters
+   *
+   * A dashboard with 50+ meters was making one GET /api/meters/:id/status
+   * call per meter on load, causing slow page loads and rate-limit hits.
+   * Body-based (rather than a comma-separated query string, as /balances
+   * uses) so callers aren't bound by URL length limits. Capped at 100
+   * meter_ids per request. Reuses the same per-meter balance cache as
+   * /balances and /:id/balance.
+   *
+   * Closes #750.
+   */
+  meterRouter.post(
+    "/bulk",
+    validateRequest({ body: BulkMeterStatusSchema }),
+    asyncHandler(async (req, res) => {
+      const { meter_ids } = req.body as { meter_ids: string[] };
+      const uniqueIds = [...new Set(meter_ids)];
+
+      const meters: Array<{ id: string; balance: unknown; active: unknown }> = [];
+      const errors: Record<string, string> = {};
+
+      await Promise.all(
+        uniqueIds.map(async (meterId) => {
+          try {
+            const cached = balanceCache.get(meterId);
+            if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL_MS) {
+              meters.push({ id: meterId, balance: cached.data.balance, active: cached.data.active });
+              return;
+            }
+
+            const result = await stellar.query("get_meter", [
+              StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+            ]);
+            const meter = StellarSdk.scValToNative(result) as any;
+            if (!meter) {
+              errors[meterId] = "Meter not found";
+              return;
+            }
+
+            const payload = {
+              meter_id: meterId,
+              balance: meter.balance,
+              units_used: meter.units_used,
+              active: meter.active,
+            };
+            balanceCache.set(meterId, { data: payload, ts: Date.now() });
+            meters.push({ id: meterId, balance: meter.balance, active: meter.active });
+          } catch (err: any) {
+            errors[meterId] = err.message ?? "Meter not found";
+          }
+        }),
+      );
+
+      res.json({
+        meters,
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        count: meters.length,
+        requested: uniqueIds.length,
       });
     }),
   );
