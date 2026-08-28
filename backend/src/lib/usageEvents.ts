@@ -6,6 +6,7 @@ import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
 import { deadLetterEvents, usageEvents } from "./metrics.js";
 import { registerDatabase } from "./databaseLifecycle.js";
+import { getUTCTimestampDaysAgo } from "./dateUtils.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -297,7 +298,10 @@ export type TopConsumer = {
 
 /** Top consumers by total units used over the last `days` days. */
 export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const sinceTimestamp = getUTCTimestampDaysAgo(days);
+  const since = new Date(sinceTimestamp).toISOString();
+  
   const rows = db
     .prepare(
       `
@@ -449,7 +453,10 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
 
 /** Purge submitted events older than N days. Returns deleted row count. */
 export function purgeSubmittedUsageEvents(olderThanDays: number): number {
-  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const cutoffTimestamp = getUTCTimestampDaysAgo(olderThanDays);
+  const cutoff = new Date(cutoffTimestamp).toISOString();
+  
   const result = db
     .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
     .run(cutoff);
