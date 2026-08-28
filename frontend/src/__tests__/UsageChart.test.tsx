@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import UsageChart, {
   UsageDataPoint,
   formatTickLocal,
@@ -77,6 +77,26 @@ describe("UsageChart", () => {
   it("shows meter header without meterId", () => {
     render(<UsageChart data={SAMPLE_DATA} />);
     expect(screen.getByText("Energy Usage")).toBeInTheDocument();
+  });
+
+  it("enables comparison controls and reports the difference from the previous period", () => {
+    const data: UsageDataPoint[] = [
+      { date: "2024-01-01", units: 1 },
+      { date: "2024-01-02", units: 1 },
+      { date: "2024-01-03", units: 1 },
+      { date: "2024-01-08", units: 2 },
+      { date: "2024-01-09", units: 2 },
+      { date: "2024-01-10", units: 2 },
+    ];
+    render(<UsageChart data={data} />);
+
+    fireEvent.click(screen.getByLabelText("Compare with previous period"));
+    expect(screen.getByLabelText("Compare by")).toBeInTheDocument();
+    expect(screen.getByText("+100.0% vs previous")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Compare by"), { target: { value: "custom" } });
+    expect(screen.getByLabelText("From")).toBeInTheDocument();
+    expect(screen.getByLabelText("To")).toBeInTheDocument();
   });
 
   // ── Timezone formatting (issue: x-axis showed raw UTC, no tz indicator) ────
