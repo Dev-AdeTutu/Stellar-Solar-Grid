@@ -118,6 +118,45 @@ describe("meter notes", () => {
       expect(page.notes[0].meter_id).toBe(injectedId);
       expect(getAllMeterNotes("meter-2", 1, 5).total).toBe(1);
     });
+
+    it("sanitizes HTML/JS before storage and returns encoded text (Issue #738)", () => {
+      const injection =
+        "<script>alert('XSS')</script><img src=x onerror=alert(document.cookie)>";
+      const note = addMeterNote("meter1", injection);
+
+      // Stored + returned text must never contain raw markup.
+      expect(note.text).not.toContain("<script>");
+      expect(note.text).not.toContain("<img");
+      expect(note.text).toContain("&lt;script&gt;");
+
+      const latest = getLatestMeterNotes("meter1", 5);
+      expect(latest[0].text).toBe(note.text);
+
+      const page = getAllMeterNotes("meter1", 1, 5);
+      expect(page.notes[0].text).toBe(note.text);
+    });
+
+    it("encodes each HTML-significant character and round-trips on read", () => {
+      const raw = `a & b < c > d "e" 'f'`;
+      const note = addMeterNote("meter1", raw);
+
+      expect(note.text).toBe("a &amp; b &lt; c &gt; d &quot;e&quot; &#39;f&#39;");
+
+      // Read-time sanitization is a stable round-trip (no double-encoding).
+      const latest = getLatestMeterNotes("meter1", 5);
+      expect(latest[0].text).toBe(note.text);
+    });
+
+    it("re-sanitizes legacy raw rows that predate the fix on read (Issue #738)", () => {
+      db.prepare(
+        `INSERT INTO meter_notes (meter_id, author_ip, text, created_at) VALUES (?, ?, ?, ?)`,
+      ).run("meterLegacy", null, "<script>legacy()</script>", new Date().toISOString());
+
+      const latest = getLatestMeterNotes("meterLegacy", 5);
+      expect(latest).toHaveLength(1);
+      expect(latest[0].text).not.toContain("<script>");
+      expect(latest[0].text).toContain("&lt;script&gt;");
+    });
   });
 
   describe("POST /api/meters/:id/note", () => {

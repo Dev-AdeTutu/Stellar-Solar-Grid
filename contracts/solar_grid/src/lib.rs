@@ -58,6 +58,15 @@ const DEFAULT_GRACE_PERIOD: u64 = 7200; // 2 hours (in seconds)
 const GRACE_PERIOD: Symbol = symbol_short!("GRACE_P");
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
+/// Issue #737 — how many days of per-meter usage history the contract retains.
+/// Older daily aggregates are pruned automatically during usage updates and
+/// are archived off-chain via the `usage_updated` events emitted for each
+/// meter update (event-sourcing), so on-chain storage stays bounded.
+const USAGE_RETENTION_DAYS: u32 = 90;
+/// Cap on how many expired daily aggregates are deleted per transaction, so a
+/// long-dormant meter can never cause an unbounded amount of cleanup work in a
+/// single call. Leftovers are removed on subsequent updates.
+const USAGE_PRUNE_CHUNK: u32 = 30;
 /// Max length (bytes) of the optional memo accepted by `make_payment` (Issue #766).
 const MAX_MEMO_LEN: u32 = 100;
 /// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
@@ -232,6 +241,11 @@ pub enum DataKey {
     PayerPaid(String, Address),
     /// Cumulative amount already refunded to `payer` for `meter_id`.
     PayerRefunded(String, Address),
+    /// Aggregated usage summary for `meter_id` on Unix day index `u64`
+    /// (Issue #737). At most USAGE_RETENTION_DAYS of these exist per meter.
+    UsageSummary(String, u64),
+    /// Bounded-history window bookkeeping for `meter_id` (Issue #737).
+    UsageSummaryMeta(String),
 }
 
 /// Tracks admin-issued refunds within the current rolling window, used to cap
@@ -241,6 +255,38 @@ pub enum DataKey {
 pub struct RefundWindow {
     pub window_start: u64,
     pub window_spent: i128,
+}
+
+/// Per-meter, per-day aggregate of usage updates (Issue #737).
+///
+/// Instead of storing every usage update forever, the contract keeps at most
+/// `USAGE_RETENTION_DAYS` daily aggregates per meter — a bounded working set
+/// the frontend and integrations can query. Raw historical data is archived
+/// off-chain from the `usage_updated` events the contract already emits.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageDaySummary {
+    /// Unix day index (seconds divided by 86400); wall-clock day start is
+    /// `day * SECONDS_PER_DAY`.
+    pub day: u64,
+    /// Total milli-kWh consumed that day.
+    pub units: u64,
+    /// Total stroops deducted that day.
+    pub cost: i128,
+    /// Number of usage updates folded into this aggregate.
+    pub event_count: u64,
+}
+
+/// Bookkeeping for a meter's bounded usage-history window (Issue #737).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageSummaryMeta {
+    /// Oldest day index still retained (auto-advanced as entries expire).
+    pub oldest_day: u64,
+    /// Latest day index that has a stored aggregate.
+    pub latest_day: u64,
+    /// Number of days retained in storage.
+    pub retention_days: u32,
 }
 
 /// Combined view returned by get_meter_full — meter state plus its balance
@@ -1741,6 +1787,106 @@ impl SolarGridContract {
         Ok(failed)
     }
 
+    /// Public read of a meter's daily usage aggregates (Issue #737).
+    ///
+    /// Returns at most `days` summaries (capped at the configured 90-day
+    /// retention) newest-first, including only days that have recorded usage.
+    /// Older data is archived off-chain from `usage_updated` events and is no
+    /// longer stored on-chain.
+    pub fn get_usage_history(
+        env: Env,
+        meter_id: String,
+        days: u32,
+    ) -> Result<Vec<UsageDaySummary>, ContractError> {
+        let meter_key = DataKey::Meter(meter_id.clone());
+        Self::get_meter_or_error(&env, &meter_key)?;
+
+        let meta_key = DataKey::UsageSummaryMeta(meter_id.clone());
+        let meta: Option<UsageSummaryMeta> = env.storage().persistent().get(&meta_key);
+        let Some(meta) = meta else {
+            return Ok(vec![&env]);
+        };
+
+        let requested: u64 = days.min(meta.retention_days).into();
+        let mut result: Vec<UsageDaySummary> = vec![&env];
+        let mut remaining = requested;
+        let mut day = meta.latest_day;
+
+        while remaining > 0 {
+            let summary_key = DataKey::UsageSummary(meter_id.clone(), day);
+            if let Some(summary) =
+                env.storage().persistent().get::<DataKey, UsageDaySummary>(&summary_key)
+            {
+                result.push_back(summary);
+            }
+            if day == 0 {
+                break;
+            }
+            day = day.saturating_sub(1);
+            remaining = remaining.saturating_sub(1);
+        }
+
+        Ok(result)
+    }
+
+    /// Manually delete a meter's stored usage aggregates that are older than
+    /// `older_than_days` (Issue #737). Admin-only. Returns the number of
+    /// aggregates removed. Passing `0` purges every stored aggregate while
+    /// keeping the meter itself intact.
+    ///
+    /// This is a maintenance escape hatch — normal retention is enforced
+    /// automatically during usage updates.
+    pub fn prune_usage_history(
+        env: Env,
+        meter_id: String,
+        older_than_days: u32,
+    ) -> Result<u64, ContractError> {
+        Self::require_admin(&env)?;
+        let meter_key = DataKey::Meter(meter_id.clone());
+        Self::get_meter_or_error(&env, &meter_key)?;
+
+        let meta_key = DataKey::UsageSummaryMeta(meter_id.clone());
+        let Some(mut meta): Option<UsageSummaryMeta> =
+            env.storage().persistent().get(&meta_key)
+        else {
+            return Ok(0);
+        };
+
+        let now = env.ledger().timestamp();
+        // Every day index strictly below the cutoff is expired. `0` clears
+        // the whole window (cutoff above latest_day).
+        let cutoff_day = if older_than_days == 0 {
+            meta.latest_day.saturating_add(1)
+        } else {
+            let cutoff_ts = now.saturating_sub((older_than_days as u64).saturating_mul(SECONDS_PER_DAY));
+            cutoff_ts / SECONDS_PER_DAY
+        };
+
+        let upper = cutoff_day.min(meta.latest_day);
+        let mut removed: u64 = 0;
+        let mut day = meta.oldest_day;
+
+        loop {
+            if day > upper {
+                break;
+            }
+            let summary_key = DataKey::UsageSummary(meter_id.clone(), day);
+            if env.storage().persistent().has(&summary_key) {
+                env.storage().persistent().remove(&summary_key);
+                removed = removed.saturating_add(1);
+            }
+            if day == meta.latest_day {
+                break;
+            }
+            day = day.saturating_add(1);
+        }
+
+        meta.oldest_day = meta.oldest_day.max(day.min(meta.latest_day));
+        env.storage().persistent().set(&meta_key, &meta);
+
+        Ok(removed)
+    }
+
     fn apply_usage(
         env: &Env,
         meter_id: &String,
@@ -1800,7 +1946,86 @@ impl SolarGridContract {
             meter.grace_expires_at = None;
             deactivated = false;
         }
+
+        // Issue #737 — fold the successful update into the meter's daily
+        // aggregate, then expire aggregates older than the retention window.
+        Self::record_usage_summary(env, meter_id, units, cost, now);
+        Self::prune_usage_summaries(env, meter_id, now, USAGE_PRUNE_CHUNK);
+
         Ok(deactivated)
+    }
+
+    /// Aggregate a successful usage update into the meter's daily summary,
+    /// creating the day entry and meta window on first use (Issue #737).
+    fn record_usage_summary(env: &Env, meter_id: &String, units: u64, cost: i128, now: u64) {
+        let day = now / SECONDS_PER_DAY;
+        let summary_key = DataKey::UsageSummary(meter_id.clone(), day);
+
+        let summary = match env
+            .storage()
+            .persistent()
+            .get::<DataKey, UsageDaySummary>(&summary_key)
+        {
+            Some(mut existing) => {
+                existing.units = existing.units.saturating_add(units);
+                existing.cost = existing.cost.saturating_add(cost);
+                existing.event_count = existing.event_count.saturating_add(1);
+                existing
+            }
+            None => UsageDaySummary {
+                day,
+                units,
+                cost,
+                event_count: 1,
+            },
+        };
+        env.storage().persistent().set(&summary_key, &summary);
+
+        let meta_key = DataKey::UsageSummaryMeta(meter_id.clone());
+        let mut meta: UsageSummaryMeta = env
+            .storage()
+            .persistent()
+            .get(&meta_key)
+            .unwrap_or(UsageSummaryMeta {
+                oldest_day: day,
+                latest_day: day,
+                retention_days: USAGE_RETENTION_DAYS,
+            });
+        if day > meta.latest_day {
+            meta.latest_day = day;
+        }
+        if day < meta.oldest_day {
+            meta.oldest_day = day;
+        }
+        env.storage().persistent().set(&meta_key, &meta);
+    }
+
+    /// Delete expired daily aggregates for a meter. Runs at most `limit`
+    /// deletions per call so even a long-dormant meter cannot blow the ledger
+    /// fee budget on catch-up cleanup (Issue #737).
+    fn prune_usage_summaries(env: &Env, meter_id: &String, now: u64, limit: u32) -> u64 {
+        let meta_key = DataKey::UsageSummaryMeta(meter_id.clone());
+        let Some(mut meta): Option<UsageSummaryMeta> = env.storage().persistent().get(&meta_key)
+        else {
+            return 0;
+        };
+
+        let cutoff_ts = now.saturating_sub((meta.retention_days as u64).saturating_mul(SECONDS_PER_DAY));
+        let cutoff_day = cutoff_ts / SECONDS_PER_DAY;
+
+        let mut removed: u64 = 0;
+        let mut budget = limit;
+        while meta.oldest_day < cutoff_day && budget > 0 {
+            let summary_key = DataKey::UsageSummary(meter_id.clone(), meta.oldest_day);
+            if env.storage().persistent().has(&summary_key) {
+                env.storage().persistent().remove(&summary_key);
+                removed = removed.saturating_add(1);
+            }
+            meta.oldest_day = meta.oldest_day.saturating_add(1);
+            budget = budget.saturating_sub(1);
+        }
+        env.storage().persistent().set(&meta_key, &meta);
+        removed
     }
 
     /// Set the daily spending limit for a meter. Admin-only.
@@ -4164,5 +4389,94 @@ mod tests {
         // At exactly 24 hours elapsed (1741482000), access expires
         env.ledger().with_mut(|li| li.timestamp = dst_start_ts + SECONDS_PER_DAY);
         assert!(!client.check_access(&meter_id));
+    }
+
+    // ── Issue #737: bounded daily usage history ───────────────────────────────
+
+    #[test]
+    fn test_get_usage_history_aggregates_same_day_updates_newest_first() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_HIST1");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::Daily, &None);
+
+        let day0 = env.ledger().timestamp() / SECONDS_PER_DAY;
+
+        // Three successful updates on the same day fold into ONE aggregate.
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        client.update_usage(&meter_id, &150_u64, &1_500_i128);
+        client.update_usage(&meter_id, &50_u64, &500_i128);
+
+        let history = client.get_usage_history(&meter_id, &365_u32);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.get_unchecked(0).day, day0);
+        assert_eq!(history.get_unchecked(0).units, 300_u64);
+        assert_eq!(history.get_unchecked(0).cost, 3_000_i128);
+        assert_eq!(history.get_unchecked(0).event_count, 3_u64);
+    }
+
+    #[test]
+    fn test_usage_history_prunes_beyond_90_days_on_later_updates() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_HIST2");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::Daily, &None);
+
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        assert_eq!(client.get_usage_history(&meter_id, &365_u32).len(), 1);
+
+        // Jump 95 days (> 90-day retention) and record a new day.
+        env.ledger().with_mut(|li| li.timestamp += 95 * SECONDS_PER_DAY);
+        client.update_usage(&meter_id, &200_u64, &2_000_i128);
+
+        let history = client.get_usage_history(&meter_id, &365_u32);
+        // The original day was pruned automatically; only the new day remains.
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.get_unchecked(0).units, 200_u64);
+
+        // get_usage_history is capped by retention even if more is requested.
+        assert_eq!(client.get_usage_history(&meter_id, &10_000_u32).len(), 1);
+    }
+
+    #[test]
+    fn test_admin_can_prune_usage_history_entirely() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_HIST3");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::Daily, &None);
+
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        assert_eq!(client.get_usage_history(&meter_id, &365_u32).len(), 1);
+
+        // older_than_days = 0 purges the whole history but keeps the meter.
+        let removed = client.prune_usage_history(&meter_id, &0_u32);
+        assert_eq!(removed, 1_u64);
+        assert_eq!(client.get_usage_history(&meter_id, &365_u32).len(), 0);
+        assert!(client.get_meter(&meter_id).active);
+    }
+
+    #[test]
+    fn test_get_usage_history_for_unknown_meter_returns_error() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "DOES_NOT_EXIST");
+        assert_eq!(
+            client.try_get_usage_history(&meter_id, &7_u32),
+            Err(Ok(ContractError::MeterNotFound))
+        );
     }
 }

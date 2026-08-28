@@ -1,11 +1,10 @@
-import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
-import { deadLetterEvents, usageEvents } from "./metrics.js";
+import { deadLetterEvents, sqlitePool, usageEvents } from "./metrics.js";
 import { registerDatabase } from "./databaseLifecycle.js";
+import { createSqlitePool, type SqliteConnection } from "./sqlitePool.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -40,52 +39,75 @@ type CreateUsageEventInput = {
   sourceTopic?: string | null;
 };
 
-// Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
-// such that the instance type loses its namespace-declared methods at this call site.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = openDatabase() as any;
+// Issue #735: all operations run against a bounded pool of reuseable SQLite
+// connections instead of opening/closing a handle per operation or pinning a
+// single connection for the lifetime of the process.
+const eventsPool = createSqlitePool({
+  filename: DB_PATH,
+  onCreate(database) {
+    database.pragma("journal_mode = WAL");
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS kv (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS usage_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        meter_id TEXT NOT NULL,
+        units INTEGER NOT NULL,
+        cost TEXT NOT NULL,
+        received_at TEXT NOT NULL,
+        source_topic TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        last_attempt_at TEXT,
+        last_error TEXT,
+        on_chain_tx_hash TEXT,
+        submitted_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_usage_events_meter_received_at
+        ON usage_events (meter_id, received_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_usage_events_retry
+        ON usage_events (status, attempt_count, received_at ASC);
+
+      CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
+        ON usage_events (status, submitted_at);
+    `);
+  },
+});
+
+// Primary handle: schema lifecycle, KV access, legacy raw-connection callers.
+const db = eventsPool.primary();
 registerDatabase("usage-events", () => {
-  if (db.open) db.close();
+  if (retryTimer) {
+    clearInterval(retryTimer);
+    retryTimer = undefined;
+  }
+  eventsPool.drain();
 });
 let retryTimer: NodeJS.Timeout | undefined;
 let retryInFlight = false;
 const activeSubmissionIds = new Set<number>();
 
-function openDatabase() {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const database = new Database(DB_PATH);
-  database.pragma("journal_mode = WAL");
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS kv (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
+/** Run a synchronous unit of work against a pooled SQLite connection. */
+function withConnection<T>(fn: (database: SqliteConnection) => T): T {
+  const connection = eventsPool.acquire();
+  try {
+    return fn(connection);
+  } finally {
+    eventsPool.release(connection);
+    updatePoolMetrics();
+  }
+}
 
-    CREATE TABLE IF NOT EXISTS usage_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      meter_id TEXT NOT NULL,
-      units INTEGER NOT NULL,
-      cost TEXT NOT NULL,
-      received_at TEXT NOT NULL,
-      source_topic TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      attempt_count INTEGER NOT NULL DEFAULT 0,
-      last_attempt_at TEXT,
-      last_error TEXT,
-      on_chain_tx_hash TEXT,
-      submitted_at TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_usage_events_meter_received_at
-      ON usage_events (meter_id, received_at DESC);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_events_retry
-      ON usage_events (status, attempt_count, received_at ASC);
-
-    CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
-      ON usage_events (status, submitted_at);
-  `);
-  return database;
+function updatePoolMetrics(): void {
+  const stats = eventsPool.getStats();
+  sqlitePool.set({ database: "usage-events", dimension: "size" }, stats.size);
+  sqlitePool.set({ database: "usage-events", dimension: "active" }, stats.active);
+  sqlitePool.set({ database: "usage-events", dimension: "idle" }, stats.idle);
 }
 
 export function initUsageEventStore() {
@@ -98,38 +120,46 @@ export function closeUsageEventStore(): void {
     clearInterval(retryTimer);
     retryTimer = undefined;
   }
-  if (db.open) db.close();
+  eventsPool.drain();
+  updatePoolMetrics();
 }
 
 export function getKV(key: string): string | null {
-  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
+  const row = withConnection((connection) =>
+    connection.prepare('SELECT value FROM kv WHERE key = ?').get(key),
+  ) as { value: string } | undefined;
   return row?.value ?? null;
 }
 
 export function setKV(key: string, value: string) {
-  db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
+  withConnection((connection) =>
+    connection.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value),
+  );
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
   const receivedAt = new Date().toISOString();
-  const statement = db.prepare(`
-    INSERT INTO usage_events (
-      meter_id,
-      units,
-      cost,
-      received_at,
-      source_topic,
-      status,
-      attempt_count
-    ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
-  `);
 
-  const result = statement.run(
-    input.meterId,
-    input.units,
-    String(input.cost),
-    receivedAt,
-    input.sourceTopic ?? null
+  const result = withConnection((connection) =>
+    connection
+      .prepare(`
+        INSERT INTO usage_events (
+          meter_id,
+          units,
+          cost,
+          received_at,
+          source_topic,
+          status,
+          attempt_count
+        ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
+      `)
+      .run(
+        input.meterId,
+        input.units,
+        String(input.cost),
+        receivedAt,
+        input.sourceTopic ?? null,
+      ),
   );
 
   usageEvents.inc({ status: "pending" });
@@ -150,16 +180,20 @@ export function getUsageHistory(
 } {
   const offset = (page - 1) * pageSize;
 
-  const events = db
-    .prepare(
-      "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
-      "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
-    )
-    .all(meterId, pageSize, offset) as UsageEventRecord[];
+  const { events, count } = withConnection((connection) => {
+    const rows = connection
+      .prepare(
+        "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
+        "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
+      )
+      .all(meterId, pageSize, offset) as UsageEventRecord[];
 
-  const { count } = db
-    .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
-    .get(meterId) as { count: number };
+    const { count: total } = connection
+      .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
+      .get(meterId) as { count: number };
+
+    return { events: rows, count: total };
+  });
 
   return {
     events,
@@ -171,16 +205,18 @@ export function getUsageHistory(
 }
 
 export function getTypicalWeeklyUsageStroops(meterId: string): number {
-  const row = db
-    .prepare(
-      `
-        SELECT COALESCE(SUM(CAST(cost AS INTEGER)), 0) as weekly_cost
-        FROM usage_events
-        WHERE meter_id = ?
-          AND received_at >= datetime('now', '-7 days')
-      `,
-    )
-    .get(meterId) as { weekly_cost: number | null };
+  const row = withConnection((connection) =>
+    connection
+      .prepare(
+        `
+          SELECT COALESCE(SUM(CAST(cost AS INTEGER)), 0) as weekly_cost
+          FROM usage_events
+          WHERE meter_id = ?
+            AND received_at >= datetime('now', '-7 days')
+        `,
+      )
+      .get(meterId),
+  ) as { weekly_cost: number | null };
 
   return Number(row?.weekly_cost ?? 0);
 }
@@ -205,40 +241,43 @@ export function insertSubmittedUsageEvents(
   txHash: string,
 ) {
   const now = new Date().toISOString();
-  const stmt = db.prepare(
-    `
-      INSERT INTO usage_events (
-        meter_id,
-        units,
-        cost,
-        received_at,
-        source_topic,
-        status,
-        attempt_count,
-        last_attempt_at,
-        on_chain_tx_hash,
-        submitted_at
-      ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
-    `,
-  );
 
-  const insert = db.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
-    for (const r of rows) {
-      stmt.run(
-        r.meterId,
-        r.units,
-        String(r.cost),
-        now,
-        r.sourceTopic ?? null,
-        now,
-        txHash,
-        now,
-      );
-      usageEvents.inc({ status: "submitted" });
-    }
+  withConnection((connection) => {
+    const stmt = connection.prepare(
+      `
+        INSERT INTO usage_events (
+          meter_id,
+          units,
+          cost,
+          received_at,
+          source_topic,
+          status,
+          attempt_count,
+          last_attempt_at,
+          on_chain_tx_hash,
+          submitted_at
+        ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
+      `,
+    );
+
+    const insert = connection.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
+      for (const r of rows) {
+        stmt.run(
+          r.meterId,
+          r.units,
+          String(r.cost),
+          now,
+          r.sourceTopic ?? null,
+          now,
+          txHash,
+          now,
+        );
+        usageEvents.inc({ status: "submitted" });
+      }
+    });
+
+    insert(readings);
   });
-
-  insert(readings);
 }
 
 export function startUsageEventRetryWorker() {
@@ -268,18 +307,20 @@ export async function retryQueuedUsageEvents() {
 
   retryInFlight = true;
   try {
-    const queued = db
-      .prepare(
-        `
-          SELECT id
-          FROM usage_events
-          WHERE status IN ('pending', 'failed')
-            AND attempt_count < ?
-          ORDER BY received_at ASC, id ASC
-          LIMIT 25
-        `
-      )
-      .all(MAX_RETRIES) as Array<{ id: number }>;
+    const queued = withConnection((connection) =>
+      connection
+        .prepare(
+          `
+            SELECT id
+            FROM usage_events
+            WHERE status IN ('pending', 'failed')
+              AND attempt_count < ?
+            ORDER BY received_at ASC, id ASC
+            LIMIT 25
+          `
+        )
+        .all(MAX_RETRIES),
+    ) as Array<{ id: number }>;
 
     for (const { id } of queued) {
       await submitUsageEvent(id);
@@ -298,18 +339,20 @@ export type TopConsumer = {
 /** Top consumers by total units used over the last `days` days. */
 export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
   const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const rows = db
-    .prepare(
-      `
-        SELECT meter_id AS meterId, SUM(units) AS totalUnits
-        FROM usage_events
-        WHERE received_at >= ?
-        GROUP BY meter_id
-        ORDER BY totalUnits DESC
-        LIMIT ?
-      `
-    )
-    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
+  const rows = withConnection((connection) =>
+    connection
+      .prepare(
+        `
+          SELECT meter_id AS meterId, SUM(units) AS totalUnits
+          FROM usage_events
+          WHERE received_at >= ?
+          GROUP BY meter_id
+          ORDER BY totalUnits DESC
+          LIMIT ?
+        `
+      )
+      .all(since, limit),
+  ) as Array<{ meterId: string; totalUnits: number }>;
 
   return rows.map((row, index) => ({
     meterId: row.meterId,
@@ -319,9 +362,9 @@ export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
 }
 
 function getUsageEventById(id: number): UsageEventRecord | undefined {
-  return db
-    .prepare("SELECT * FROM usage_events WHERE id = ?")
-    .get(id) as UsageEventRecord | undefined;
+  return withConnection((connection) =>
+    connection.prepare("SELECT * FROM usage_events WHERE id = ?").get(id),
+  ) as UsageEventRecord | undefined;
 }
 
 async function submitUsageEvent(id: number) {
@@ -344,18 +387,22 @@ async function submitUsageEvent(id: number) {
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = 'submitted',
-            attempt_count = attempt_count + 1,
-            last_attempt_at = ?,
-            last_error = NULL,
-            on_chain_tx_hash = ?,
-            submitted_at = ?
-        WHERE id = ?
-      `
-    ).run(attemptedAt, hash, attemptedAt, id);
+    withConnection((connection) =>
+      connection
+        .prepare(
+          `
+            UPDATE usage_events
+            SET status = 'submitted',
+                attempt_count = attempt_count + 1,
+                last_attempt_at = ?,
+                last_error = NULL,
+                on_chain_tx_hash = ?,
+                submitted_at = ?
+            WHERE id = ?
+          `
+        )
+        .run(attemptedAt, hash, attemptedAt, id),
+    );
 
     usageEvents.inc({ status: "submitted" });
 
@@ -375,22 +422,26 @@ async function submitUsageEvent(id: number) {
       deadLetterEvents.inc({ meter_id: event.meter_id });
     }
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = ?,
-            attempt_count = ?,
-            last_attempt_at = ?,
-            last_error = ?,
-            on_chain_tx_hash = NULL
-        WHERE id = ?
-      `
-    ).run(
-      finalStatus,
-      nextAttemptCount,
-      attemptedAt,
-      error instanceof Error ? error.message : String(error),
-      id
+    withConnection((connection) =>
+      connection
+        .prepare(
+          `
+            UPDATE usage_events
+            SET status = ?,
+                attempt_count = ?,
+                last_attempt_at = ?,
+                last_error = ?,
+                on_chain_tx_hash = NULL
+            WHERE id = ?
+          `
+        )
+        .run(
+          finalStatus,
+          nextAttemptCount,
+          attemptedAt,
+          error instanceof Error ? error.message : String(error),
+          id,
+        ),
     );
 
     usageEvents.inc({ status: finalStatus });
@@ -409,18 +460,22 @@ export function getDeadLetterEvents(
   limit = 50,
   offset = 0,
 ): { events: UsageEventRecord[]; total: number } {
-  const events = db
-    .prepare(
-      `SELECT * FROM usage_events
-       WHERE status = 'failed'
-       ORDER BY last_attempt_at DESC, id DESC
-       LIMIT ? OFFSET ?`,
-    )
-    .all(limit, offset) as UsageEventRecord[];
+  const { events, count } = withConnection((connection) => {
+    const rows = connection
+      .prepare(
+        `SELECT * FROM usage_events
+         WHERE status = 'failed'
+         ORDER BY last_attempt_at DESC, id DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .all(limit, offset) as UsageEventRecord[];
 
-  const { count } = db
-    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
-    .get() as { count: number };
+    const { count: total } = connection
+      .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
+      .get() as { count: number };
+
+    return { events: rows, count: total };
+  });
 
   return { events, total: count };
 }
@@ -434,14 +489,18 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
   const event = getUsageEventById(id);
   if (!event || event.status !== 'failed') return undefined;
 
-  db.prepare(
-    `UPDATE usage_events
-     SET status = 'pending',
-         attempt_count = 0,
-         last_error = NULL,
-         last_attempt_at = NULL
-     WHERE id = ?`,
-  ).run(id);
+  withConnection((connection) =>
+    connection
+      .prepare(
+        `UPDATE usage_events
+         SET status = 'pending',
+             attempt_count = 0,
+             last_error = NULL,
+             last_attempt_at = NULL
+         WHERE id = ?`,
+      )
+      .run(id),
+  );
 
   logger.info({ eventId: id, meterId: event.meter_id }, 'Dead-lettered event requeued for retry');
   return getUsageEventById(id);
@@ -450,9 +509,11 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
 /** Purge submitted events older than N days. Returns deleted row count. */
 export function purgeSubmittedUsageEvents(olderThanDays: number): number {
   const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
-  const result = db
-    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
-    .run(cutoff);
+  const result = withConnection((connection) =>
+    connection
+      .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+      .run(cutoff),
+  );
   return result.changes;
 }
 
@@ -471,8 +532,10 @@ export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined
 
 /** Count of events currently in dead-letter state (used by /health). */
 export function countDeadLetterEvents(): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
-    .get() as { count: number };
+  const row = withConnection((connection) =>
+    connection
+      .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
+      .get(),
+  ) as { count: number };
   return row.count;
 }

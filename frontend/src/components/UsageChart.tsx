@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -8,6 +8,7 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  type TooltipProps,
 } from "recharts";
 import styles from "./UsageChart.module.css";
 
@@ -106,31 +107,17 @@ function ChartSkeleton() {
   );
 }
 
-interface TooltipPayload {
-  name: string;
-  value: number | null;
-  color: string;
-}
-
-function CustomTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: TooltipPayload[];
-  label?: string;
-}) {
+function CustomTooltip({ active, payload, label }: TooltipProps<string | number, string | number>) {
   if (!active || !payload?.length) return null;
   return (
     <div className="rounded-xl border border-white/10 bg-[#1a1f2e] px-4 py-3 text-sm shadow-xl">
       <p className="mb-2 font-semibold text-solar-yellow">{label}</p>
       {payload.map((point) => (
-        <p key={point.name} style={{ color: point.color }} className="flex gap-2">
+        <p key={String(point.name)} style={{ color: point.color }} className="flex gap-2">
           <span className="text-gray-400">{point.name}:</span>
           <span className="font-medium">
-            {point.value == null ? "—" : point.value}
-            {point.name.toLowerCase().includes("usage") ? " kWh" : " XLM"}
+            {point.value == null ? "—" : String(point.value)}
+            {String(point.name).toLowerCase().includes("usage") ? " kWh" : " XLM"}
           </span>
         </p>
       ))}
@@ -214,6 +201,48 @@ function periodLabel(period: ComparisonPeriod): string {
   return period === "week" ? "7-day" : period === "month" ? "30-day" : "custom-range";
 }
 
+interface UsageChartCanvasProps {
+  data: UsageDataPoint[] | ComparisonDataPoint[];
+  compareEnabled: boolean;
+  hasCostLine: boolean;
+}
+
+/**
+ * The heavy recharts subtree, memoized by reference (Issue #736).
+ *
+ * The dashboard polls (balance/reset timers) re-render the whole page every
+ * second. Before this change each re-render rebuilt every chart layer from
+ * scratch — new Line/axis/tooltip elements, fresh animation state and
+ * listeners each tick — which recharts accumulates until the tab is closed.
+ * Because `chartData` is stable (memoized above) across those polls,
+ * `memo` lets this subtree skip the work entirely and never drop/re-attach
+ * chart internals when nothing actually changed.
+ */
+const UsageChartCanvas = memo(function UsageChartCanvas({
+  data,
+  compareEnabled,
+  hasCostLine,
+}: UsageChartCanvasProps) {
+  return (
+    <ResponsiveContainer width="100%" height={192}>
+      <LineChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+        <XAxis dataKey="date" tickFormatter={formatTickLocal} tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+        {/* Pass the component type, not an element: a fresh <CustomTooltip />
+        element per render makes recharts treat the tooltip as a brand-new
+        node and remount it (and its listeners) on every poll. */}
+        <Tooltip content={CustomTooltip} labelFormatter={formatTooltipLocal} />
+        <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
+        <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#F5C518" }} connectNulls={false} />
+        {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: 4, fill: "#38bdf8" }} connectNulls={false} />}
+        {!compareEnabled && hasCostLine && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#818cf8" }} />}
+        {compareEnabled && hasCostLine && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+});
+
 export default function UsageChart({ data: rawData, loading = false, meterId }: UsageChartProps) {
   const data: UsageDataPoint[] = Array.isArray(rawData) ? rawData : [];
   const [compareEnabled, setCompareEnabled] = useState(false);
@@ -227,6 +256,11 @@ export default function UsageChart({ data: rawData, loading = false, meterId }: 
     [data, period, customStart, customEnd],
   );
   const chartData = compareEnabled ? comparisonData : data;
+  // Cheap booleans; combined with memoized chartData they keep the heavy
+  // canvas subtree referentially stable across dashboard polls.
+  const hasCostLine = compareEnabled
+    ? comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null)
+    : data.some((point) => point.cost !== undefined);
   const currentTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + point.units, 0) : data.reduce((sum, point) => sum + point.units, 0);
   const previousTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + (point.previousUnits ?? 0), 0) : 0;
   const differencePercent = previousTotal > 0 ? ((currentTotal - previousTotal) / previousTotal) * 100 : null;
@@ -294,19 +328,7 @@ export default function UsageChart({ data: rawData, loading = false, meterId }: 
             <p className="max-w-xs text-xs text-gray-600">Data will appear here after your first recorded unit.</p>
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={192}>
-            <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-              <XAxis dataKey="date" tickFormatter={formatTickLocal} tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<CustomTooltip />} labelFormatter={formatTooltipLocal} />
-              <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
-              <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#F5C518" }} connectNulls={false} />
-              {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: 4, fill: "#38bdf8" }} connectNulls={false} />}
-              {!compareEnabled && data.some((point) => point.cost !== undefined) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#818cf8" }} />}
-              {compareEnabled && comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}
-            </LineChart>
-          </ResponsiveContainer>
+          <UsageChartCanvas data={chartData} compareEnabled={compareEnabled} hasCostLine={hasCostLine} />
         )}
       </div>
     </div>

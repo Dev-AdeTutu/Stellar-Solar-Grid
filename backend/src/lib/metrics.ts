@@ -69,6 +69,18 @@ export const contractEventsProcessed = new Counter({
   labelNames: ["topic"] as const,
 });
 
+/**
+ * #735 — Live SQLite connection pool usage. `dimension` is one of
+ * `size` / `active` / `idle`; `database` identifies the pool
+ * (`usage-events`, `meter-notes`). Lets Grafana alert on pool exhaustion
+ * (active === size === max) before request latency degrades.
+ */
+export const sqlitePool = new Gauge({
+  name: "solargrid_sqlite_pool",
+  help: "SQLite connection pool usage by database and dimension (size/active/idle)",
+  labelNames: ["database", "dimension"] as const,
+});
+
 // ── Atomic Metric Increment Helpers ──────────────────────────────────────────
 // Use prom-client native atomic counter increments (counter.inc) to prevent
 // race conditions and lost increments under high concurrency (#706).
