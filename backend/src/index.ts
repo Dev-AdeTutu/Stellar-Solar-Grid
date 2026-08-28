@@ -28,6 +28,7 @@ import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { graphqlRouter } from "./routes/graphql.js";
+import { delegatesRouter } from "./routes/delegates.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -232,6 +233,7 @@ app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
+app.use("/api/delegates", writeLimiter, delegatesRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
