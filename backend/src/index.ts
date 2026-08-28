@@ -44,6 +44,7 @@ import {
 } from "./lib/usageEvents.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
+import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 
 // ── Rate-limit config ────────────────────────────────────────────────────────
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -101,18 +102,12 @@ app.use(
 app.use(compression({ threshold: 1024 }));
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
-  .split(",")
-  .map((o) => o.trim());
+const allowedOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (
-        !origin ||
-        allowedOrigins.includes("*") ||
-        allowedOrigins.includes(origin)
-      ) {
+      if (isCorsOriginAllowed(origin, allowedOrigins)) {
         cb(null, true);
       } else {
         cb(new Error(`Origin ${origin} not allowed by CORS`));
