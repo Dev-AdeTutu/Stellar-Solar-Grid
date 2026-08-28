@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
-import express from "express";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -11,6 +10,10 @@ import mqtt from "mqtt";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
+import { WebSocketServer } from "ws";
+import { useServer } from "graphql-ws/use/ws";
+import { schema, rootValue } from "./routes/graphql.js";
+import { parse } from "graphql";
 
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
@@ -118,6 +121,8 @@ app.use(
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
     optionsSuccessStatus: 204,
+    maxAge: 86400,
+    preflightContinue: false,
     credentials: true,
   }),
 );
@@ -354,8 +359,24 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 
+const graphqlWs = new WebSocketServer({ server: httpServer, path: "/api/graphql" });
+const graphqlCleanup = useServer({
+  schema,
+  context: ({ connectionParams }) => {
+    const params = (connectionParams ?? {}) as Record<string, unknown>;
+    return { address: typeof params.address === "string" ? params.address : undefined };
+  },
+  onSubscribe: async (_ctx, _id, msg) => {
+    const payload = msg as unknown as { query?: string; variables?: Record<string, unknown>; operationName?: string };
+    if (!payload.query) return [];
+    return { schema, document: parse(payload.query), rootValue, variableValues: payload.variables, operationName: payload.operationName };
+  },
+}, graphqlWs);
+
 function shutdown(signal: string): void {
   logger.info({ signal }, "SolarGrid backend shutting down");
+  void graphqlCleanup.dispose();
+  graphqlWs.close();
   httpServer.close(() => {
     closeAllDatabases();
   });

@@ -39,6 +39,11 @@ pub enum ContractError {
     NotPaused = 23,
     /// `make_payment`'s optional memo exceeds MAX_MEMO_LEN bytes.
     MemoTooLong = 24,
+    InvalidMultisigConfiguration = 25,
+    ProposalNotFound = 26,
+    ProposalExpired = 27,
+    ProposalAlreadyApproved = 28,
+    ProposalNotReady = 29,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -68,6 +73,9 @@ const PAUSED: Symbol = symbol_short!("PAUSED");
 const PAUSED_AT: Symbol = symbol_short!("PAUSE_AT");
 /// A pause automatically expires after 48 hours (Unix seconds).
 const MAX_PAUSE_DURATION: u64 = 48 * 60 * 60;
+const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
+const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
+const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -77,6 +85,26 @@ pub enum PaymentPlan {
     Daily,
     Weekly,
     UsageBased,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AdminOperation {
+    Pause,
+    Unpause,
+    EmergencyWithdraw(i128),
+    BulkDeactivate(Vec<String>),
+    RotateAdmin(Address),
+    SetGracePeriod(u64),
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminProposal {
+    pub operation: AdminOperation,
+    pub approvals: Vec<Address>,
+    pub threshold: u32,
+    pub expiry: u64,
 }
 
 /// Access status with grace period details
@@ -232,6 +260,7 @@ pub enum DataKey {
     PayerPaid(String, Address),
     /// Cumulative amount already refunded to `payer` for `meter_id`.
     PayerRefunded(String, Address),
+    AdminProposal(u32),
 }
 
 /// Tracks admin-issued refunds within the current rolling window, used to cap
@@ -1160,6 +1189,71 @@ impl SolarGridContract {
             (admin.clone(), amount),
         );
         Ok(())
+    }
+
+    /// Configure the M-of-N admin policy. The current admin must authorize this once.
+    pub fn configure_multisig(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if admins.len() < 3 || admins.len() > 5 || threshold == 0 || threshold > admins.len() {
+            return Err(ContractError::InvalidMultisigConfiguration);
+        }
+        env.storage().instance().set(&MULTISIG_ADMINS, &admins);
+        env.storage().instance().set(&MULTISIG_THRESHOLD, &threshold);
+        Ok(())
+    }
+
+    pub fn get_multisig_config(env: Env) -> Result<(Vec<Address>, u32), ContractError> {
+        let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
+        let threshold: u32 = env.storage().instance().get(&MULTISIG_THRESHOLD).unwrap_or(0);
+        Ok((admins, threshold))
+    }
+
+    pub fn propose_admin_operation(env: Env, proposer: Address, operation: AdminOperation, expiry: u64) -> Result<u32, ContractError> {
+        proposer.require_auth();
+        let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
+        if !Self::is_multisig_admin(&admins, &proposer) { return Err(ContractError::Unauthorized); }
+        if expiry <= env.ledger().timestamp() { return Err(ContractError::ProposalExpired); }
+        let id: u32 = env.storage().instance().get(&PROPOSAL_COUNT).unwrap_or(0);
+        env.storage().instance().set(&PROPOSAL_COUNT, &(id + 1));
+        let mut approvals = Vec::new(&env); approvals.push_back(proposer);
+        let threshold: u32 = env.storage().instance().get(&MULTISIG_THRESHOLD).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::AdminProposal(id), &AdminProposal { operation, approvals, threshold, expiry });
+        Ok(id)
+    }
+
+    pub fn approve_admin_operation(env: Env, proposal_id: u32, signer: Address) -> Result<(), ContractError> {
+        signer.require_auth();
+        let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
+        if !Self::is_multisig_admin(&admins, &signer) { return Err(ContractError::Unauthorized); }
+        let key = DataKey::AdminProposal(proposal_id);
+        let mut proposal: AdminProposal = env.storage().persistent().get(&key).ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expiry { return Err(ContractError::ProposalExpired); }
+        for existing in proposal.approvals.iter() { if existing == signer { return Err(ContractError::ProposalAlreadyApproved); } }
+        proposal.approvals.push_back(signer);
+        env.storage().persistent().set(&key, &proposal);
+        Ok(())
+    }
+
+    pub fn execute_admin_operation(env: Env, proposal_id: u32) -> Result<(), ContractError> {
+        let key = DataKey::AdminProposal(proposal_id);
+        let proposal: AdminProposal = env.storage().persistent().get(&key).ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expiry { return Err(ContractError::ProposalExpired); }
+        if proposal.approvals.len() < proposal.threshold { return Err(ContractError::ProposalNotReady); }
+        match proposal.operation {
+            AdminOperation::Pause => { if Self::pause_is_active(&env) { return Err(ContractError::AlreadyPaused); } env.storage().instance().set(&PAUSED, &true); env.storage().instance().set(&PAUSED_AT, &env.ledger().timestamp()); },
+            AdminOperation::Unpause => { if !Self::pause_is_active(&env) { return Err(ContractError::NotPaused); } env.storage().instance().set(&PAUSED, &false); },
+            AdminOperation::SetGracePeriod(period) => { env.storage().instance().set(&GRACE_PERIOD, &period); },
+            AdminOperation::RotateAdmin(new_admin) => { env.storage().instance().set(&ADMIN, &new_admin); },
+            AdminOperation::BulkDeactivate(meters) => { for meter_id in meters.iter() { let key = DataKey::Meter(meter_id); if let Some(mut meter) = env.storage().persistent().get::<DataKey, Meter>(&key) { meter.active = false; env.storage().persistent().set(&key, &meter); } } },
+            AdminOperation::EmergencyWithdraw(amount) => { if amount <= 0 { return Err(ContractError::InvalidAmount); } let admin: Address = Self::get_admin(&env)?; let token_address = Self::get_token_address(&env)?; let client = token::Client::new(&env, &token_address); if amount > client.balance(&env.current_contract_address()) { return Err(ContractError::InsufficientBalance); } client.transfer(&env.current_contract_address(), &admin, &amount); },
+        }
+        env.storage().persistent().remove(&key);
+        Ok(())
+    }
+
+    fn is_multisig_admin(admins: &Vec<Address>, candidate: &Address) -> bool {
+        for admin in admins.iter() { if admin == *candidate { return true; } }
+        false
     }
 
     /// Get currently tracked provider revenue balance.
