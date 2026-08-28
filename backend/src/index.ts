@@ -176,15 +176,21 @@ app.use(requestLogger());
 // Env-var parsing is centralised in config/rateLimits.ts (closes #539).
 
 // Global read limiter — scoped to /api, one counter per IP (#504).
+// Issue #734: emits both `RateLimit-*` and standard `X-RateLimit-*` headers so
+// every /api response advertises the current budget.
 const globalReadLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: RATE_LIMIT_MAX,
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders: true,
   handler: (_req, res) => {
     res.setHeader(
       "Retry-After",
       String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)),
+    );
+    res.setHeader(
+      "X-RateLimit-Policy",
+      `${RATE_LIMIT_MAX};w=${Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)}`,
     );
     res.status(429).json({ error: RATE_LIMIT_MESSAGE, code: "RATE_LIMITED" });
   },
