@@ -119,6 +119,25 @@ pub struct Meter {
     pub day_spent: i128,   // stroops spent in the current 24-hour window
     pub day_start: u64,    // timestamp when the current window started
     pub grace_expires_at: Option<u64>, // Timestamp when grace period ends
+    /// Optional read-only contact to notify when the balance is critically low.
+    pub emergency_contact: Option<Address>,
+}
+
+/// v2 layout — kept for migration from the pre-emergency-contact schema.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeterV2 {
+    pub version: u32,
+    pub owner: Address,
+    pub active: bool,
+    pub units_used: u64,
+    pub plan: PaymentPlan,
+    pub last_payment: u64,
+    pub expires_at: u64,
+    pub daily_limit: i128,
+    pub day_spent: i128,
+    pub day_start: u64,
+    pub grace_expires_at: Option<u64>,
 }
 
 /// v0 layout — kept for migration purposes only.
@@ -135,10 +154,10 @@ pub struct LegacyMeter {
     pub expires_at: u64,
 }
 
-/// Migrate a v0 (legacy) meter entry to the current v2 schema.
+/// Migrate a v0 (legacy) meter entry to the current v3 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: 2,
+        version: 3,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -149,13 +168,14 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         day_spent: 0,
         day_start: old.last_payment,
         grace_expires_at: None,
+        emergency_contact: None,
     }
 }
 
-/// Migrate a v1 meter entry to the current v2 schema.
+/// Migrate a v1 meter entry to the current v3 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 2,
+        version: 3,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -166,6 +186,24 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         day_spent: 0,
         day_start: old.last_payment,
         grace_expires_at: None,
+        emergency_contact: None,
+    }
+}
+
+fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
+    Meter {
+        version: 3,
+        owner: old.owner,
+        active: old.active,
+        units_used: old.units_used,
+        plan: old.plan,
+        last_payment: old.last_payment,
+        expires_at: old.expires_at,
+        daily_limit: old.daily_limit,
+        day_spent: old.day_spent,
+        day_start: old.day_start,
+        grace_expires_at: old.grace_expires_at,
+        emergency_contact: None,
     }
 }
 
@@ -290,6 +328,7 @@ impl SolarGridContract {
             day_spent: 0,
             day_start: now,
             grace_expires_at: None,
+            emergency_contact: None,
         };
         env.storage().persistent().set(&key, &meter);
 
@@ -378,6 +417,7 @@ impl SolarGridContract {
                 day_spent: 0,
                 day_start: now,
                 grace_expires_at: None,
+                emergency_contact: None,
             };
             env.storage().persistent().set(&key, &meter);
 
@@ -1285,6 +1325,34 @@ impl SolarGridContract {
         Self::get_meter_or_error(&env, &key)
     }
 
+    /// Set or clear the optional read-only emergency contact for a meter.
+    /// Only the current meter owner may change this value.
+    pub fn set_emergency_contact(
+        env: Env,
+        meter_id: String,
+        contact: Option<Address>,
+    ) -> Result<(), ContractError> {
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        meter.owner.require_auth();
+        meter.emergency_contact = contact.clone();
+        env.storage().persistent().set(&key, &meter);
+        env.events().publish(
+            (EVT_NS, symbol_short!("emg_set"), meter_id),
+            contact,
+        );
+        Ok(())
+    }
+
+    /// Return the configured emergency contact, if any.
+    pub fn get_emergency_contact(
+        env: Env,
+        meter_id: String,
+    ) -> Result<Option<Address>, ContractError> {
+        let key = DataKey::Meter(meter_id);
+        Ok(Self::get_meter_or_error(&env, &key)?.emergency_contact)
+    }
+
     /// Get meter state and balance in one query.
     pub fn get_meter_full(env: Env, meter_id: String) -> Result<MeterView, ContractError> {
         let key = DataKey::Meter(meter_id.clone());
@@ -1594,10 +1662,17 @@ impl SolarGridContract {
     }
 
     fn get_meter_or_error(env: &Env, key: &DataKey) -> Result<Meter, ContractError> {
-        env.storage()
-            .persistent()
-            .get(key)
-            .ok_or(ContractError::MeterNotFound)
+        if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(key) {
+            return Ok(meter);
+        }
+        if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeterV2>(key) {
+            // Read-through migration keeps old v2 entries usable after the
+            // schema gains the optional emergency-contact field.
+            let migrated = migrate_meter_v2(legacy);
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
+        }
+        Err(ContractError::MeterNotFound)
     }
 
     fn require_admin(env: &Env) -> Result<(), ContractError> {
@@ -1768,7 +1843,7 @@ impl SolarGridContract {
         Ok(())
     }
 
-    /// Migrate a meter from v1 (LegacyMeterV1) to v2 (Meter) schema. Admin-only.
+    /// Migrate a meter from v1 (LegacyMeterV1) to v3 (Meter) schema. Admin-only.
     pub fn migrate_meter_to_v2(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id.clone());
@@ -1784,6 +1859,26 @@ impl SolarGridContract {
             .get(&key)
             .ok_or(ContractError::MeterNotFound)?;
         let migrated = migrate_meter_v1(legacy);
+        env.storage().persistent().set(&key, &migrated);
+        Ok(())
+    }
+
+    /// Migrate a pre-emergency-contact v2 meter to the current v3 schema.
+    /// Admin-only and idempotent.
+    pub fn migrate_meter_to_v3(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let key = DataKey::Meter(meter_id);
+        if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(&key) {
+            if meter.version >= 3 {
+                return Ok(());
+            }
+        }
+        let legacy: LegacyMeterV2 = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::MeterNotFound)?;
+        let migrated = migrate_meter_v2(legacy);
         env.storage().persistent().set(&key, &migrated);
         Ok(())
     }

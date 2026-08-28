@@ -168,6 +168,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
     const meter = StellarSdk.scValToNative(result) as {
       balance: bigint;
       owner?: string;
+      emergency_contact?: string | null;
       [key: string]: unknown;
     };
     const balance = Number(meter.balance);
@@ -197,6 +198,8 @@ async function checkAndNotifyLowBalance(meterId: string) {
       if (ownerAddress) {
         await sendLowBalanceNotification({
           ownerAddress,
+          emergencyContactAddress:
+            typeof meter.emergency_contact === "string" ? meter.emergency_contact : undefined,
           meterId,
           balanceStroops: balance,
           thresholdStroops: dynamicThreshold,
