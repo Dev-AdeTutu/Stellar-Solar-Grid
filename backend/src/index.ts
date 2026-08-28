@@ -1,4 +1,5 @@
 import "dotenv/config";
+import "./lib/tracing.js";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -34,6 +35,9 @@ import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
+import { tracingMiddleware } from "./middleware/tracing.js";
+import { shutdownTracing } from "./lib/tracing.js";
+import { getCircuitState } from "./lib/circuitBreaker.js";
 import {
   initUsageEventStore,
   startUsageEventRetryWorker,
@@ -136,6 +140,7 @@ app.use(
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 app.use(sanitiseBody);
 app.use(requestLoggerMiddleware);
+app.use(tracingMiddleware);
 
 // ── Request timeout ──────────────────────────────────────────────────────────
 // Configurable via REQUEST_TIMEOUT env var (default 15 s).
@@ -250,6 +255,7 @@ app.get("/health", async (_req, res) => {
   res.status(healthy ? 200 : 503).json({
     status: healthy ? "ok" : "degraded",
     checks,
+    rpcCircuitBreaker: getCircuitState(),
     deadLetterEvents: countDeadLetterEvents(),
   });
 });
@@ -308,10 +314,22 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       requestId,
     });
   }
+  if ((err as any).code === "CIRCUIT_OPEN") {
+    return res.status(503).json({
+      error: err.message,
+      code: "CIRCUIT_OPEN",
+      requestId,
+    });
+  }
   res
     .status(500)
     .json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR", requestId });
 });
+
+// Flush buffered spans before the process exits (bridge.ts owns the actual
+// process.exit() calls; this just makes sure in-flight traces aren't lost).
+process.on("SIGTERM", () => { shutdownTracing().catch((err) => logger.error("Tracing shutdown error", { err })); });
+process.on("SIGINT", () => { shutdownTracing().catch((err) => logger.error("Tracing shutdown error", { err })); });
 
 // ── Server startup ───────────────────────────────────────────────────────────
 app.listen(PORT, () => {

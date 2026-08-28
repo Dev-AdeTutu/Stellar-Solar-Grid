@@ -7,6 +7,7 @@ import { useWalletStore } from "@/store/walletStore";
 import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
 import { useLocale } from "@/components/I18nProvider";
+import { branding } from "@/lib/branding";
 
 export default function Navbar() {
   const { connectError, clearConnectError } = useWalletStore();
@@ -52,8 +53,18 @@ export default function Navbar() {
     <nav aria-label="Main navigation" className="bg-solar-accent border-b border-white/10 relative z-50">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
-        <Link href="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>
-          ☀️ {t("brand")}
+        <Link
+          href="/"
+          className="flex items-center gap-2 text-xl font-bold text-solar-yellow"
+          onClick={closeMenu}
+        >
+          {branding.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- provider-configured, arbitrary remote URL
+            <img src={branding.logoUrl} alt={`${branding.name} logo`} className="h-7 w-auto" />
+          ) : (
+            "☀️"
+          )}
+          {branding.name}
         </Link>
 
         {/* Desktop links */}
