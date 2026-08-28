@@ -37,6 +37,7 @@ import { register } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
+import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
   countDeadLetterEvents,
@@ -123,6 +124,9 @@ app.use(
 );
 
 // ── Body parsing ─────────────────────────────────────────────────────────────
+// Validate Content-Type header on mutating requests (POST, PUT, PATCH) before body parsing (#755)
+app.use(validateContentType);
+
 // Capture raw body for webhook signature verification before JSON parsing.
 // #423: apply body size limit.
 app.use(

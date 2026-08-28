@@ -8,6 +8,8 @@ import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
 import UsageForecast from "@/components/UsageForecast";
+import { MeterSearchBar, type StatusFilter } from "@/components/MeterSearchBar";
+import { fuzzyMatch } from "@/lib/fuzzySearch";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
@@ -485,6 +487,34 @@ export default function UserDashboardPage() {
     setLastRefresh(new Date());
   }, [address, meterIds]);
 
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+
+  const filteredMeterIds = meterIds.filter((id) => {
+    const meter = meters[id];
+    let nickname = "";
+    try {
+      nickname = localStorage.getItem(`meter_nickname_${id}`) || "";
+    } catch {
+      // LocalStorage error fallback
+    }
+
+    const status = meter ? (meter.active ? "active" : "inactive") : "";
+    const location = (meter as any)?.location || "";
+
+    if (statusFilter === "active" && meter && !meter.active) return false;
+    if (statusFilter === "inactive" && meter && meter.active) return false;
+
+    if (!searchQuery.trim()) return true;
+
+    return (
+      fuzzyMatch(id, searchQuery) ||
+      fuzzyMatch(nickname, searchQuery) ||
+      fuzzyMatch(location, searchQuery) ||
+      fuzzyMatch(status, searchQuery)
+    );
+  });
+
   // Pause polling when address is gone or no meters loaded yet
   useInterval(pollBalances, address && meterIds.length > 0 ? BALANCE_POLL_INTERVAL_MS : null);
 
@@ -570,10 +600,43 @@ export default function UserDashboardPage() {
           </div>
         )}
 
-        {/* Meter list */}
+        {/* Search bar and filter pills */}
         {address && meterIds.length > 0 && (
+          <MeterSearchBar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            statusFilter={statusFilter}
+            onStatusFilterChange={setStatusFilter}
+            totalCount={meterIds.length}
+            filteredCount={filteredMeterIds.length}
+          />
+        )}
+
+        {/* No search results */}
+        {address && meterIds.length > 0 && filteredMeterIds.length === 0 && (
+          <div className="rounded-xl border border-white/10 bg-solar-accent p-8 text-center text-gray-400">
+            <p className="text-base font-semibold text-white mb-1">No matching meters found</p>
+            <p className="text-xs text-gray-400 mb-4">
+              No meters match your search &ldquo;{searchQuery}&rdquo;
+              {statusFilter !== "all" ? ` with status &ldquo;${statusFilter}&rdquo;` : ""}.
+            </p>
+            <button
+              onClick={() => {
+                setSearchQuery("");
+                setStatusFilter("all");
+              }}
+              aria-label="Clear all filters"
+              className="rounded-lg bg-solar-yellow px-4 py-1.5 text-xs font-semibold text-solar-dark hover:opacity-90 transition"
+            >
+              Clear Search &amp; Filters
+            </button>
+          </div>
+        )}
+
+        {/* Meter list */}
+        {address && filteredMeterIds.length > 0 && (
           <div className="space-y-4">
-            {meterIds.map((id) =>
+            {filteredMeterIds.map((id) =>
               meters[id] ? (
                 <MeterCard key={id} meterId={id} meter={meters[id]} />
               ) : failedMeters[id] ? (
@@ -584,8 +647,6 @@ export default function UserDashboardPage() {
             )}
           </div>
         )}
-
-
       </main>
     </ErrorBoundary>
   );
