@@ -13,6 +13,7 @@ import {
   type PaymentHistoryResponse,
 } from "@/services/paymentService";
 import { downloadPaymentReceipt } from "@/lib/receipt";
+import ShareReceiptButton from "@/components/ShareReceiptButton";
 import { env } from "@/lib/env";
 import { formatXlmAmount } from "@/lib/format";
 
@@ -327,15 +328,22 @@ function HistoryPageContent() {
                       </a>
                     )}
                     {r.txHash && (
-                      <button
-                        type="button"
-                        onClick={() => handleDownloadReceipt(r)}
-                        disabled={downloadingHash === r.txHash}
-                        aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
-                        className="w-full rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50"
-                      >
-                        {downloadingHash === r.txHash ? "Generating…" : "Download Receipt"}
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadReceipt(r)}
+                          disabled={downloadingHash === r.txHash}
+                          aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
+                          className="flex-1 rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50"
+                        >
+                          {downloadingHash === r.txHash ? "Generating…" : "Download Receipt"}
+                        </button>
+                        <ShareReceiptButton
+                          record={r}
+                          explorerUrl={`${EXPLORER_BASE}/${r.txHash}`}
+                          className="rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50"
+                        />
+                      </div>
                     )}
                   </div>
                 ))}
@@ -431,15 +439,18 @@ function HistoryPageContent() {
                         </td>
                         <td className="px-3 py-3 text-xs">
                           {r.txHash ? (
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadReceipt(r)}
-                              disabled={downloadingHash === r.txHash}
-                              aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
-                              className="rounded-lg border border-white/10 px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50 whitespace-nowrap"
-                            >
-                              {downloadingHash === r.txHash ? "Generating…" : "Download"}
-                            </button>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadReceipt(r)}
+                                disabled={downloadingHash === r.txHash}
+                                aria-label={`Download receipt for payment on ${new Date(r.date).toLocaleDateString()}`}
+                                className="rounded-lg border border-white/10 px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition disabled:opacity-50 whitespace-nowrap"
+                              >
+                                {downloadingHash === r.txHash ? "Generating…" : "Download"}
+                              </button>
+                              <ShareReceiptButton record={r} explorerUrl={`${EXPLORER_BASE}/${r.txHash}`} />
+                            </div>
                           ) : (
                             <span className="text-gray-600">—</span>
                           )}

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { registerDatabase } from "./databaseLifecycle.js";
 
 const DB_PATH =
   process.env.METER_NOTES_DB_PATH ??
@@ -16,6 +17,9 @@ export type MeterNoteRecord = {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const db = openDatabase() as any;
+registerDatabase("meter-notes", () => {
+  if (db.open) db.close();
+});
 
 function openDatabase() {
   if (DB_PATH !== ":memory:") {
@@ -47,6 +51,11 @@ function openDatabase() {
 
 export function initMeterNotesStore() {
   return db;
+}
+
+/** Close the meter-notes store during graceful application shutdown. */
+export function closeMeterNotesStore(): void {
+  if (db.open) db.close();
 }
 
 export function addMeterNote(meterId: string, text: string, authorIp?: string): MeterNoteRecord {

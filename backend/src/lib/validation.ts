@@ -36,6 +36,15 @@ export const BatchRegisterMetersSchema = z
   })
   .strict();
 
+export const BulkMeterStatusSchema = z
+  .object({
+    meter_ids: z
+      .array(MeterIdSchema)
+      .min(1, "meter_ids must contain at least one entry")
+      .max(100, "meter_ids cannot exceed 100 per request"),
+  })
+  .strict();
+
 export const UsageUpdateSchema = z
   .object({
     units: z

@@ -16,6 +16,7 @@ const envSchema = z.object({
   NEXT_PUBLIC_CONTRACT_ID: z
     .string()
     .min(1, "NEXT_PUBLIC_CONTRACT_ID is required — set it in .env.local (see .env.example)"),
+  NEXT_PUBLIC_PAYMENT_DESTINATION: z.string().optional(),
   NEXT_PUBLIC_RPC_URL: z.string().url().default("https://soroban-testnet.stellar.org"),
   NEXT_PUBLIC_SMS_SHORTCODE: z.string().min(1).default("20880"),
   NEXT_PUBLIC_SMS_WEBHOOK_DOCS: z
@@ -51,6 +52,7 @@ function loadEnv() {
     NEXT_PUBLIC_COLLAB_API_URL: process.env.NEXT_PUBLIC_COLLAB_API_URL,
     NEXT_PUBLIC_NETWORK_PASSPHRASE: process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     NEXT_PUBLIC_CONTRACT_ID: process.env.NEXT_PUBLIC_CONTRACT_ID,
+    NEXT_PUBLIC_PAYMENT_DESTINATION: process.env.NEXT_PUBLIC_PAYMENT_DESTINATION,
     NEXT_PUBLIC_RPC_URL: process.env.NEXT_PUBLIC_RPC_URL,
     NEXT_PUBLIC_SMS_SHORTCODE: process.env.NEXT_PUBLIC_SMS_SHORTCODE,
     NEXT_PUBLIC_SMS_WEBHOOK_DOCS: process.env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS,

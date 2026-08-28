@@ -481,6 +481,50 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/meters/bulk:
+    post:
+      summary: Bulk meter status query
+      description: >-
+        Batch alternative to calling GET /api/meters/{id}/status once per
+        meter. Capped at 100 meter_ids per request.
+      operationId: getMeterStatusBulk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_ids]
+              properties:
+                meter_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: string }
+      responses:
+        "200":
+          description: Per-meter status, with per-meter errors reported separately
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meters:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        balance: { type: string }
+                        active: { type: boolean }
+                  errors:
+                    type: object
+                    additionalProperties: { type: string }
+                  count: { type: integer }
+                  requested: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
   /api/meters/{id}/balance:
     get:
       summary: Live meter balance

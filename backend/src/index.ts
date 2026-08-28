@@ -26,9 +26,11 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
+import { graphqlRouter } from "./routes/graphql.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
+import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
 import { register } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
@@ -39,12 +41,14 @@ import { tracingMiddleware } from "./middleware/tracing.js";
 import { shutdownTracing } from "./lib/tracing.js";
 import { getCircuitState } from "./lib/circuitBreaker.js";
 import {
+  countDeadLetterEvents,
   initUsageEventStore,
   startUsageEventRetryWorker,
-  countDeadLetterEvents,
 } from "./lib/usageEvents.js";
+import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
+import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 
 // ── Rate-limit config ────────────────────────────────────────────────────────
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -102,18 +106,12 @@ app.use(
 app.use(compression({ threshold: 1024 }));
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
-  .split(",")
-  .map((o) => o.trim());
+const allowedOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (
-        !origin ||
-        allowedOrigins.includes("*") ||
-        allowedOrigins.includes(origin)
-      ) {
+      if (isCorsOriginAllowed(origin, allowedOrigins)) {
         cb(null, true);
       } else {
         cb(new Error(`Origin ${origin} not allowed by CORS`));
@@ -150,6 +148,32 @@ app.use((req: any, _res: any, next: any) => {
   if (!req.timedout) next();
 });
 
+// Assign/propagate a request id so every log line for a request can be
+// correlated, and callers can trace a request via the response header.
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string | undefined) || randomUUID();
+  res.setHeader("X-Request-Id", requestId);
+  runWithRequestId(requestId, next);
+});
+
+app.use((req, _res, next) => {
+  logger.info("Incoming request", { method: req.method, path: req.path });
+  next();
+});
+
+// ── API versioning ──────────────────────────────────────────────────────────
+// /api/v1/* is the versioned, stable surface. /api/* remains an alias to the
+// latest version (v1 today) so existing clients keep working. When a v2 ships
+// with breaking changes, mount it separately and point the /api/* alias at
+// it, while /api/v1/* keeps serving old clients until its documented sunset
+// date (see docs/API_VERSIONING.md).
+const v1Router = express.Router();
+v1Router.use("/meters", createMeterRouter(stellarService));
+v1Router.use("/payments", paymentsRouter);
+v1Router.use("/webhooks", webhookRouter);
+
+app.use("/api/v1", v1Router);
+app.use("/api", v1Router);
 app.use(requestLogger());
 // ── Rate limiters ─────────────────────────────────────────────────────────────
 // Env-var parsing is centralised in config/rateLimits.ts (closes #539).
@@ -220,6 +244,7 @@ app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
+app.use("/api/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 app.use("/api/usage-events", usageEventsRouter);
 
@@ -332,7 +357,7 @@ process.on("SIGTERM", () => { shutdownTracing().catch((err) => logger.error("Tra
 process.on("SIGINT", () => { shutdownTracing().catch((err) => logger.error("Tracing shutdown error", { err })); });
 
 // ── Server startup ───────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   initMeterNotesStore();
@@ -344,3 +369,19 @@ app.listen(PORT, () => {
     logger.error("Failed to start IoT bridge", { err });
   }
 });
+
+function shutdown(signal: string): void {
+  logger.info({ signal }, "SolarGrid backend shutting down");
+  httpServer.close(() => {
+    closeAllDatabases();
+  });
+
+  const forceExitTimer = setTimeout(() => {
+    closeAllDatabases();
+    process.exitCode = 1;
+  }, 10_000);
+  forceExitTimer.unref();
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));
