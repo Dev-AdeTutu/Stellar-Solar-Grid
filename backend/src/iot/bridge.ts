@@ -40,6 +40,15 @@ const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
 );
+// The on-chain `batch_update_usage` call rejects batches larger than 50
+// entries (see contracts/solar_grid/src/lib.rs). Large in-memory queues
+// (e.g. after MQTT broker downtime) are chunked to this size before being
+// submitted so we never build a single oversized payload or hold the whole
+// backlog in memory at once. Configurable, but capped at the contract limit.
+const MAX_BATCH_SIZE = Math.min(
+  Number(process.env.MAX_BATCH_SIZE ?? 50),
+  50,
+);
 
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
@@ -382,6 +391,45 @@ function startMqttBridge() {
     logger.warn({ attempt: reconnectAttempts, nextDelayMs: delay }, 'MQTT reconnecting');
   });
 
+  let pending: Reading[] = [];
+
+  const flush = async () => {
+    if (pending.length === 0) return;
+    const batch = pending.splice(0);
+    logger.info(`Flushing batch of ${batch.length} meter update(s)`);
+
+    // Process in fixed-size chunks so a large backlog (e.g. built up during
+    // MQTT broker downtime) never produces a single oversized on-chain call
+    // or keeps the entire backlog referenced in memory at once — each chunk
+    // is submitted and released before the next one is sliced off.
+    for (let offset = 0; offset < batch.length; offset += MAX_BATCH_SIZE) {
+      const chunk = batch.slice(offset, offset + MAX_BATCH_SIZE);
+      try {
+        const hash = await adminInvoke("batch_update_usage", [
+          encodeBatch(chunk),
+        ]);
+        logger.info(`Batch chunk recorded on-chain: ${hash}`, {
+          chunkSize: chunk.length,
+          offset,
+          totalBatchSize: batch.length,
+        });
+
+        // Persist each reading locally with the on-chain tx hash for historical reporting
+        try {
+          insertSubmittedUsageEvents(
+            chunk.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
+            hash,
+          );
+        } catch (err) {
+          logger.error("Failed to persist batch usage events to local DB", { err });
+        }
+      } catch (err) {
+        logger.error("Batch submission error", { err, offset, chunkSize: chunk.length });
+      }
+    }
+  };
+
+  setInterval(flush, FLUSH_INTERVAL_MS);
   // Issue #601: submit near-zero-balance meters first within the batch.
   flushIntervalHandle = setInterval(flush, FLUSH_INTERVAL_MS);
 
