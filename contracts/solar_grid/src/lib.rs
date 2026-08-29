@@ -39,8 +39,11 @@ pub enum ContractError {
     NotPaused = 23,
     /// `make_payment`'s optional memo exceeds MAX_MEMO_LEN bytes.
     MemoTooLong = 24,
-    /// Metadata constraint violated (Issue #691).
-    InvalidMetadata = 25,
+    InvalidMultisigConfiguration = 25,
+    ProposalNotFound = 26,
+    ProposalExpired = 27,
+    ProposalAlreadyApproved = 28,
+    ProposalNotReady = 29,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -70,10 +73,9 @@ const PAUSED: Symbol = symbol_short!("PAUSED");
 const PAUSED_AT: Symbol = symbol_short!("PAUSE_AT");
 /// A pause automatically expires after 48 hours (Unix seconds).
 const MAX_PAUSE_DURATION: u64 = 48 * 60 * 60;
-/// Maximum number of metadata key-value pairs per meter (Issue #691).
-const MAX_METADATA_PAIRS: u32 = 10;
-/// Maximum length of metadata value in characters (Issue #691).
-const MAX_METADATA_VALUE_LEN: u32 = 100;
+const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
+const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
+const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -83,6 +85,26 @@ pub enum PaymentPlan {
     Daily,
     Weekly,
     UsageBased,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AdminOperation {
+    Pause,
+    Unpause,
+    EmergencyWithdraw(i128),
+    BulkDeactivate(Vec<String>),
+    RotateAdmin(Address),
+    SetGracePeriod(u64),
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AdminProposal {
+    pub operation: AdminOperation,
+    pub approvals: Vec<Address>,
+    pub threshold: u32,
+    pub expiry: u64,
 }
 
 /// Access status with grace period details
@@ -106,6 +128,14 @@ pub struct LegacyMeterV1 {
     pub plan: PaymentPlan,
     pub last_payment: u64,
     pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnershipTransfer {
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub transferred_at: u64,
 }
 
 #[contracttype]
@@ -290,12 +320,15 @@ fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError
 pub enum DataKey {
     Meter(String),
     OwnerMeters(Address),
+    OwnershipHistory(String),
     ProviderRevenue(Address),
     MeterBalance(String),
     /// Cumulative amount `payer` has paid towards `meter_id` (lifetime, not reduced by refunds).
     PayerPaid(String, Address),
     /// Cumulative amount already refunded to `payer` for `meter_id`.
     PayerRefunded(String, Address),
+    /// List of delegate addresses authorized to make payments for a meter.
+    MeterDelegates(String),
 }
 
 /// Tracks admin-issued refunds within the current rolling window, used to cap
@@ -671,10 +704,28 @@ impl SolarGridContract {
         env.storage().persistent().set(&new_key, &new_list);
 
         meter.owner = new_owner.clone();
+        // A transfer starts a fresh usage accounting period while preserving
+        // the prepaid meter balance for the incoming owner.
+        meter.units_used = 0;
         env.storage().persistent().set(&key, &meter);
 
-        env.events()
-            .publish((EVT_NS, symbol_short!("mtr_xfer"), meter_id), new_owner);
+        let history_key = DataKey::OwnershipHistory(meter_id.clone());
+        let mut history: Vec<OwnershipTransfer> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| vec![&env]);
+        history.push_back(OwnershipTransfer {
+            old_owner: old_owner.clone(),
+            new_owner: new_owner.clone(),
+            transferred_at: env.ledger().timestamp(),
+        });
+        env.storage().persistent().set(&history_key, &history);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("mtr_xfer"), meter_id),
+            (old_owner, new_owner),
+        );
         Ok(())
     }
 
@@ -1208,6 +1259,215 @@ impl SolarGridContract {
             .unwrap_or(0)
     }
 
+    // ── Payment Delegation ────────────────────────────────────────────────────
+
+    /// Add a delegate who can make payments on behalf of the meter owner.
+    /// Only the meter owner can add delegates.
+    ///
+    /// # Use cases
+    /// - Parents paying for adult children's energy
+    /// - Employers subsidizing worker housing
+    /// - Property managers paying for rental units
+    /// - Energy provider incentive programs
+    ///
+    /// Emits: `dlg_add { meter_id, delegate }`
+    pub fn add_delegate(
+        env: Env,
+        meter_id: String,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        let key = DataKey::Meter(meter_id.clone());
+        let meter = Self::get_meter_or_error(&env, &key)?;
+        
+        // Only meter owner can add delegates
+        meter.owner.require_auth();
+
+        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
+        let mut delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        // Check if delegate already exists
+        if !delegates.contains(&delegate) {
+            delegates.push_back(delegate.clone());
+            env.storage().persistent().set(&delegates_key, &delegates);
+
+            env.events().publish(
+                (EVT_NS, symbol_short!("dlg_add"), meter_id),
+                delegate,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Remove a delegate's authorization to make payments.
+    /// Only the meter owner can remove delegates.
+    ///
+    /// Emits: `dlg_rem { meter_id, delegate }`
+    pub fn remove_delegate(
+        env: Env,
+        meter_id: String,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        let key = DataKey::Meter(meter_id.clone());
+        let meter = Self::get_meter_or_error(&env, &key)?;
+        
+        // Only meter owner can remove delegates
+        meter.owner.require_auth();
+
+        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        let mut new_delegates: Vec<Address> = vec![&env];
+        let mut found = false;
+        
+        for addr in delegates.iter() {
+            if addr != delegate {
+                new_delegates.push_back(addr);
+            } else {
+                found = true;
+            }
+        }
+
+        if found {
+            env.storage().persistent().set(&delegates_key, &new_delegates);
+
+            env.events().publish(
+                (EVT_NS, symbol_short!("dlg_rem"), meter_id),
+                delegate,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get all delegates authorized to make payments for a meter.
+    pub fn get_delegates(env: Env, meter_id: String) -> Vec<Address> {
+        let delegates_key = DataKey::MeterDelegates(meter_id);
+        env.storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Make a payment on behalf of a meter owner as an authorized delegate.
+    /// The delegate must have been previously authorized via `add_delegate`.
+    ///
+    /// Emits same events as `make_payment`:
+    /// - `payment_received { meter_id, payer (delegate), amount, plan, memo }`
+    /// - `meter_activated { meter_id }`
+    pub fn make_delegated_payment(
+        env: Env,
+        meter_id: String,
+        delegate: Address,
+        amount: i128,
+        plan: PaymentPlan,
+        memo: Option<String>,
+    ) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+
+        // Verify delegate is authorized
+        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        if !delegates.contains(&delegate) {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Delegate must auth the payment
+        delegate.require_auth();
+
+        // Validate memo length if provided
+        if let Some(ref m) = memo {
+            if m.len() > MAX_MEMO_LEN {
+                return Err(ContractError::MemoTooLong);
+            }
+        }
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        // Transfer tokens from delegate to contract
+        let token_address = Self::get_token_address(&env)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&delegate, &env.current_contract_address(), &amount);
+
+        // Update meter balance
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&bal_key, &balance.saturating_add(amount));
+
+        // Calculate expiration
+        let now = env.ledger().timestamp();
+        let validity_secs = plan_duration_secs(&plan);
+        let expires_at = if validity_secs == u64::MAX {
+            u64::MAX
+        } else {
+            meter.expires_at.saturating_add(validity_secs)
+        };
+
+        // Track lifetime payments per (meter, delegate)
+        let payer_paid_key = DataKey::PayerPaid(meter_id.clone(), delegate.clone());
+        let payer_paid: i128 = env.storage().persistent().get(&payer_paid_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&payer_paid_key, &payer_paid.saturating_add(amount));
+
+        let old_plan = meter.plan.clone();
+        meter.active = true;
+        meter.plan = plan.clone();
+        meter.last_payment = now;
+        meter.expires_at = expires_at;
+        meter.grace_expires_at = None;
+        env.storage().persistent().set(&key, &meter);
+
+        // Track provider (admin) accrued revenue
+        let admin = Self::get_admin(&env)?;
+        let provider_key = DataKey::ProviderRevenue(admin);
+        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&provider_key, &provider_revenue.saturating_add(amount));
+
+        // payment_received - payer is the delegate
+        env.events().publish(
+            (EVT_NS, symbol_short!("payment"), meter_id.clone()),
+            (delegate, token_address, amount, plan.clone(), memo),
+        );
+        
+        // plan_changed
+        if old_plan != plan {
+            env.events().publish(
+                (EVT_NS, symbol_short!("plan_chg"), meter_id.clone()),
+                (old_plan, plan, now),
+            );
+        }
+        
+        // meter_activated
+        env.events()
+            .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id), ());
+        Ok(())
+    }
+
     /// Withdraw accumulated revenue from the contract vault to the provider address.
     ///
     /// # Access control
@@ -1274,6 +1534,71 @@ impl SolarGridContract {
             (admin.clone(), amount),
         );
         Ok(())
+    }
+
+    /// Configure the M-of-N admin policy. The current admin must authorize this once.
+    pub fn configure_multisig(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if admins.len() < 3 || admins.len() > 5 || threshold == 0 || threshold > admins.len() {
+            return Err(ContractError::InvalidMultisigConfiguration);
+        }
+        env.storage().instance().set(&MULTISIG_ADMINS, &admins);
+        env.storage().instance().set(&MULTISIG_THRESHOLD, &threshold);
+        Ok(())
+    }
+
+    pub fn get_multisig_config(env: Env) -> Result<(Vec<Address>, u32), ContractError> {
+        let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
+        let threshold: u32 = env.storage().instance().get(&MULTISIG_THRESHOLD).unwrap_or(0);
+        Ok((admins, threshold))
+    }
+
+    pub fn propose_admin_operation(env: Env, proposer: Address, operation: AdminOperation, expiry: u64) -> Result<u32, ContractError> {
+        proposer.require_auth();
+        let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
+        if !Self::is_multisig_admin(&admins, &proposer) { return Err(ContractError::Unauthorized); }
+        if expiry <= env.ledger().timestamp() { return Err(ContractError::ProposalExpired); }
+        let id: u32 = env.storage().instance().get(&PROPOSAL_COUNT).unwrap_or(0);
+        env.storage().instance().set(&PROPOSAL_COUNT, &(id + 1));
+        let mut approvals = Vec::new(&env); approvals.push_back(proposer);
+        let threshold: u32 = env.storage().instance().get(&MULTISIG_THRESHOLD).unwrap_or(0);
+        env.storage().persistent().set(&DataKey::AdminProposal(id), &AdminProposal { operation, approvals, threshold, expiry });
+        Ok(id)
+    }
+
+    pub fn approve_admin_operation(env: Env, proposal_id: u32, signer: Address) -> Result<(), ContractError> {
+        signer.require_auth();
+        let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
+        if !Self::is_multisig_admin(&admins, &signer) { return Err(ContractError::Unauthorized); }
+        let key = DataKey::AdminProposal(proposal_id);
+        let mut proposal: AdminProposal = env.storage().persistent().get(&key).ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expiry { return Err(ContractError::ProposalExpired); }
+        for existing in proposal.approvals.iter() { if existing == signer { return Err(ContractError::ProposalAlreadyApproved); } }
+        proposal.approvals.push_back(signer);
+        env.storage().persistent().set(&key, &proposal);
+        Ok(())
+    }
+
+    pub fn execute_admin_operation(env: Env, proposal_id: u32) -> Result<(), ContractError> {
+        let key = DataKey::AdminProposal(proposal_id);
+        let proposal: AdminProposal = env.storage().persistent().get(&key).ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expiry { return Err(ContractError::ProposalExpired); }
+        if proposal.approvals.len() < proposal.threshold { return Err(ContractError::ProposalNotReady); }
+        match proposal.operation {
+            AdminOperation::Pause => { if Self::pause_is_active(&env) { return Err(ContractError::AlreadyPaused); } env.storage().instance().set(&PAUSED, &true); env.storage().instance().set(&PAUSED_AT, &env.ledger().timestamp()); },
+            AdminOperation::Unpause => { if !Self::pause_is_active(&env) { return Err(ContractError::NotPaused); } env.storage().instance().set(&PAUSED, &false); },
+            AdminOperation::SetGracePeriod(period) => { env.storage().instance().set(&GRACE_PERIOD, &period); },
+            AdminOperation::RotateAdmin(new_admin) => { env.storage().instance().set(&ADMIN, &new_admin); },
+            AdminOperation::BulkDeactivate(meters) => { for meter_id in meters.iter() { let key = DataKey::Meter(meter_id); if let Some(mut meter) = env.storage().persistent().get::<DataKey, Meter>(&key) { meter.active = false; env.storage().persistent().set(&key, &meter); } } },
+            AdminOperation::EmergencyWithdraw(amount) => { if amount <= 0 { return Err(ContractError::InvalidAmount); } let admin: Address = Self::get_admin(&env)?; let token_address = Self::get_token_address(&env)?; let client = token::Client::new(&env, &token_address); if amount > client.balance(&env.current_contract_address()) { return Err(ContractError::InsufficientBalance); } client.transfer(&env.current_contract_address(), &admin, &amount); },
+        }
+        env.storage().persistent().remove(&key);
+        Ok(())
+    }
+
+    fn is_multisig_admin(admins: &Vec<Address>, candidate: &Address) -> bool {
+        for admin in admins.iter() { if admin == *candidate { return true; } }
+        false
     }
 
     /// Get currently tracked provider revenue balance.
