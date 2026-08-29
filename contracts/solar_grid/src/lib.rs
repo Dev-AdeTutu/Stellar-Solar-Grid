@@ -131,6 +131,14 @@ pub struct LegacyMeterV1 {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnershipTransfer {
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub transferred_at: u64,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Meter {
     /// Schema version — increment when fields are added/changed.
@@ -254,13 +262,15 @@ fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
 pub enum DataKey {
     Meter(String),
     OwnerMeters(Address),
+    OwnershipHistory(String),
     ProviderRevenue(Address),
     MeterBalance(String),
     /// Cumulative amount `payer` has paid towards `meter_id` (lifetime, not reduced by refunds).
     PayerPaid(String, Address),
     /// Cumulative amount already refunded to `payer` for `meter_id`.
     PayerRefunded(String, Address),
-    AdminProposal(u32),
+    /// List of delegate addresses authorized to make payments for a meter.
+    MeterDelegates(String),
 }
 
 /// Tracks admin-issued refunds within the current rolling window, used to cap
@@ -586,10 +596,28 @@ impl SolarGridContract {
         env.storage().persistent().set(&new_key, &new_list);
 
         meter.owner = new_owner.clone();
+        // A transfer starts a fresh usage accounting period while preserving
+        // the prepaid meter balance for the incoming owner.
+        meter.units_used = 0;
         env.storage().persistent().set(&key, &meter);
 
-        env.events()
-            .publish((EVT_NS, symbol_short!("mtr_xfer"), meter_id), new_owner);
+        let history_key = DataKey::OwnershipHistory(meter_id.clone());
+        let mut history: Vec<OwnershipTransfer> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| vec![&env]);
+        history.push_back(OwnershipTransfer {
+            old_owner: old_owner.clone(),
+            new_owner: new_owner.clone(),
+            transferred_at: env.ledger().timestamp(),
+        });
+        env.storage().persistent().set(&history_key, &history);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("mtr_xfer"), meter_id),
+            (old_owner, new_owner),
+        );
         Ok(())
     }
 
@@ -1121,6 +1149,215 @@ impl SolarGridContract {
             .persistent()
             .get(&DataKey::PayerRefunded(meter_id, payer))
             .unwrap_or(0)
+    }
+
+    // ── Payment Delegation ────────────────────────────────────────────────────
+
+    /// Add a delegate who can make payments on behalf of the meter owner.
+    /// Only the meter owner can add delegates.
+    ///
+    /// # Use cases
+    /// - Parents paying for adult children's energy
+    /// - Employers subsidizing worker housing
+    /// - Property managers paying for rental units
+    /// - Energy provider incentive programs
+    ///
+    /// Emits: `dlg_add { meter_id, delegate }`
+    pub fn add_delegate(
+        env: Env,
+        meter_id: String,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        let key = DataKey::Meter(meter_id.clone());
+        let meter = Self::get_meter_or_error(&env, &key)?;
+        
+        // Only meter owner can add delegates
+        meter.owner.require_auth();
+
+        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
+        let mut delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        // Check if delegate already exists
+        if !delegates.contains(&delegate) {
+            delegates.push_back(delegate.clone());
+            env.storage().persistent().set(&delegates_key, &delegates);
+
+            env.events().publish(
+                (EVT_NS, symbol_short!("dlg_add"), meter_id),
+                delegate,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Remove a delegate's authorization to make payments.
+    /// Only the meter owner can remove delegates.
+    ///
+    /// Emits: `dlg_rem { meter_id, delegate }`
+    pub fn remove_delegate(
+        env: Env,
+        meter_id: String,
+        delegate: Address,
+    ) -> Result<(), ContractError> {
+        let key = DataKey::Meter(meter_id.clone());
+        let meter = Self::get_meter_or_error(&env, &key)?;
+        
+        // Only meter owner can remove delegates
+        meter.owner.require_auth();
+
+        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        let mut new_delegates: Vec<Address> = vec![&env];
+        let mut found = false;
+        
+        for addr in delegates.iter() {
+            if addr != delegate {
+                new_delegates.push_back(addr);
+            } else {
+                found = true;
+            }
+        }
+
+        if found {
+            env.storage().persistent().set(&delegates_key, &new_delegates);
+
+            env.events().publish(
+                (EVT_NS, symbol_short!("dlg_rem"), meter_id),
+                delegate,
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get all delegates authorized to make payments for a meter.
+    pub fn get_delegates(env: Env, meter_id: String) -> Vec<Address> {
+        let delegates_key = DataKey::MeterDelegates(meter_id);
+        env.storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env])
+    }
+
+    /// Make a payment on behalf of a meter owner as an authorized delegate.
+    /// The delegate must have been previously authorized via `add_delegate`.
+    ///
+    /// Emits same events as `make_payment`:
+    /// - `payment_received { meter_id, payer (delegate), amount, plan, memo }`
+    /// - `meter_activated { meter_id }`
+    pub fn make_delegated_payment(
+        env: Env,
+        meter_id: String,
+        delegate: Address,
+        amount: i128,
+        plan: PaymentPlan,
+        memo: Option<String>,
+    ) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+
+        // Verify delegate is authorized
+        let delegates_key = DataKey::MeterDelegates(meter_id.clone());
+        let delegates: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&delegates_key)
+            .unwrap_or_else(|| vec![&env]);
+
+        if !delegates.contains(&delegate) {
+            return Err(ContractError::Unauthorized);
+        }
+
+        // Delegate must auth the payment
+        delegate.require_auth();
+
+        // Validate memo length if provided
+        if let Some(ref m) = memo {
+            if m.len() > MAX_MEMO_LEN {
+                return Err(ContractError::MemoTooLong);
+            }
+        }
+
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        // Transfer tokens from delegate to contract
+        let token_address = Self::get_token_address(&env)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&delegate, &env.current_contract_address(), &amount);
+
+        // Update meter balance
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&bal_key, &balance.saturating_add(amount));
+
+        // Calculate expiration
+        let now = env.ledger().timestamp();
+        let validity_secs = plan_duration_secs(&plan);
+        let expires_at = if validity_secs == u64::MAX {
+            u64::MAX
+        } else {
+            meter.expires_at.saturating_add(validity_secs)
+        };
+
+        // Track lifetime payments per (meter, delegate)
+        let payer_paid_key = DataKey::PayerPaid(meter_id.clone(), delegate.clone());
+        let payer_paid: i128 = env.storage().persistent().get(&payer_paid_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&payer_paid_key, &payer_paid.saturating_add(amount));
+
+        let old_plan = meter.plan.clone();
+        meter.active = true;
+        meter.plan = plan.clone();
+        meter.last_payment = now;
+        meter.expires_at = expires_at;
+        meter.grace_expires_at = None;
+        env.storage().persistent().set(&key, &meter);
+
+        // Track provider (admin) accrued revenue
+        let admin = Self::get_admin(&env)?;
+        let provider_key = DataKey::ProviderRevenue(admin);
+        let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&provider_key, &provider_revenue.saturating_add(amount));
+
+        // payment_received - payer is the delegate
+        env.events().publish(
+            (EVT_NS, symbol_short!("payment"), meter_id.clone()),
+            (delegate, token_address, amount, plan.clone(), memo),
+        );
+        
+        // plan_changed
+        if old_plan != plan {
+            env.events().publish(
+                (EVT_NS, symbol_short!("plan_chg"), meter_id.clone()),
+                (old_plan, plan, now),
+            );
+        }
+        
+        // meter_activated
+        env.events()
+            .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id), ());
+        Ok(())
     }
 
     /// Withdraw accumulated revenue from the contract vault to the provider address.
