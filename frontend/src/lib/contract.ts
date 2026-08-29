@@ -13,6 +13,12 @@ export interface MeterData {
   balance: bigint;
   grace_expires_at?: bigint | null;
   meter_id?: string;
+  /** Max stroops deductible per day; 0 = unlimited (closes #758). */
+  daily_limit?: bigint;
+  /** Stroops spent in the current daily window (closes #758). */
+  day_spent?: bigint;
+  /** True (default) if exceeding daily_limit blocks usage; false = warn only. */
+  auto_deactivate?: boolean;
 }
 
 const REQUEST_TIMEOUT_MS = env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;

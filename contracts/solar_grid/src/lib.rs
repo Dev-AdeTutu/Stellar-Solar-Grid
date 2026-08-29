@@ -108,6 +108,8 @@ pub struct Meter {
     /// Schema version — increment when fields are added/changed.
     /// v1: initial layout (owner, active, units_used, plan, last_payment, expires_at)
     /// v2: adds daily spending limit (daily_limit, day_spent, day_start) and grace period (grace_expires_at)
+    /// v4: adds auto_deactivate, controlling whether exceeding daily_limit blocks
+    ///     usage (true, default) or only emits a limit_hit warning (false)
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -116,11 +118,15 @@ pub struct Meter {
     pub last_payment: u64, // ledger timestamp
     pub expires_at: u64,   // ledger timestamp when access expires
     pub daily_limit: i128, // max stroops deductible per day; 0 = unlimited
-    pub day_spent: i128,   // stroops spent in the current 24-hour window
+    pub day_spent: i128,   // stroops spent in the current calendar-day (UTC) window
     pub day_start: u64,    // timestamp when the current window started
     pub grace_expires_at: Option<u64>, // Timestamp when grace period ends
     /// Optional read-only contact to notify when the balance is critically low.
     pub emergency_contact: Option<Address>,
+    /// When true (default), usage that would push day_spent over daily_limit
+    /// is rejected. When false, the limit_hit event still fires but the usage
+    /// is allowed through ("warn only" mode).
+    pub auto_deactivate: bool,
 }
 
 /// v2 layout — kept for migration from the pre-emergency-contact schema.
@@ -154,10 +160,10 @@ pub struct LegacyMeter {
     pub expires_at: u64,
 }
 
-/// Migrate a v0 (legacy) meter entry to the current v3 schema.
+/// Migrate a v0 (legacy) meter entry to the current v4 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: 3,
+        version: 4,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -169,13 +175,14 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         day_start: old.last_payment,
         grace_expires_at: None,
         emergency_contact: None,
+        auto_deactivate: true,
     }
 }
 
-/// Migrate a v1 meter entry to the current v3 schema.
+/// Migrate a v1 meter entry to the current v4 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 3,
+        version: 4,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -187,12 +194,13 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         day_start: old.last_payment,
         grace_expires_at: None,
         emergency_contact: None,
+        auto_deactivate: true,
     }
 }
 
 fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
     Meter {
-        version: 3,
+        version: 4,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -204,6 +212,7 @@ fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
         day_start: old.day_start,
         grace_expires_at: old.grace_expires_at,
         emergency_contact: None,
+        auto_deactivate: true,
     }
 }
 
@@ -329,6 +338,7 @@ impl SolarGridContract {
             day_start: now,
             grace_expires_at: None,
             emergency_contact: None,
+            auto_deactivate: true,
         };
         env.storage().persistent().set(&key, &meter);
 
@@ -418,6 +428,7 @@ impl SolarGridContract {
                 day_start: now,
                 grace_expires_at: None,
                 emergency_contact: None,
+                auto_deactivate: true,
             };
             env.storage().persistent().set(&key, &meter);
 
@@ -1754,7 +1765,11 @@ impl SolarGridContract {
             return Err(ContractError::MeterNotActive);
         }
 
-        if now.saturating_sub(meter.day_start) > SECONDS_PER_DAY {
+        // Reset at UTC midnight (i.e. when the calendar-day index changes)
+        // rather than a rolling 24h window from day_start, so the cap always
+        // aligns to the same wall-clock boundary regardless of when it was
+        // first hit during the previous day.
+        if now / SECONDS_PER_DAY != meter.day_start / SECONDS_PER_DAY {
             meter.day_spent = 0;
             meter.day_start = now;
         }
@@ -1763,7 +1778,12 @@ impl SolarGridContract {
                 (EVT_NS, symbol_short!("limit_hit"), meter_id.clone()),
                 (meter.daily_limit, meter.day_spent, cost),
             );
-            return Err(ContractError::DailyLimitReached);
+            // auto_deactivate=true (default): block usage over the cap.
+            // auto_deactivate=false ("warn only"): let usage through — the
+            // limit_hit event above is the only effect.
+            if meter.auto_deactivate {
+                return Err(ContractError::DailyLimitReached);
+            }
         }
         meter.day_spent = meter.day_spent.saturating_add(cost);
         let bal_key = DataKey::MeterBalance(meter_id.clone());
@@ -1818,6 +1838,26 @@ impl SolarGridContract {
         env.events().publish(
             (EVT_NS, symbol_short!("lmt_set"), meter_id),
             (old_limit, limit),
+        );
+        Ok(())
+    }
+
+    /// Set whether exceeding daily_limit blocks usage (`auto_deactivate` =
+    /// true, the default) or only emits a limit_hit warning event while
+    /// letting usage continue (`auto_deactivate` = false). Admin-only.
+    pub fn set_cap_mode(
+        env: Env,
+        meter_id: String,
+        auto_deactivate: bool,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        meter.auto_deactivate = auto_deactivate;
+        env.storage().persistent().set(&key, &meter);
+        env.events().publish(
+            (EVT_NS, symbol_short!("cap_mode"), meter_id),
+            auto_deactivate,
         );
         Ok(())
     }
@@ -1903,14 +1943,13 @@ mod tests {
     fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, SolarGridContract);
-        let client = SolarGridContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_address = env
             .register_stellar_asset_contract_v2(token_admin)
             .address();
-        client.initialize(&admin, &token_address);
+        let contract_id = env.register(SolarGridContract, (admin.clone(), token_address.clone()));
+        let client = SolarGridContractClient::new(&env, &contract_id);
         (env, client, admin)
     }
 
@@ -1928,14 +1967,13 @@ mod tests {
     fn setup_with_token() -> (Env, SolarGridContractClient<'static>, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, SolarGridContract);
-        let client = SolarGridContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         let token_admin = Address::generate(&env);
         let token_address = env
             .register_stellar_asset_contract_v2(token_admin)
             .address();
-        client.initialize(&admin, &token_address);
+        let contract_id = env.register(SolarGridContract, (admin.clone(), token_address.clone()));
+        let client = SolarGridContractClient::new(&env, &contract_id);
         (env, client, admin, token_address)
     }
 
@@ -3606,6 +3644,92 @@ mod tests {
 
         let result = client.try_set_daily_limit(&meter_id, &-1_i128);
         assert_eq!(result, Err(Ok(ContractError::InvalidAmount)));
+    }
+
+    // ── Issue #758: daily usage cap mode + midnight reset ─────────────────────
+
+    /// The daily window resets at the UTC calendar-day boundary (midnight),
+    /// not merely after a rolling 24h period: advancing past midnight resets
+    /// day_spent even though under 24h have elapsed since the limit was hit.
+    #[test]
+    fn test_daily_limit_resets_at_utc_midnight_not_rolling_24h() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DL_MIDNIGHT");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_daily_limit(&meter_id, &500_i128);
+
+        // Spend up to the limit at (simulated) 23:00 on day 0.
+        env.ledger().with_mut(|li| li.timestamp = SECONDS_PER_DAY - 3_600);
+        client.update_usage(&meter_id, &1_u64, &500_i128);
+        let result = client.try_update_usage(&meter_id, &1_u64, &1_i128);
+        assert_eq!(result, Err(Ok(ContractError::DailyLimitReached)));
+
+        // Advance only 2 hours (well under 24h), but cross midnight into day 1.
+        env.ledger()
+            .with_mut(|li| li.timestamp = SECONDS_PER_DAY + 3_600);
+        client.update_usage(&meter_id, &1_u64, &500_i128);
+        assert_eq!(client.get_meter_balance(&meter_id), 9_000);
+    }
+
+    /// set_cap_mode(false) puts a meter in "warn only" mode: usage over the
+    /// daily cap is no longer rejected once the cap is exceeded.
+    #[test]
+    fn test_cap_mode_warn_only_allows_usage_over_limit() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DL_WARNONLY");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_daily_limit(&meter_id, &500_i128);
+        client.set_cap_mode(&meter_id, &false);
+
+        // Usage that would exceed the cap succeeds instead of being rejected.
+        client.update_usage(&meter_id, &1_u64, &600_i128);
+        assert_eq!(client.get_meter_balance(&meter_id), 9_400);
+        assert_eq!(client.get_meter(&meter_id).day_spent, 600);
+    }
+
+    /// The default cap mode (auto_deactivate = true) still blocks usage over
+    /// the cap, matching pre-#758 behaviour, until explicitly switched to
+    /// warn-only via set_cap_mode.
+    #[test]
+    fn test_cap_mode_defaults_to_auto_deactivate() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DL_DEFAULT");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_daily_limit(&meter_id, &500_i128);
+
+        assert!(client.get_meter(&meter_id).auto_deactivate);
+        let result = client.try_update_usage(&meter_id, &1_u64, &600_i128);
+        assert_eq!(result, Err(Ok(ContractError::DailyLimitReached)));
+    }
+
+    /// set_cap_mode is admin-only and requires an existing meter.
+    #[test]
+    fn test_set_cap_mode_requires_existing_meter() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "DL_NOEXIST");
+        let result = client.try_set_cap_mode(&meter_id, &false);
+        assert_eq!(result, Err(Ok(ContractError::MeterNotFound)));
     }
 
     /// Invalid basis_points (0 or > 10000) should return InvalidAmount error.

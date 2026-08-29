@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
-import express from "express";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -11,6 +10,7 @@ import mqtt from "mqtt";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
+import * as OpenApiValidator from "express-openapi-validator";
 
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
@@ -28,7 +28,7 @@ import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { graphqlRouter } from "./routes/graphql.js";
-import { startIoTBridge } from "./iot/bridge.js";
+import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
@@ -157,6 +157,22 @@ app.use((req, _res, next) => {
   logger.info("Incoming request", { method: req.method, path: req.path });
   next();
 });
+
+// ── OpenAPI request validation ───────────────────────────────────────────────
+// Closes #759: validate incoming requests against openapi.yaml instead of
+// relying on ad-hoc per-route checks. Only endpoints documented in the spec
+// are validated (ignoreUndocumented) so routes not yet described there (e.g.
+// /api/graphql, /api/admin/login) keep working unchanged. Response-schema
+// validation only runs in local development — it's too strict/expensive for
+// production or test runs.
+app.use(
+  OpenApiValidator.middleware({
+    apiSpec: "./openapi.yaml",
+    validateRequests: true,
+    validateResponses: process.env.NODE_ENV === "development",
+    ignoreUndocumented: true,
+  }),
+);
 
 // ── API versioning ──────────────────────────────────────────────────────────
 // /api/v1/* is the versioned, stable surface. /api/* remains an alias to the
@@ -322,6 +338,16 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       .status(400)
       .json({ error: "Invalid JSON body", code: "INVALID_JSON", requestId });
   }
+  // express-openapi-validator request/response validation failures (#759):
+  // surfaced as an error with a numeric `status` and an `errors` array.
+  if (Array.isArray((err as any).errors)) {
+    return res.status((err as any).status || 400).json({
+      error: "Validation failed",
+      code: "VALIDATION_ERROR",
+      details: (err as any).errors,
+      requestId,
+    });
+  }
   if ((err as any).status === 404) {
     return res
       .status(404)
@@ -354,17 +380,39 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 
+// Graceful shutdown (closes #757): stop accepting new connections, let
+// in-flight requests finish (bounded to GRACEFUL_SHUTDOWN_TIMEOUT_MS, default
+// 30s), then close the MQTT bridge and database handles before exiting.
+// If shutdown doesn't complete within the deadline, force-exit with code 1
+// so an orchestrator (Docker/K8s) isn't left waiting.
+const GRACEFUL_SHUTDOWN_TIMEOUT_MS = Number(
+  process.env.GRACEFUL_SHUTDOWN_TIMEOUT_MS ?? 30_000,
+);
+
 function shutdown(signal: string): void {
   logger.info({ signal }, "SolarGrid backend shutting down");
-  httpServer.close(() => {
-    closeAllDatabases();
-  });
 
   const forceExitTimer = setTimeout(() => {
+    logger.error({ signal }, "Graceful shutdown timed out; forcing exit");
     closeAllDatabases();
-    process.exitCode = 1;
-  }, 10_000);
+    process.exit(1);
+  }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
   forceExitTimer.unref();
+
+  httpServer.close(async (err) => {
+    if (err) {
+      logger.error({ err }, "Error while closing HTTP server");
+    }
+    try {
+      await stopIoTBridge();
+    } catch (bridgeErr) {
+      logger.error({ err: bridgeErr }, "Error stopping IoT bridge during shutdown");
+    }
+    closeAllDatabases();
+    clearTimeout(forceExitTimer);
+    logger.info({ signal }, "SolarGrid backend shut down cleanly");
+    process.exit(0);
+  });
 }
 
 process.once("SIGTERM", () => shutdown("SIGTERM"));

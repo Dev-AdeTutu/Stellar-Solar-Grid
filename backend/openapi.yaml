@@ -269,6 +269,48 @@ components:
           type: integer
           description: Revenue share in basis points (100 = 1%)
 
+  # ── Shared response components ──────────────────────────────────────────────
+
+  responses:
+    TxHash:
+      description: On-chain transaction hash
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TxHash"
+
+    Unauthorized:
+      description: Missing or invalid X-Admin-Key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ValidationError:
+      description: Request body validation failed
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              code: { type: string }
+              details: { type: object }
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 paths:
@@ -1213,45 +1255,3 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
-
-# ── Shared response components ────────────────────────────────────────────────
-
-  responses:
-    TxHash:
-      description: On-chain transaction hash
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/TxHash"
-
-    Unauthorized:
-      description: Missing or invalid X-Admin-Key
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-
-    NotFound:
-      description: Resource not found
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"
-
-    ValidationError:
-      description: Request body validation failed
-      content:
-        application/json:
-          schema:
-            type: object
-            properties:
-              error: { type: string }
-              code: { type: string }
-              details: { type: object }
-
-    InternalError:
-      description: Internal server error
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/Error"

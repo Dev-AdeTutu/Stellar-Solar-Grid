@@ -214,6 +214,7 @@ export function createMeterRouter(stellar: StellarService) {
           active: meter.active,
           dailyLimit: meter.daily_limit,
           daySpent: meter.day_spent,
+          autoDeactivate: meter.auto_deactivate,
           expiresAt: meter.expires_at,
           plan: meter.plan,
         });
@@ -279,6 +280,7 @@ export function createMeterRouter(stellar: StellarService) {
           active: meter.active,
           dailyLimit: meter.daily_limit,
           daySpent: meter.day_spent,
+          autoDeactivate: meter.auto_deactivate,
           expiresAt: meter.expires_at,
           plan: meter.plan,
         });
@@ -779,6 +781,27 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(BigInt(limit), { type: "i128" }),
       ]);
       res.json({ hash, meter_id: req.params.id, daily_limit: limit });
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/set-cap-mode — admin sets whether exceeding
+   * daily_limit blocks usage (autoDeactivate: true, default) or only warns
+   * (autoDeactivate: false) (closes #758).
+   */
+  meterRouter.post(
+    "/:id/set-cap-mode",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const { autoDeactivate } = req.body;
+      if (typeof autoDeactivate !== "boolean") {
+        return res.status(400).json({ error: "autoDeactivate must be a boolean", code: "VALIDATION_ERROR" });
+      }
+      const hash = await stellar.invoke("set_cap_mode", [
+        StellarSdk.nativeToScVal(req.params.id, { type: "symbol" }),
+        StellarSdk.nativeToScVal(autoDeactivate, { type: "bool" }),
+      ]);
+      res.json({ hash, meter_id: req.params.id, auto_deactivate: autoDeactivate });
     }),
   );
 
