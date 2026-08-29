@@ -6,6 +6,7 @@ import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } 
 import { logger } from "../lib/logger.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { idempotency } from "../middleware/idempotency.js";
+import { sendPaymentWebhook, stroopsToXlm } from "../lib/paymentWebhook.js";
 
 export const paymentsRouter = Router();
 
@@ -35,6 +36,51 @@ function cleanExpiredIdempotencyKeys() {
   }
 }
 
+/**
+ * Helper function to get meter balance (Issue #692).
+ * Queries the contract for the current balance of a meter.
+ */
+async function getMeterBalance(meterId: string): Promise<number> {
+  try {
+    const result = await stellarService.query("get_meter_balance", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    if (typeof result === "bigint" || typeof result === "number") {
+      return Number(result);
+    }
+    return 0;
+  } catch (err: any) {
+    logger.warn("Failed to get meter balance for webhook", {
+      meterId,
+      error: err.message,
+    });
+    return 0;
+  }
+}
+
+/**
+ * Helper function to get meter plan (Issue #692).
+ * Queries the contract for the meter's payment plan.
+ */
+async function getMeterPlan(meterId: string): Promise<string> {
+  try {
+    const result = await stellarService.query("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    // Extract plan from meter struct if available
+    if (result && typeof result === "object" && "plan" in result) {
+      return result.plan || "Daily";
+    }
+    return "Daily"; // fallback
+  } catch (err: any) {
+    logger.warn("Failed to get meter plan for webhook", {
+      meterId,
+      error: err.message,
+    });
+    return "Daily"; // fallback
+  }
+}
+
 paymentsRouter.post(
   "/",
   idempotency(),
@@ -61,6 +107,31 @@ paymentsRouter.post(
       memoScVal,
     ]);
 
+    // Issue #692: Send webhook notification for successful payment
+    // Fire async webhook in background without blocking response
+    (async () => {
+      try {
+        const balance = await getMeterBalance(meterId);
+        const plan = await getMeterPlan(meterId);
+
+        await sendPaymentWebhook({
+          meter_id: meterId,
+          payer_address: payer,
+          amount,
+          amount_xlm: stroopsToXlm(amount),
+          plan_type: plan,
+          transaction_hash: hash,
+          timestamp: new Date().toISOString(),
+          updated_balance: balance,
+        });
+      } catch (err: any) {
+        logger.error("Failed to send payment webhook", {
+          meterId,
+          hash,
+          error: err.message,
+        });
+      }
+    })();
 
     return res.json({ hash });
   }),

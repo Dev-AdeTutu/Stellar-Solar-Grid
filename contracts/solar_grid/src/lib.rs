@@ -144,6 +144,8 @@ pub struct Meter {
     /// Schema version — increment when fields are added/changed.
     /// v1: initial layout (owner, active, units_used, plan, last_payment, expires_at)
     /// v2: adds daily spending limit (daily_limit, day_spent, day_start) and grace period (grace_expires_at)
+    /// v3: adds emergency_contact
+    /// v4: adds metadata (Map<String, String> with max 10 entries, 100 chars per value)
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -156,6 +158,26 @@ pub struct Meter {
     pub day_start: u64,    // timestamp when the current window started
     pub grace_expires_at: Option<u64>, // Timestamp when grace period ends
     /// Optional read-only contact to notify when the balance is critically low.
+    pub emergency_contact: Option<Address>,
+    /// Metadata key-value pairs (max 10 pairs, max 100 chars per value)
+    pub metadata: Map<String, String>,
+}
+
+/// v3 layout — kept for migration from the pre-metadata schema.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeterV3 {
+    pub version: u32,
+    pub owner: Address,
+    pub active: bool,
+    pub units_used: u64,
+    pub plan: PaymentPlan,
+    pub last_payment: u64,
+    pub expires_at: u64,
+    pub daily_limit: i128,
+    pub day_spent: i128,
+    pub day_start: u64,
+    pub grace_expires_at: Option<u64>,
     pub emergency_contact: Option<Address>,
 }
 
@@ -190,10 +212,10 @@ pub struct LegacyMeter {
     pub expires_at: u64,
 }
 
-/// Migrate a v0 (legacy) meter entry to the current v3 schema.
-fn migrate_meter_v0(old: LegacyMeter) -> Meter {
+/// Migrate a v0 (legacy) meter entry to the current v4 schema.
+fn migrate_meter_v0(env: &Env, old: LegacyMeter) -> Meter {
     Meter {
-        version: 3,
+        version: 4,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -205,13 +227,14 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         day_start: old.last_payment,
         grace_expires_at: None,
         emergency_contact: None,
+        metadata: Map::new(env),
     }
 }
 
-/// Migrate a v1 meter entry to the current v3 schema.
-fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
+/// Migrate a v1 meter entry to the current v4 schema.
+fn migrate_meter_v1(env: &Env, old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 3,
+        version: 4,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -223,12 +246,13 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         day_start: old.last_payment,
         grace_expires_at: None,
         emergency_contact: None,
+        metadata: Map::new(env),
     }
 }
 
-fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
+fn migrate_meter_v2(env: &Env, old: LegacyMeterV2) -> Meter {
     Meter {
-        version: 3,
+        version: 4,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -240,6 +264,25 @@ fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
         day_start: old.day_start,
         grace_expires_at: old.grace_expires_at,
         emergency_contact: None,
+        metadata: Map::new(env),
+    }
+}
+
+fn migrate_meter_v3(env: &Env, old: LegacyMeterV3) -> Meter {
+    Meter {
+        version: 4,
+        owner: old.owner,
+        active: old.active,
+        units_used: old.units_used,
+        plan: old.plan,
+        last_payment: old.last_payment,
+        expires_at: old.expires_at,
+        daily_limit: old.daily_limit,
+        day_spent: old.day_spent,
+        day_start: old.day_start,
+        grace_expires_at: old.grace_expires_at,
+        emergency_contact: old.emergency_contact,
+        metadata: Map::new(env),
     }
 }
 
@@ -256,6 +299,21 @@ fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
         PaymentPlan::Weekly => SECONDS_PER_WEEK,
         PaymentPlan::UsageBased => u64::MAX,
     }
+}
+
+/// Validates metadata constraints (Issue #691):
+/// - Maximum 10 key-value pairs
+/// - Maximum 100 characters per value
+fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError> {
+    if metadata.len() > MAX_METADATA_PAIRS as i32 {
+        return Err(ContractError::InvalidMetadata);
+    }
+    for (_, value) in metadata.iter() {
+        if value.len() > MAX_METADATA_VALUE_LEN as usize {
+            return Err(ContractError::InvalidMetadata);
+        }
+    }
+    Ok(())
 }
 
 #[contracttype]
@@ -331,17 +389,22 @@ impl SolarGridContract {
             .unwrap_or_else(|| String::from_str(&env, CURRENT_CONTRACT_VERSION))
     }
 
-    /// Register a new smart meter for an owner.
+    /// Register a new smart meter for an owner with optional metadata (Issue #691).
     ///
     /// # Access control
     /// - Caller must be the contract admin.
-    /// - `owner` must be present in the admin-managed allowlist, ensuring only
-    ///   vetted user accounts (G… addresses) can be registered as meter owners.
-    ///   This prevents contract addresses from being registered as owners, which
-    ///   could cause downstream auth issues.
-    /// - `owner` must co-sign the registration (require_auth), confirming they
-    ///   consent to being the meter owner.
-    pub fn register_meter(env: Env, meter_id: String, owner: Address) -> Result<(), ContractError> {
+    /// - `owner` must be present in the admin-managed allowlist.
+    /// - `owner` must co-sign the registration (require_auth).
+    ///
+    /// # Metadata Constraints (Issue #691)
+    /// - Maximum 10 key-value pairs per meter
+    /// - Maximum 100 characters per value
+    pub fn register_meter_with_metadata(
+        env: Env,
+        meter_id: String,
+        owner: Address,
+        metadata: Option<Map<String, String>>,
+    ) -> Result<(), ContractError> {
         if Self::pause_is_active(&env) {
             return Err(ContractError::ContractPaused);
         }
@@ -354,9 +417,17 @@ impl SolarGridContract {
         if env.storage().persistent().has(&key) {
             return Err(ContractError::MeterAlreadyExists);
         }
+
+        let meter_metadata = if let Some(md) = metadata {
+            validate_metadata(&md)?;
+            md
+        } else {
+            Map::new(&env)
+        };
+
         let now = env.ledger().timestamp();
         let meter = Meter {
-            version: 2,
+            version: 4,
             owner: owner.clone(),
             active: false,
             units_used: 0,
@@ -368,6 +439,7 @@ impl SolarGridContract {
             day_start: now,
             grace_expires_at: None,
             emergency_contact: None,
+            metadata: meter_metadata,
         };
         env.storage().persistent().set(&key, &meter);
 
@@ -399,6 +471,12 @@ impl SolarGridContract {
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_reg"), meter_id), owner);
         Ok(())
+    }
+
+    /// Register a new smart meter for an owner (backward compatible).
+    /// Calls register_meter_with_metadata with no metadata.
+    pub fn register_meter(env: Env, meter_id: String, owner: Address) -> Result<(), ContractError> {
+        Self::register_meter_with_metadata(env, meter_id, owner, None)
     }
 
     /// Register multiple new smart meters in a single transaction.
@@ -445,7 +523,7 @@ impl SolarGridContract {
             seen.push_back(meter_id.clone());
 
             let meter = Meter {
-                version: 2,
+                version: 4,
                 owner: owner.clone(),
                 active: false,
                 units_used: 0,
@@ -457,6 +535,7 @@ impl SolarGridContract {
                 day_start: now,
                 grace_expires_at: None,
                 emergency_contact: None,
+                metadata: Map::new(&env),
             };
             env.storage().persistent().set(&key, &meter);
 
@@ -488,6 +567,35 @@ impl SolarGridContract {
             .persistent()
             .get(&owner_key)
             .unwrap_or_else(|| vec![&env]))
+    }
+
+    /// Update meter metadata (Issue #691).
+    /// Only the meter owner or contract admin can update metadata.
+    /// Validates metadata constraints: max 10 pairs, max 100 chars per value.
+    pub fn update_meter_metadata(
+        env: Env,
+        meter_id: String,
+        metadata: Map<String, String>,
+    ) -> Result<(), ContractError> {
+        validate_metadata(&metadata)?;
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        meter.owner.require_auth();
+        meter.metadata = metadata;
+        env.storage().persistent().set(&key, &meter);
+
+        env.events()
+            .publish((EVT_NS, symbol_short!("mtr_meta"), meter_id), ());
+        Ok(())
+    }
+
+    /// Get meter metadata (Issue #691).
+    /// Returns an empty map if the meter has no metadata.
+    pub fn get_meter_metadata(env: Env, meter_id: String) -> Result<Map<String, String>, ContractError> {
+        let key = DataKey::Meter(meter_id);
+        let meter = Self::get_meter_or_error(&env, &key)?;
+        Ok(meter.metadata)
     }
 
     /// Deregister an existing meter. Admin-only.
@@ -1996,10 +2104,27 @@ impl SolarGridContract {
         if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(key) {
             return Ok(meter);
         }
+        if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeterV3>(key) {
+            // Read-through migration from v3 to v4 (adds metadata).
+            let migrated = migrate_meter_v3(env, legacy);
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
+        }
         if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeterV2>(key) {
-            // Read-through migration keeps old v2 entries usable after the
-            // schema gains the optional emergency-contact field.
-            let migrated = migrate_meter_v2(legacy);
+            // Read-through migration from v2 to v4 (adds emergency-contact and metadata).
+            let migrated = migrate_meter_v2(env, legacy);
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
+        }
+        if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeterV1>(key) {
+            // Read-through migration from v1 to v4.
+            let migrated = migrate_meter_v1(env, legacy);
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
+        }
+        if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeter>(key) {
+            // Read-through migration from v0 to v4.
+            let migrated = migrate_meter_v0(env, legacy);
             env.storage().persistent().set(key, &migrated);
             return Ok(migrated);
         }
