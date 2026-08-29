@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { publishRealtime } from "../lib/realtime.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } from "../lib/stellar.js";
@@ -78,6 +79,7 @@ export interface PaymentRecord {
   meterId: string;
   amountXlm: number;
   plan: string;
+  status: "Completed" | "Pending" | "Failed";
   /** Optional free-text note attached to the payment (Issue #766). */
   memo?: string;
   /**
@@ -119,6 +121,13 @@ paymentsRouter.get(
     const days = Math.min(90, Math.max(1, parseInt((req.query.days as string) ?? "30", 10)));
     const rawCursor = req.query.cursor;
     const cursor = typeof rawCursor === "string" && rawCursor.length > 0 ? rawCursor : undefined;
+    const from = req.query.from ? new Date(`${req.query.from}T00:00:00Z`).getTime() : undefined;
+    const to = req.query.to ? new Date(`${req.query.to}T23:59:59.999Z`).getTime() : undefined;
+    const min = req.query.min ? Number(req.query.min) : undefined;
+    const max = req.query.max ? Number(req.query.max) : undefined;
+    const plan = typeof req.query.plan === "string" && req.query.plan !== "All" ? req.query.plan : undefined;
+    const status = typeof req.query.status === "string" && req.query.status !== "All" ? req.query.status : undefined;
+    const query = typeof req.query.q === "string" ? req.query.q.toLowerCase() : undefined;
 
     try {
       StellarSdk.StrKey.decodeEd25519PublicKey(address);
@@ -127,7 +136,13 @@ paymentsRouter.get(
     }
 
     try {
-      const records = await fetchPaymentEvents(address, sort, days);
+      const records = (await fetchPaymentEvents(address, sort, days)).filter((record) => {
+        const timestamp = new Date(record.date).getTime();
+        const matchesPlan = !plan || record.plan === plan || (plan === "Usage" && record.plan === "UsageBased");
+        const matchesStatus = !status || record.status === status;
+        const haystack = `${record.txHash} ${record.meterId}`.toLowerCase();
+        return (!from || timestamp >= from) && (!to || timestamp <= to) && (min === undefined || record.amountXlm >= min) && (max === undefined || record.amountXlm <= max) && matchesPlan && matchesStatus && (!query || haystack.includes(query));
+      });
 
       // Seek to the record immediately after the cursor. A cursor that no
       // longer matches anything (e.g. it aged out of the `days` window)
@@ -401,15 +416,19 @@ function parsePaymentEvent(
     ? new Date(event.ledgerClosedAt).toISOString()
     : new Date().toISOString();
 
-  return {
-    txHash: event.txHash ?? event.id ?? "",
+  const txHash = event.txHash ?? event.id ?? "";
+  const record: PaymentRecord = {
+    txHash,
     date,
     meterId,
     amountXlm,
     plan,
+    status: "Completed",
     ...(memo ? { memo } : {}),
-    cursor: event.pagingToken ?? event.id ?? `${date}:${event.txHash ?? ""}`,
+    cursor: event.pagingToken ?? event.id ?? `${date}:${meterId}`,
   };
+  publishRealtime({ type: "paymentConfirmed", key: filterAddress, payload: { ...record, address: filterAddress, confirmedAt: date } });
+  return record;
 }
 
 // suppress unused import warning — horizonServer reserved for fallback

@@ -130,6 +130,10 @@
     "weekly": "Kila wiki",
     "usage": "Matumizi"
   },
+  "pauseBanner": {
+    "title": "Kusitisha dharura kumewashwa",
+    "message": "Malipo na usajili wa mita umesitishwa kwa muda. Ripoti za matumizi bado zinapatikana."
+  },
   "common": {
     "loading": "Inapakia…",
     "error": "Hitilafu",
