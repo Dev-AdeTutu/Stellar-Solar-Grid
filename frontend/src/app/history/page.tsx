@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useState, useCallback, useRef } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { Skeleton } from "@/components/Skeleton";
@@ -19,6 +19,7 @@ import { formatXlmAmount } from "@/lib/format";
 
 type SortField = "date" | "amountXlm" | "plan" | "meterId";
 type SortDir = "asc" | "desc";
+type StatusFilter = "All" | "Completed" | "Pending" | "Failed";
 
 const NETWORK = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test") ? "testnet" : "mainnet";
 
@@ -46,7 +47,16 @@ function HistoryPageContent() {
   const { address } = useWalletStore();
   const { showToast } = useToast();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const filterMeterId = searchParams.get("meterId");
+  const [filtersOpen, setFiltersOpen] = useState(Boolean(searchParams.get("from") || searchParams.get("to") || searchParams.get("min") || searchParams.get("max") || searchParams.get("plan") || searchParams.get("status") || searchParams.get("q")));
+  const [fromDate, setFromDate] = useState(searchParams.get("from") ?? "");
+  const [toDate, setToDate] = useState(searchParams.get("to") ?? "");
+  const [minAmount, setMinAmount] = useState(searchParams.get("min") ?? "");
+  const [maxAmount, setMaxAmount] = useState(searchParams.get("max") ?? "");
+  const [planFilter, setPlanFilter] = useState(searchParams.get("plan") ?? "All");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>((searchParams.get("status") as StatusFilter) || "All");
+  const [query, setQuery] = useState(searchParams.get("q") ?? "");
   const historySectionRef = useRef<HTMLElement | null>(null);
 
   const [records, setRecords] = useState<PaymentRecord[]>([]);
@@ -62,6 +72,19 @@ function HistoryPageContent() {
   const [sortField, setSortField] = useState<SortField>("date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [downloadingHash, setDownloadingHash] = useState<string | null>(null);
+
+  function updateFilters(next: Record<string, string>) {
+    const params = new URLSearchParams(searchParams.toString());
+    for (const [key, value] of Object.entries(next)) { if (value && value !== "All") params.set(key, value); else params.delete(key); }
+    router.replace(`/history${params.toString() ? `?${params.toString()}` : ""}`, { scroll: false });
+  }
+  const activeFilterCount = [fromDate, toDate, minAmount, maxAmount, planFilter !== "All" ? planFilter : "", statusFilter !== "All" ? statusFilter : "", query, filterMeterId ?? ""].filter(Boolean).length;
+  function clearFilters() {
+    setFromDate(""); setToDate(""); setMinAmount(""); setMaxAmount(""); setPlanFilter("All"); setStatusFilter("All"); setQuery("");
+    router.replace("/history", { scroll: false });
+  }
+
+
 
   async function handleDownloadReceipt(record: PaymentRecord) {
     if (!record.txHash || downloadingHash) return;
@@ -141,7 +164,8 @@ function HistoryPageContent() {
           address,
           cursor,
           PAGE_SIZE,
-          serverSort,
+          sortDir,
+          { from: fromDate, to: toDate, min: minAmount, max: maxAmount, plan: planFilter, status: statusFilter, q: query },
         );
         if (!data || !data.payments) {
           throw new Error("Invalid response: missing payments data");
@@ -157,7 +181,7 @@ function HistoryPageContent() {
         setLoading(false);
       }
     },
-    [address, sortField, sortDir],
+    [address, sortField, sortDir, fromDate, toDate, minAmount, maxAmount, planFilter, statusFilter, query],
   );
 
   // Changing address or sort order invalidates the cursor stack — the
@@ -201,7 +225,17 @@ function HistoryPageContent() {
     }
   }
 
-  const sorted = [...records].filter((r) => !filterMeterId || r.meterId === filterMeterId).sort((a, b) => {
+  const sorted = [...records].filter((r) => {
+    const date = new Date(r.date);
+    const min = minAmount === "" ? -Infinity : Number(minAmount);
+    const max = maxAmount === "" ? Infinity : Number(maxAmount);
+    const matchesDate = (!fromDate || date >= new Date(`${fromDate}T00:00:00`)) && (!toDate || date <= new Date(`${toDate}T23:59:59.999`));
+    const matchesAmount = r.amountXlm >= min && r.amountXlm <= max;
+    const matchesPlan = planFilter === "All" || r.plan === planFilter || (planFilter === "Usage" && r.plan === "UsageBased");
+    const matchesStatus = statusFilter === "All" || statusFilter === "Completed";
+    const haystack = `${r.txHash} ${r.meterId}`.toLowerCase();
+    return (!filterMeterId || r.meterId === filterMeterId) && matchesDate && matchesAmount && matchesPlan && matchesStatus && (!query || haystack.includes(query.toLowerCase()));
+  }).sort((a, b) => {
     let cmp = 0;
     if (sortField === "date") cmp = new Date(a.date).getTime() - new Date(b.date).getTime();
     else if (sortField === "amountXlm") cmp = a.amountXlm - b.amountXlm;
@@ -259,6 +293,40 @@ function HistoryPageContent() {
 
         {address && !error && (
           <>
+            <section className="mb-5 rounded-xl border border-white/10 bg-solar-accent/60 p-4" aria-label="Transaction filters">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <button type="button" onClick={() => setFiltersOpen((open) => !open)} className="flex items-center gap-2 text-sm font-semibold text-gray-200 hover:text-solar-yellow">
+                  Filters {activeFilterCount > 0 && <span className="rounded-full bg-solar-yellow px-2 py-0.5 text-xs font-bold text-solar-dark">{activeFilterCount}</span>} <span aria-hidden="true">{filtersOpen ? "▴" : "▾"}</span>
+                </button>
+                {activeFilterCount > 0 && <button type="button" onClick={clearFilters} className="text-xs text-gray-400 underline hover:text-solar-yellow">Clear all filters</button>}
+              </div>
+              {filtersOpen && <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="text-xs text-gray-400">From<input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); updateFilters({from:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">To<input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); updateFilters({to:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">Min XLM<input type="number" min="0" step="0.0000001" value={minAmount} onChange={(e) => { setMinAmount(e.target.value); updateFilters({min:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">Max XLM<input type="number" min="0" step="0.0000001" value={maxAmount} onChange={(e) => { setMaxAmount(e.target.value); updateFilters({max:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">Payment plan<select value={planFilter} onChange={(e) => { setPlanFilter(e.target.value); updateFilters({plan:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200"><option>All</option><option>Daily</option><option>Weekly</option><option>Monthly</option><option>Usage</option></select></label>
+                <label className="text-xs text-gray-400">Status<select value={statusFilter} onChange={(e) => { const v=e.target.value as StatusFilter; setStatusFilter(v); updateFilters({status:v}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200"><option>All</option><option>Completed</option><option>Pending</option><option>Failed</option></select></label>
+                <label className="text-xs text-gray-400 sm:col-span-2">Hash or meter ID<input type="search" value={query} onChange={(e) => { setQuery(e.target.value); updateFilters({q:e.target.value}); }} placeholder="Search transactions…" className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+              </div>}
+            </section>
+            <section className="mb-5 rounded-xl border border-white/10 bg-solar-accent/60 p-4" aria-label="Transaction filters">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <button type="button" onClick={() => setFiltersOpen((open) => !open)} className="flex items-center gap-2 text-sm font-semibold text-gray-200 hover:text-solar-yellow">
+                  Filters {activeFilterCount > 0 && <span className="rounded-full bg-solar-yellow px-2 py-0.5 text-xs font-bold text-solar-dark">{activeFilterCount}</span>} <span aria-hidden="true">{filtersOpen ? "▴" : "▾"}</span>
+                </button>
+                {activeFilterCount > 0 && <button type="button" onClick={clearFilters} className="text-xs text-gray-400 underline hover:text-solar-yellow">Clear all filters</button>}
+              </div>
+              {filtersOpen && <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <label className="text-xs text-gray-400">From<input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); updateFilters({from:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">To<input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); updateFilters({to:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">Min XLM<input type="number" min="0" step="0.0000001" value={minAmount} onChange={(e) => { setMinAmount(e.target.value); updateFilters({min:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">Max XLM<input type="number" min="0" step="0.0000001" value={maxAmount} onChange={(e) => { setMaxAmount(e.target.value); updateFilters({max:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+                <label className="text-xs text-gray-400">Payment plan<select value={planFilter} onChange={(e) => { setPlanFilter(e.target.value); updateFilters({plan:e.target.value}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200"><option>All</option><option>Daily</option><option>Weekly</option><option>Monthly</option><option>Usage</option></select></label>
+                <label className="text-xs text-gray-400">Status<select value={statusFilter} onChange={(e) => { const v=e.target.value as StatusFilter; setStatusFilter(v); updateFilters({status:v}); }} className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200"><option>All</option><option>Completed</option><option>Pending</option><option>Failed</option></select></label>
+                <label className="text-xs text-gray-400 sm:col-span-2">Hash or meter ID<input type="search" value={query} onChange={(e) => { setQuery(e.target.value); updateFilters({q:e.target.value}); }} placeholder="Search transactions…" className="mt-1 w-full rounded-lg border border-white/10 bg-solar-dark px-2 py-2 text-sm text-gray-200" /></label>
+              </div>}
+            </section>
             {/* ── Mobile sort control (desktop uses the table's column headers) ── */}
             <div className="sm:hidden flex items-center gap-2 mb-3">
               <label htmlFor="mobile-sort-field" className="text-xs text-gray-400">

@@ -6,8 +6,9 @@ import {
   type GraphQLRequest,
 } from "../lib/apq.js";
 import { getUsageHistory } from "../lib/usageEvents.js";
+import { subscribeRealtime } from "../lib/realtime.js";
 
-const schema = buildSchema(`
+export const schema = buildSchema(`
   type UsageEvent {
     id: Int!
     meterId: String!
@@ -25,6 +26,16 @@ const schema = buildSchema(`
     hasMore: Boolean!
   }
 
+  type MeterBalance { meterId: String!, balance: String!, updatedAt: String! }
+  type MeterStatus { meterId: String!, status: String!, updatedAt: String! }
+  type Payment { txHash: String!, address: String!, meterId: String, amountXlm: Float, status: String!, confirmedAt: String! }
+  type UsageUpdate { meterId: String!, units: Float!, cost: String!, updatedAt: String! }
+  type Subscription {
+    meterBalanceChanged(meterId: String!): MeterBalance!
+    meterStatusChanged(meterId: String!): MeterStatus!
+    paymentConfirmed(address: String!): Payment!
+    usageUpdated(meterId: String!): UsageUpdate!
+  }
   type Query {
     health: String!
     usageHistory(meterId: String!, page: Int = 1, pageSize: Int = 20): UsageHistory!
@@ -33,7 +44,7 @@ const schema = buildSchema(`
 
 const persistedQueries = new PersistedQueryCache();
 
-const rootValue = {
+export const rootValue = {
   health: () => "ok",
   usageHistory: ({ meterId, page = 1, pageSize = 20 }: { meterId: string; page?: number; pageSize?: number }) => {
     const safePage = Math.max(1, Math.trunc(page));
