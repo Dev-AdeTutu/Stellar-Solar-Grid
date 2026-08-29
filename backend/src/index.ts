@@ -50,6 +50,20 @@ const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
 const app = express();
 const startTime = Date.now();
 
+// #TRUST_PROXY: rate limiting keys off req.ip, which Express derives from
+// X-Forwarded-For only when 'trust proxy' is set. Setting it to `true`
+// (trust every hop) lets a client forge X-Forwarded-For and pick any IP it
+// likes, trivially bypassing IP-based rate limits — so we only ever trust a
+// fixed, explicit number of hops (the known reverse proxies/load balancers
+// in front of this service), never "trust all". Default 0 = no proxy in
+// front, so req.ip is always the real socket address unless explicitly
+// configured otherwise for the deployment topology.
+const TRUST_PROXY_HOPS = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+app.set(
+  "trust proxy",
+  Number.isInteger(TRUST_PROXY_HOPS) && TRUST_PROXY_HOPS >= 0 ? TRUST_PROXY_HOPS : 0,
+);
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
