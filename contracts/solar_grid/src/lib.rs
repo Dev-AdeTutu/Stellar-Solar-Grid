@@ -103,6 +103,14 @@ pub struct LegacyMeterV1 {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnershipTransfer {
+    pub old_owner: Address,
+    pub new_owner: Address,
+    pub transferred_at: u64,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Meter {
     /// Schema version — increment when fields are added/changed.
@@ -226,6 +234,7 @@ fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
 pub enum DataKey {
     Meter(String),
     OwnerMeters(Address),
+    OwnershipHistory(String),
     ProviderRevenue(Address),
     MeterBalance(String),
     /// Cumulative amount `payer` has paid towards `meter_id` (lifetime, not reduced by refunds).
@@ -557,10 +566,28 @@ impl SolarGridContract {
         env.storage().persistent().set(&new_key, &new_list);
 
         meter.owner = new_owner.clone();
+        // A transfer starts a fresh usage accounting period while preserving
+        // the prepaid meter balance for the incoming owner.
+        meter.units_used = 0;
         env.storage().persistent().set(&key, &meter);
 
-        env.events()
-            .publish((EVT_NS, symbol_short!("mtr_xfer"), meter_id), new_owner);
+        let history_key = DataKey::OwnershipHistory(meter_id.clone());
+        let mut history: Vec<OwnershipTransfer> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| vec![&env]);
+        history.push_back(OwnershipTransfer {
+            old_owner: old_owner.clone(),
+            new_owner: new_owner.clone(),
+            transferred_at: env.ledger().timestamp(),
+        });
+        env.storage().persistent().set(&history_key, &history);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("mtr_xfer"), meter_id),
+            (old_owner, new_owner),
+        );
         Ok(())
     }
 
