@@ -1,0 +1,143 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "Mita Yangu",
+    "pay": "Lipa",
+    "provider": "Mtoa Huduma",
+    "history": "Historia",
+    "toggleTheme": "Badilisha Mandhari",
+    "openMenu": "Fungua menyu",
+    "closeMenu": "Funga menyu",
+    "languageToggle": "Kiswahili",
+    "languageLabel": "Badilisha lugha"
+  },
+  "home": {
+    "tagline": "Nishati ya jua nafuu ya kulipia unapotumia, ikiendeshwa na blockchain ya Stellar. Hakuna gharama kubwa za kuanzia — ni nishati safi kwa masharti yako.",
+    "userDashboard": "Dashibodi ya Mtumiaji",
+    "providerDashboard": "Dashibodi ya Mtoa Huduma"
+  },
+  "meterCard": {
+    "balance": "Salio",
+    "plan": "Mpango",
+    "expiry": "Muda wa kuisha",
+    "never": "Kamwe",
+    "daysLeft": "Siku {days} zimebaki",
+    "deactivate": "Zima mita",
+    "deactivating": "Inazima…",
+    "ariaLabel": "Mita {meterId}"
+  },
+  "meterStatus": {
+    "active": "Inatumika",
+    "inactive": "Haitumiki",
+    "expired": "Imeisha",
+    "ariaLabel": "Hali ya mita: {status}"
+  },
+  "wallet": {
+    "connect": "Unganisha pochi",
+    "connectCompact": "Unganisha",
+    "connecting": "Inaunganisha…",
+    "disconnect": "Tenganisha",
+    "copyAddress": "Bofya kunakili anwani kamili",
+    "copied": "✓ Imekopiwa",
+    "freighterNotDetected": "Freighter haikupatikana",
+    "installFreighter": "Sakinisha Freighter ↗",
+    "wrongNetwork": "Mtandao usio sahihi",
+    "switchNetwork": "Badilisha mtandao katika Freighter: Mipangilio → Mtandao.",
+    "ariaWalletAddress": "Anwani ya pochi {address}. Bofya kunakili.",
+    "ariaDisconnect": "Tenganisha pochi",
+    "ariaConnecting": "Inaunganisha"
+  },
+  "networkBanner": {
+    "wrongNetwork": "Mtandao usio sahihi:",
+    "dismiss": "Funga onyo la mtandao usio sahihi"
+  },
+  "errors": {
+    "freighterNotInstalled": "Pochi iliyochaguliwa haijasakinishwa.",
+    "noAccount": "Hakuna akaunti iliyopatikana katika pochi iliyochaguliwa",
+    "walletConnectFailed": "Imeshindwa kuunganisha pochi",
+    "meterLoadFailed": "Imeshindwa kupakia data ya mita: {error}",
+    "retry": "Jaribu tena",
+    "installFreighter": "Sakinisha Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "Mita Zangu",
+      "connectWallet": "Unganisha pochi yako ili kuona mita zako.",
+      "noMeters": "Hakuna mita zilizopatikana kwa anwani yako.",
+      "loading": "Inapakia mita…",
+      "balance": "Salio",
+      "unitsUsed": "Vipimo vilivyotumika",
+      "active": "Inatumika",
+      "inactive": "Haitumiki",
+      "plan": "Mpango",
+      "expiry": "Muda wa kuisha"
+    },
+    "provider": {
+      "title": "Dashibodi ya Mtoa Huduma",
+      "allMeters": "Mita Zote",
+      "deactivate": "Zima",
+      "deactivating": "Inazima…"
+    }
+  },
+  "report": {
+    "title": "Ripoti ya Hali ya Mita",
+    "printReport": "Chapisha Ripoti",
+    "print": "Chapisha",
+    "back": "← Rudi",
+    "meterId": "Kitambulisho cha mita",
+    "owner": "Mmiliki",
+    "balance": "Salio",
+    "plan": "Mpango",
+    "status": "Hali",
+    "expiry": "Muda wa kuisha",
+    "unitsUsed": "Vipimo vilivyotumika",
+    "generatedAt": "Imetengenezwa",
+    "recentReadings": "Vipimo vya Hivi Karibuni (5 vya mwisho)",
+    "noReadings": "Hakuna vipimo vinavyopatikana.",
+    "date": "Tarehe",
+    "units": "Vipimo",
+    "amount": "Kiasi",
+    "qrCode": "Msimbo wa QR",
+    "scanToView": "Changanua ili kuona mita hii",
+    "never": "Kamwe",
+    "active": "Inatumika",
+    "inactive": "Haitumiki"
+  },
+  "history": {
+    "title": "Historia ya Malipo",
+    "noHistory": "Hakuna historia ya malipo iliyopatikana.",
+    "date": "Tarehe",
+    "meter": "Mita",
+    "plan": "Mpango",
+    "amount": "Kiasi",
+    "transaction": "Muamala",
+    "viewExplorer": "Tazama kwenye Explorer ↗",
+    "export": "Hamisha CSV",
+    "exporting": "Inahamisha…",
+    "prev": "Iliyotangulia",
+    "next": "Ifuatayo",
+    "page": "Ukurasa {page} / {total}"
+  },
+  "pay": {
+    "title": "Fanya Malipo",
+    "meterId": "Kitambulisho cha mita",
+    "amount": "Kiasi (XLM)",
+    "plan": "Mpango",
+    "submit": "Lipa",
+    "submitting": "Inachakata…",
+    "success": "Malipo yamefanikiwa!",
+    "daily": "Kila siku",
+    "weekly": "Kila wiki",
+    "usage": "Matumizi"
+  },
+  "common": {
+    "loading": "Inapakia…",
+    "error": "Hitilafu",
+    "close": "Funga",
+    "cancel": "Ghairi",
+    "confirm": "Thibitisha",
+    "save": "Hifadhi",
+    "back": "Rudi",
+    "xlm": "XLM"
+  }
+}

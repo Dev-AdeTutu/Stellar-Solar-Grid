@@ -162,7 +162,10 @@ paymentsRouter.get(
  *
  * Returns payment history for a given address with optional date range filtering.
  * from/to are UNIX timestamps converted to ledger numbers.
- * limit is capped at 200 per page.
+ * limit is capped at 100 per page (Issue #747 — a caller requesting a huge
+ * page size on an account with thousands of transactions was forcing the
+ * full result set to be serialized to JSON in one response, causing
+ * multi-second responses and, at large enough volumes, OOM crashes).
  * address must be a valid 56-char Stellar public key.
  */
 paymentsRouter.get(
@@ -184,7 +187,7 @@ paymentsRouter.get(
 
     const from = req.query.from ? Number(req.query.from) : undefined;
     const to = req.query.to ? Number(req.query.to) : undefined;
-    const limit = Math.min(200, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
+    const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
     const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
 
     // Validate timestamps

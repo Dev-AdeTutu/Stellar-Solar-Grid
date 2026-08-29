@@ -4,16 +4,24 @@ import { createContext, useContext, useEffect, useState, useCallback, ReactNode 
 import { NextIntlClientProvider } from "next-intl";
 import enMessages from "@/locales/en.json";
 import frMessages from "@/locales/fr.json";
+import swMessages from "@/locales/sw.json";
 
-export type Locale = "en" | "fr";
+export type Locale = "en" | "fr" | "sw";
+
+export const LOCALE_OPTIONS: ReadonlyArray<{ value: Locale; label: string }> = [
+  { value: "en", label: "English" },
+  { value: "fr", label: "Français" },
+  { value: "sw", label: "Kiswahili" },
+];
 
 const STORAGE_KEY = "sg_locale";
-const SUPPORTED_LOCALES: Locale[] = ["en", "fr"];
+const SUPPORTED_LOCALES: Locale[] = LOCALE_OPTIONS.map(({ value }) => value);
 const DEFAULT_LOCALE: Locale = "en";
 
 const messages: Record<Locale, typeof enMessages> = {
   en: enMessages,
   fr: frMessages,
+  sw: swMessages,
 };
 
 // ── Context ───────────────────────────────────────────────────────────────
@@ -73,7 +81,9 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toggleLocale = useCallback(() => {
-    setLocale(locale === "en" ? "fr" : "en");
+    const currentIndex = SUPPORTED_LOCALES.indexOf(locale);
+    const nextLocale = SUPPORTED_LOCALES[(currentIndex + 1) % SUPPORTED_LOCALES.length];
+    setLocale(nextLocale);
   }, [locale, setLocale]);
 
   // Avoid hydration mismatch: render with default locale on server / before
