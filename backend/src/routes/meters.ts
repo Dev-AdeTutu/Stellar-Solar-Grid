@@ -14,18 +14,18 @@ import {
   deleteMeterNote,
 } from "../lib/meterNotes.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { logger } from "../lib/logger.js";
-import { validateRequest, RegisterMeterSchema } from "../lib/validation.js";
 import {
   validateRequest,
   RegisterMeterSchema,
+  BatchRegisterMetersSchema,
+  BulkMeterStatusSchema,
   MeterNoteSchema,
 } from "../lib/validation.js";
+import { logger } from "../lib/logger.js";
 import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
 import { getMqttClient } from "../iot/mqttClient.js";
-import { logger } from "../lib/logger.js";
 
 const balanceCache = new Map<string, { data: any; ts: number }>();
 const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
@@ -53,6 +53,16 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const page = Math.max(1, Number(req.query.page ?? 1) || 1);
       const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
+
+      // Optional filters — each is only applied when the caller supplies it.
+      const owner = req.query.owner;
+      const active = req.query.active;
+      const plan = req.query.plan;
+      const rawExpiresBefore = req.query.expiresBefore;
+      const expiresBeforeMs =
+        rawExpiresBefore !== undefined && Number.isFinite(Number(rawExpiresBefore))
+          ? Number(rawExpiresBefore)
+          : undefined;
 
       const result = await stellar.query("get_all_meters", []);
       let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
@@ -587,6 +597,69 @@ export function createMeterRouter(stellar: StellarService) {
     }),
   );
 
+  /**
+   * POST /api/meters/bulk — batch status query for multiple meters
+   *
+   * A dashboard with 50+ meters was making one GET /api/meters/:id/status
+   * call per meter on load, causing slow page loads and rate-limit hits.
+   * Body-based (rather than a comma-separated query string, as /balances
+   * uses) so callers aren't bound by URL length limits. Capped at 100
+   * meter_ids per request. Reuses the same per-meter balance cache as
+   * /balances and /:id/balance.
+   *
+   * Closes #750.
+   */
+  meterRouter.post(
+    "/bulk",
+    validateRequest({ body: BulkMeterStatusSchema }),
+    asyncHandler(async (req, res) => {
+      const { meter_ids } = req.body as { meter_ids: string[] };
+      const uniqueIds = [...new Set(meter_ids)];
+
+      const meters: Array<{ id: string; balance: unknown; active: unknown }> = [];
+      const errors: Record<string, string> = {};
+
+      await Promise.all(
+        uniqueIds.map(async (meterId) => {
+          try {
+            const cached = balanceCache.get(meterId);
+            if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL_MS) {
+              meters.push({ id: meterId, balance: cached.data.balance, active: cached.data.active });
+              return;
+            }
+
+            const result = await stellar.query("get_meter", [
+              StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+            ]);
+            const meter = StellarSdk.scValToNative(result) as any;
+            if (!meter) {
+              errors[meterId] = "Meter not found";
+              return;
+            }
+
+            const payload = {
+              meter_id: meterId,
+              balance: meter.balance,
+              units_used: meter.units_used,
+              active: meter.active,
+            };
+            balanceCache.set(meterId, { data: payload, ts: Date.now() });
+            meters.push({ id: meterId, balance: meter.balance, active: meter.active });
+          } catch (err: any) {
+            errors[meterId] = err.message ?? "Meter not found";
+          }
+        }),
+      );
+
+      res.json({
+        meters,
+        errors: Object.keys(errors).length > 0 ? errors : undefined,
+        count: meters.length,
+        requested: uniqueIds.length,
+      });
+    }),
+  );
+
   /** GET /api/meters/:id/history?page=1&pageSize=20 — paginated local usage history */
   meterRouter.get("/:id/history", (req, res) => {
     const rawPage = Number(req.query.page ?? 1);
@@ -722,6 +795,37 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(owner, { type: "address" }),
       ]);
       res.json({ hash });
+    }),
+  );
+
+  /** POST /api/meters/batch — register multiple meters in a single transaction (admin only) */
+  meterRouter.post(
+    "/batch",
+    validateRequest({ body: BatchRegisterMetersSchema }),
+    asyncHandler(async (req, res) => {
+      const { meters } = req.body as { meters: { meter_id: string; owner: string }[] };
+
+      const seen = new Set<string>();
+      const duplicates = meters
+        .map((m) => m.meter_id)
+        .filter((id) => (seen.has(id) ? true : (seen.add(id), false)));
+      if (duplicates.length > 0) {
+        return res.status(400).json({
+          error: "Duplicate meter_id values in batch",
+          duplicates: [...new Set(duplicates)],
+        });
+      }
+
+      const entries = meters.map(({ meter_id, owner }) =>
+        StellarSdk.xdr.ScVal.scvVec([
+          StellarSdk.nativeToScVal(meter_id, { type: "symbol" }),
+          StellarSdk.nativeToScVal(owner, { type: "address" }),
+        ]),
+      );
+      const encoded = StellarSdk.xdr.ScVal.scvVec(entries);
+
+      const hash = await stellar.invoke("batch_register_meters", [encoded]);
+      res.json({ hash, meter_ids: meters.map((m) => m.meter_id) });
     }),
   );
 

@@ -481,6 +481,50 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/meters/bulk:
+    post:
+      summary: Bulk meter status query
+      description: >-
+        Batch alternative to calling GET /api/meters/{id}/status once per
+        meter. Capped at 100 meter_ids per request.
+      operationId: getMeterStatusBulk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_ids]
+              properties:
+                meter_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: string }
+      responses:
+        "200":
+          description: Per-meter status, with per-meter errors reported separately
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  meters:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        balance: { type: string }
+                        active: { type: boolean }
+                  errors:
+                    type: object
+                    additionalProperties: { type: string }
+                  count: { type: integer }
+                  requested: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
   /api/meters/{id}/balance:
     get:
       summary: Live meter balance
@@ -888,6 +932,273 @@ paths:
           description: Invalid Stellar address
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  # ── Delegates ─────────────────────────────────────────────────────────────────
+
+  /api/delegates/add:
+    post:
+      summary: Add a delegate who can make payments on behalf of meter owner
+      description: |
+        Authorize a delegate address to make payments for a specific meter. The meter
+        owner retains full control and can revoke delegation at any time. Multiple
+        delegates can be authorized per meter.
+      operationId: addDelegate
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, delegate, owner]
+              properties:
+                meterId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The meter ID to authorize delegate for
+                delegate:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the delegate to authorize
+                owner:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the meter owner
+      responses:
+        "200":
+          description: Delegate added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, hash, meterId, delegate]
+                properties:
+                  success:
+                    type: boolean
+                  hash:
+                    type: string
+                    description: Transaction hash
+                  meterId:
+                    type: string
+                  delegate:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Contract error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+
+  /api/delegates/remove:
+    post:
+      summary: Remove a delegate's authorization to make payments
+      description: |
+        Revoke a delegate's authorization to make payments for a specific meter.
+        Only the meter owner can remove delegates.
+      operationId: removeDelegate
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, delegate, owner]
+              properties:
+                meterId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The meter ID to remove delegate from
+                delegate:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the delegate to remove
+                owner:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the meter owner
+      responses:
+        "200":
+          description: Delegate removed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, hash, meterId, delegate]
+                properties:
+                  success:
+                    type: boolean
+                  hash:
+                    type: string
+                    description: Transaction hash
+                  meterId:
+                    type: string
+                  delegate:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Contract error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+
+  /api/delegates/{meterId}:
+    get:
+      summary: Get all delegates authorized to make payments for a meter
+      description: |
+        Returns a list of all delegate addresses authorized to make payments on
+        behalf of the meter owner. Public read access.
+      operationId: getDelegates
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The meter ID to query delegates for
+      responses:
+        "200":
+          description: Delegate list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [meterId, delegates, count]
+                properties:
+                  meterId:
+                    type: string
+                  delegates:
+                    type: array
+                    items:
+                      type: string
+                      description: Stellar address (G…)
+                  count:
+                    type: integer
+                    description: Number of authorized delegates
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          description: Contract error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+
+  /api/delegates/payment:
+    post:
+      summary: Make a payment on behalf of a meter owner as an authorized delegate
+      description: |
+        Allows an authorized delegate to make a payment for a meter without
+        transferring ownership. The delegate must have been previously authorized
+        via `POST /api/delegates/add`.
+        
+        **Use cases:**
+        - Parents paying for adult children's energy
+        - Employers subsidizing worker housing
+        - Property managers paying for rental units
+        - Energy provider incentive programs
+      operationId: makeDelegatedPayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, delegate, amount]
+              properties:
+                meterId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The meter ID to pay for
+                delegate:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the authorized delegate
+                amount:
+                  type: integer
+                  minimum: 1
+                  description: Payment amount in stroops (1 XLM = 10^7 stroops)
+                plan:
+                  type: string
+                  enum: [Daily, Weekly, UsageBased]
+                  default: Daily
+                  description: Payment plan type
+                memo:
+                  type: string
+                  maxLength: 100
+                  description: Optional payment memo
+      responses:
+        "200":
+          description: Payment successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, hash, meterId, delegate, amount, plan]
+                properties:
+                  success:
+                    type: boolean
+                  hash:
+                    type: string
+                    description: Transaction hash
+                  meterId:
+                    type: string
+                  delegate:
+                    type: string
+                  amount:
+                    type: integer
+                  plan:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Contract error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
 
   # ── Usage Events ─────────────────────────────────────────────────────────────
 

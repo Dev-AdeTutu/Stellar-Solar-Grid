@@ -138,6 +138,12 @@ export async function checkMeterAccess(meterId: string): Promise<boolean> {
   return StellarSdk.scValToNative(retval) as boolean;
 }
 
+/** Read the contract-wide emergency pause state for the global banner. */
+export async function isContractPaused(): Promise<boolean> {
+  const retval = await client.query("is_paused", []);
+  return StellarSdk.scValToNative(retval) as boolean;
+}
+
 export async function fetchAllMeters(): Promise<MeterData[]> {
   const allMeters: MeterData[] = [];
   const pageSize = 50; // Fetch 50 meters per page to respect Soroban read limits

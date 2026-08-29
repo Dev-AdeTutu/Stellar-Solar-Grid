@@ -6,14 +6,18 @@ import { useTranslations } from "next-intl";
 import { useWalletStore } from "@/store/walletStore";
 import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
-import { useLocale } from "@/components/I18nProvider";
+import {
+  LOCALE_OPTIONS,
+  useLocale,
+  type Locale,
+} from "@/components/I18nProvider";
 
 export default function Navbar() {
   const { connectError, clearConnectError } = useWalletStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setTheme] = useState("dark");
   const t = useTranslations("nav");
-  const { toggleLocale } = useLocale();
+  const { locale, setLocale } = useLocale();
 
   const NAV_LINKS = [
     { href: "/dashboard/user", label: t("myMeter") },
@@ -28,6 +32,15 @@ export default function Navbar() {
     document.documentElement.setAttribute("data-theme", savedTheme);
   }, []);
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [menuOpen]);
+
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
@@ -40,7 +53,7 @@ export default function Navbar() {
   }
 
   return (
-    <nav className="bg-solar-accent border-b border-white/10 relative z-50">
+    <nav aria-label="Main navigation" className="bg-solar-accent border-b border-white/10 relative z-50">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
         <Link href="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>
@@ -58,15 +71,23 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          {/* Language toggle */}
-          <button
-            onClick={toggleLocale}
-            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+          {/* Language selector */}
+          <label className="sr-only" htmlFor="desktop-language-select">
+            {t("languageLabel")}
+          </label>
+          <select
+            id="desktop-language-select"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
             aria-label={t("languageLabel")}
-            title={t("languageLabel")}
+            className="rounded-lg border border-white/20 bg-transparent px-2 py-1 text-xs font-semibold text-gray-300 transition hover:border-white/40 hover:text-white"
           >
-            {t("languageToggle")}
-          </button>
+            {LOCALE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} className="bg-solar-accent text-white">
+                {option.label}
+              </option>
+            ))}
+          </select>
           <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
@@ -75,14 +96,22 @@ export default function Navbar() {
 
         {/* Mobile: language toggle + wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <button
-            onClick={toggleLocale}
-            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+          <label className="sr-only" htmlFor="mobile-language-select">
+            {t("languageLabel")}
+          </label>
+          <select
+            id="mobile-language-select"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
             aria-label={t("languageLabel")}
-            title={t("languageLabel")}
+            className="max-w-24 rounded-lg border border-white/20 bg-transparent px-2 py-1 text-xs font-semibold text-gray-300 transition hover:border-white/40 hover:text-white"
           >
-            {t("languageToggle")}
-          </button>
+            {LOCALE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} className="bg-solar-accent text-white">
+                {option.label}
+              </option>
+            ))}
+          </select>
           <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>

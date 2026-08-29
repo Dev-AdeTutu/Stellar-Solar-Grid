@@ -40,11 +40,23 @@ const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
 );
+// The on-chain `batch_update_usage` call rejects batches larger than 50
+// entries (see contracts/solar_grid/src/lib.rs). Large in-memory queues
+// (e.g. after MQTT broker downtime) are chunked to this size before being
+// submitted so we never build a single oversized payload or hold the whole
+// backlog in memory at once. Configurable, but capped at the contract limit.
+const MAX_BATCH_SIZE = Math.min(
+  Number(process.env.MAX_BATCH_SIZE ?? 50),
+  50,
+);
 
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = parseInt(
+  process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
+); // 0.1 XLM in stroops
+
 // Module-scope batch state so shutdown and flush share the same buffer
 let pending: Reading[] = [];
 let flushIntervalHandle: ReturnType<typeof setInterval> | null = null;
@@ -156,6 +168,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
     const meter = StellarSdk.scValToNative(result) as {
       balance: bigint;
       owner?: string;
+      emergency_contact?: string | null;
       [key: string]: unknown;
     };
     const balance = Number(meter.balance);
@@ -185,6 +198,8 @@ async function checkAndNotifyLowBalance(meterId: string) {
       if (ownerAddress) {
         await sendLowBalanceNotification({
           ownerAddress,
+          emergencyContactAddress:
+            typeof meter.emergency_contact === "string" ? meter.emergency_contact : undefined,
           meterId,
           balanceStroops: balance,
           thresholdStroops: dynamicThreshold,
@@ -233,7 +248,57 @@ function encodeBatch(readings: Reading[]): StellarSdk.xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvVec(entries);
 }
 
+// ── Duplicate message detection (Issue #765) ────────────────────────────────
+//
+// MQTT QoS 1/2 guarantees "at least once" delivery: if the broker never
+// receives our PUBACK/PUBREC (dropped ack, network blip, reconnect mid-flight)
+// it redelivers the same PUBLISH. Without a dedupe gate, a redelivered usage
+// message is processed twice and the meter is billed twice for the same
+// reading.
+//
+// Dedupe key is a hash of (topic, raw payload bytes) rather than the MQTT
+// packet messageId: messageId is only unique within a single broker session
+// and mqtt.js recycles it, so it can't reliably distinguish "same reading
+// resent" from "different reading that happens to reuse an old id" across
+// reconnects. Content hashing catches the actual duplicate regardless of
+// session boundaries.
+//
+// Entries expire after MQTT_DEDUPE_TTL_MS so the map can't grow unbounded on
+// a long-running bridge; a redelivery observed after the TTL window is
+// treated as a new message (broker retries for an unacked QoS 1/2 message
+// happen on the order of seconds, not minutes).
+const MQTT_DEDUPE_TTL_MS = Number(process.env.MQTT_DEDUPE_TTL_MS ?? 60_000);
+const recentMessageHashes = new Map<string, number>(); // hash -> expiresAt (ms)
+
+function messageDedupeKey(topic: string, payload: Buffer): string {
+  return crypto.createHash("sha1").update(topic).update(payload).digest("hex");
+}
+
+/**
+ * Returns true (and records the message) if this exact (topic, payload) was
+ * already processed within the TTL window; false if it's new.
+ */
+function isDuplicateMessage(topic: string, payload: Buffer): boolean {
+  const now = Date.now();
+  // Opportunistic cleanup — bounds map growth without a separate timer.
+  for (const [key, expiresAt] of recentMessageHashes) {
+    if (expiresAt <= now) recentMessageHashes.delete(key);
+  }
+
+  const key = messageDedupeKey(topic, payload);
+  if (recentMessageHashes.has(key)) {
+    return true;
+  }
+  recentMessageHashes.set(key, now + MQTT_DEDUPE_TTL_MS);
+  return false;
+}
+
 export async function processMqttMessage(topic: string, payload: Buffer) {
+  if (isDuplicateMessage(topic, payload)) {
+    logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+    return;
+  }
+
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -329,6 +394,45 @@ function startMqttBridge() {
     logger.warn({ attempt: reconnectAttempts, nextDelayMs: delay }, 'MQTT reconnecting');
   });
 
+  let pending: Reading[] = [];
+
+  const flush = async () => {
+    if (pending.length === 0) return;
+    const batch = pending.splice(0);
+    logger.info(`Flushing batch of ${batch.length} meter update(s)`);
+
+    // Process in fixed-size chunks so a large backlog (e.g. built up during
+    // MQTT broker downtime) never produces a single oversized on-chain call
+    // or keeps the entire backlog referenced in memory at once — each chunk
+    // is submitted and released before the next one is sliced off.
+    for (let offset = 0; offset < batch.length; offset += MAX_BATCH_SIZE) {
+      const chunk = batch.slice(offset, offset + MAX_BATCH_SIZE);
+      try {
+        const hash = await adminInvoke("batch_update_usage", [
+          encodeBatch(chunk),
+        ]);
+        logger.info(`Batch chunk recorded on-chain: ${hash}`, {
+          chunkSize: chunk.length,
+          offset,
+          totalBatchSize: batch.length,
+        });
+
+        // Persist each reading locally with the on-chain tx hash for historical reporting
+        try {
+          insertSubmittedUsageEvents(
+            chunk.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
+            hash,
+          );
+        } catch (err) {
+          logger.error("Failed to persist batch usage events to local DB", { err });
+        }
+      } catch (err) {
+        logger.error("Batch submission error", { err, offset, chunkSize: chunk.length });
+      }
+    }
+  };
+
+  setInterval(flush, FLUSH_INTERVAL_MS);
   // Issue #601: submit near-zero-balance meters first within the batch.
   flushIntervalHandle = setInterval(flush, FLUSH_INTERVAL_MS);
 
@@ -346,6 +450,13 @@ function startMqttBridge() {
     const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
     mqttMessages.inc({ topic: labelTopic });
     try {
+      // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
+      // missed ack) before they're persisted/submitted a second time.
+      if (isDuplicateMessage(topic, payload)) {
+        logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+        return;
+      }
+
       const meterId = topic.split("/")[2];
 
       let raw: unknown;
