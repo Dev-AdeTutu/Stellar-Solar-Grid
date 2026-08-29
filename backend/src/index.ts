@@ -53,6 +53,8 @@ import {
 import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
+// Issue #696: Import idempotency cleanup for graceful shutdown
+import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 
@@ -383,6 +385,23 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 
+// Issue #696: Graceful shutdown — clean up eviction timer and close server
+function gracefulShutdown(signal: string) {
+  logger.info({ signal }, "Received shutdown signal, starting graceful shutdown...");
+  _stopEvictionTimer();
+  httpServer.close(() => {
+    logger.info("Server closed gracefully");
+    process.exit(0);
+  });
+  // Force close after 10 seconds
+  setTimeout(() => {
+    logger.warn("Forcefully closing server after timeout");
+    process.exit(1);
+  }, 10_000);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 const graphqlWs = new WebSocketServer({ server: httpServer, path: "/api/graphql" });
 const graphqlCleanup = useServer({
   schema,
