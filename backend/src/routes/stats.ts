@@ -4,6 +4,7 @@ import { server, CONTRACT_ID, stellarService } from "../lib/stellar.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { logger } from "../lib/logger.js";
 import { register } from "../lib/metrics.js";
+import { buildUTCDayRange, getUTCTimestampDaysAgo, formatUTCDate } from "../lib/dateUtils.js";
 
 export const statsRouter = Router();
 
@@ -22,12 +23,12 @@ const revenueHistoryCache = new Map<
 >();
 
 /** Billing plans reported by /meters-by-plan, keyed exactly as the contract names them. */
-type PlanKey = "Daily" | "Weekly" | "UsageBased";
+type PlanKey = "Daily" | "Weekly" | "Monthly" | "UsageBased";
 
 type PlanBreakdown = Record<PlanKey, number> & { total: number };
 
 function emptyPlanBreakdown(): PlanBreakdown {
-  return { Daily: 0, Weekly: 0, UsageBased: 0, total: 0 };
+  return { Daily: 0, Weekly: 0, Monthly: 0, UsageBased: 0, total: 0 };
 }
 
 /**
@@ -47,6 +48,8 @@ function normalizePlan(raw: unknown): PlanKey | null {
       return "Daily";
     case "Weekly":
       return "Weekly";
+    case "Monthly":
+      return "Monthly";
     case "Usage":
     case "UsageBased":
       return "UsageBased";
@@ -197,36 +200,29 @@ async function fetchRevenueHistory(days: number): Promise<RevenueHistoryEntry[]>
   });
 
   const totalsByDay = new Map<string, number>();
-  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const cutoff = getUTCTimestampDaysAgo(days);
 
   for (const event of response?.events ?? []) {
     try {
       const parsed = parsePaymentEvent(event);
       if (!parsed) continue;
-      if (new Date(parsed.date).getTime() < cutoff) continue;
+      // Parse event date in UTC to ensure consistent comparison
+      const eventTimestamp = Date.parse(parsed.date);
+      if (eventTimestamp < cutoff) continue;
 
-      const day = parsed.date.slice(0, 10);
+      const day = formatUTCDate(eventTimestamp);
       totalsByDay.set(day, (totalsByDay.get(day) ?? 0) + parsed.amountXlm);
     } catch {
       // skip malformed events
     }
   }
 
-  return buildDayRange(days).map((date) => ({
+  // Use UTC-aware day range builder to prevent timezone-dependent date boundaries
+  return buildUTCDayRange(days).map((date) => ({
     date,
     revenue_xlm: totalsByDay.get(date) ?? 0,
   }));
-}
-
-function buildDayRange(days: number): string[] {
-  const result: string[] = [];
-  const now = new Date();
-  for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(now);
-    d.setUTCDate(d.getUTCDate() - i);
-    result.push(d.toISOString().slice(0, 10));
-  }
-  return result;
 }
 
 function parsePaymentEvent(event: any): { date: string; amountXlm: number } | null {
@@ -238,6 +234,7 @@ function parsePaymentEvent(event: any): { date: string; amountXlm: number } | nu
   if (!Array.isArray(native) || native.length < 1) return null;
 
   const amountXlm = Number(native[0]) / 10_000_000;
+  // ledgerClosedAt is already in UTC ISO format from Stellar
   const date = event.ledgerClosedAt
     ? new Date(event.ledgerClosedAt).toISOString()
     : new Date().toISOString();

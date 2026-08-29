@@ -4,7 +4,7 @@ import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
 import { deadLetterEvents, sqlitePool, usageEvents } from "./metrics.js";
 import { registerDatabase } from "./databaseLifecycle.js";
-import { createSqlitePool, type SqliteConnection } from "./sqlitePool.js";
+import { getUTCTimestampDaysAgo } from "./dateUtils.js";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -338,21 +338,22 @@ export type TopConsumer = {
 
 /** Top consumers by total units used over the last `days` days. */
 export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const rows = withConnection((connection) =>
-    connection
-      .prepare(
-        `
-          SELECT meter_id AS meterId, SUM(units) AS totalUnits
-          FROM usage_events
-          WHERE received_at >= ?
-          GROUP BY meter_id
-          ORDER BY totalUnits DESC
-          LIMIT ?
-        `
-      )
-      .all(since, limit),
-  ) as Array<{ meterId: string; totalUnits: number }>;
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const sinceTimestamp = getUTCTimestampDaysAgo(days);
+  const since = new Date(sinceTimestamp).toISOString();
+  
+  const rows = db
+    .prepare(
+      `
+        SELECT meter_id AS meterId, SUM(units) AS totalUnits
+        FROM usage_events
+        WHERE received_at >= ?
+        GROUP BY meter_id
+        ORDER BY totalUnits DESC
+        LIMIT ?
+      `
+    )
+    .all(since, limit) as Array<{ meterId: string; totalUnits: number }>;
 
   return rows.map((row, index) => ({
     meterId: row.meterId,
@@ -508,12 +509,13 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
 
 /** Purge submitted events older than N days. Returns deleted row count. */
 export function purgeSubmittedUsageEvents(olderThanDays: number): number {
-  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
-  const result = withConnection((connection) =>
-    connection
-      .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
-      .run(cutoff),
-  );
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const cutoffTimestamp = getUTCTimestampDaysAgo(olderThanDays);
+  const cutoff = new Date(cutoffTimestamp).toISOString();
+  
+  const result = db
+    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+    .run(cutoff);
   return result.changes;
 }
 
