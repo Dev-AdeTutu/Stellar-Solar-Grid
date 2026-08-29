@@ -23,7 +23,7 @@ export async function makePayment(
   sourceAddress: string,
   meterId: string,
   amountXlm: number,
-  plan: "Daily" | "Weekly" | "Usage",
+  plan: "Daily" | "Weekly" | "Monthly" | "Usage",
   memo?: string,
 ): Promise<string> {
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
