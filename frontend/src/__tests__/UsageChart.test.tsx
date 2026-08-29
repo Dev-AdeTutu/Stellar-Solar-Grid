@@ -1,5 +1,10 @@
-import { render, screen } from "@testing-library/react";
-import UsageChart, { UsageDataPoint } from "@/components/UsageChart";
+import { fireEvent, render, screen } from "@testing-library/react";
+import UsageChart, {
+  UsageDataPoint,
+  formatTickLocal,
+  formatTooltipLocal,
+  hasTimeComponent,
+} from "@/components/UsageChart";
 
 // recharts uses ResizeObserver internally — polyfill for jsdom
 global.ResizeObserver = class ResizeObserver {
@@ -72,5 +77,69 @@ describe("UsageChart", () => {
   it("shows meter header without meterId", () => {
     render(<UsageChart data={SAMPLE_DATA} />);
     expect(screen.getByText("Energy Usage")).toBeInTheDocument();
+  });
+
+  it("enables comparison controls and reports the difference from the previous period", () => {
+    const data: UsageDataPoint[] = [
+      { date: "2024-01-01", units: 1 },
+      { date: "2024-01-02", units: 1 },
+      { date: "2024-01-03", units: 1 },
+      { date: "2024-01-08", units: 2 },
+      { date: "2024-01-09", units: 2 },
+      { date: "2024-01-10", units: 2 },
+    ];
+    render(<UsageChart data={data} />);
+
+    fireEvent.click(screen.getByLabelText("Compare with previous period"));
+    expect(screen.getByLabelText("Compare by")).toBeInTheDocument();
+    expect(screen.getByText("+100.0% vs previous")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Compare by"), { target: { value: "custom" } });
+    expect(screen.getByLabelText("From")).toBeInTheDocument();
+    expect(screen.getByLabelText("To")).toBeInTheDocument();
+  });
+
+  // ── Timezone formatting (issue: x-axis showed raw UTC, no tz indicator) ────
+
+  describe("hasTimeComponent", () => {
+    it("is true for a full ISO 8601 timestamp", () => {
+      expect(hasTimeComponent("2026-08-24T06:00:00Z")).toBe(true);
+    });
+
+    it("is false for a plain calendar date", () => {
+      expect(hasTimeComponent("2026-08-24")).toBe(false);
+    });
+  });
+
+  describe("formatTickLocal", () => {
+    it("renders a full timestamp as a local clock time, not the raw UTC string", () => {
+      const formatted = formatTickLocal("2026-08-24T06:00:00Z");
+      expect(formatted).not.toBe("2026-08-24T06:00:00Z");
+      expect(formatted).toMatch(/\d{1,2}:\d{2}/);
+    });
+
+    it("renders a plain date as a short calendar date, not a clock time", () => {
+      const formatted = formatTickLocal("2026-08-24");
+      expect(formatted).not.toMatch(/\d{1,2}:\d{2}/);
+    });
+
+    it("falls back to the raw value for an unparseable string", () => {
+      expect(formatTickLocal("not-a-date")).toBe("not-a-date");
+    });
+  });
+
+  describe("formatTooltipLocal", () => {
+    it("includes an explicit timezone indicator alongside the local time", () => {
+      const formatted = formatTooltipLocal("2026-08-24T06:00:00Z");
+      // Should carry the clock time plus a timezone abbreviation/offset
+      // (e.g. "Aug 24, 6:00 AM GMT+3") — never just the bare UTC string.
+      expect(formatted).not.toBe("2026-08-24T06:00:00Z");
+      expect(formatted).toMatch(/\d{1,2}:\d{2}/);
+      expect(formatted.length).toBeGreaterThan(formatTickLocal("2026-08-24T06:00:00Z").length);
+    });
+
+    it("falls back to the raw value for an unparseable string", () => {
+      expect(formatTooltipLocal("not-a-date")).toBe("not-a-date");
+    });
   });
 });

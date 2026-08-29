@@ -1,5 +1,4 @@
-
-import type { RequestHandler } from "express";
+import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { z, type ZodTypeAny } from "zod";
 
 const STELLAR_ACCOUNT_REGEX = /^G[A-Z2-7]{55}$/;
@@ -17,7 +16,7 @@ const MeterRouteParamsSchema = z
   })
   .strict();
 
-const PaymentPlanSchema = z.enum(["Daily", "Weekly", "Usage", "UsageBased"]);
+const PaymentPlanSchema = z.enum(["Daily", "Weekly", "Monthly", "Usage", "UsageBased"]);
 
 export const RegisterMeterSchema = z
   .object({
@@ -25,6 +24,24 @@ export const RegisterMeterSchema = z
     owner: z
       .string()
       .regex(STELLAR_ACCOUNT_REGEX, "Invalid Stellar account address format"),
+  })
+  .strict();
+
+export const BatchRegisterMetersSchema = z
+  .object({
+    meters: z
+      .array(RegisterMeterSchema)
+      .min(1, "meters must contain at least one entry")
+      .max(100, "batch size cannot exceed 100 meters"),
+  })
+  .strict();
+
+export const BulkMeterStatusSchema = z
+  .object({
+    meter_ids: z
+      .array(MeterIdSchema)
+      .min(1, "meter_ids must contain at least one entry")
+      .max(100, "meter_ids cannot exceed 100 per request"),
   })
   .strict();
 
@@ -38,6 +55,21 @@ export const UsageUpdateSchema = z
       .number()
       .int("cost must be an integer")
       .positive("cost must be positive"),
+  })
+  .strict();
+
+/** MQTT payload schema — extends UsageUpdateSchema with meterId from the topic. */
+export const MqttPayloadSchema = UsageUpdateSchema.extend({
+  meterId: z.string().min(1),
+});
+
+export const MeterNoteSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1, "text is required")
+      .max(1000, "text must be at most 1000 characters"),
   })
   .strict();
 
@@ -85,7 +117,7 @@ type RequestSchemaSet = {
 };
 
 export function validateRequest(schemas: RequestSchemaSet): RequestHandler {
-  return (req, res, next) => {
+  return (req: Request, res: Response, next: NextFunction) => {
     const details: Record<string, unknown> = {};
 
     if (schemas.body) {
@@ -132,3 +164,4 @@ export { MeterRouteParamsSchema };
 export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
+export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;

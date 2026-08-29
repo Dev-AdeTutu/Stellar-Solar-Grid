@@ -1,0 +1,147 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "My Meter",
+    "pay": "Pay",
+    "provider": "Provider",
+    "history": "History",
+    "toggleTheme": "Toggle Theme",
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu",
+    "languageToggle": "Français",
+    "languageLabel": "Switch language"
+  },
+  "home": {
+    "tagline": "Affordable, pay-as-you-go solar energy powered by the Stellar blockchain. No large upfront costs — just clean energy on your terms.",
+    "userDashboard": "User Dashboard",
+    "providerDashboard": "Provider Dashboard"
+  },
+  "meterCard": {
+    "balance": "Balance",
+    "plan": "Plan",
+    "expiry": "Expiry",
+    "never": "Never",
+    "daysLeft": "{days}d left",
+    "deactivate": "Deactivate Meter",
+    "deactivating": "Deactivating…",
+    "ariaLabel": "Meter {meterId}"
+  },
+  "meterStatus": {
+    "active": "Active",
+    "inactive": "Inactive",
+    "expired": "Expired",
+    "ariaLabel": "Meter status: {status}"
+  },
+  "wallet": {
+    "connect": "Connect Wallet",
+    "connectCompact": "Connect",
+    "connecting": "Connecting…",
+    "disconnect": "Disconnect",
+    "copyAddress": "Click to copy full address",
+    "copied": "✓ Copied",
+    "freighterNotDetected": "Freighter not detected",
+    "installFreighter": "Install Freighter ↗",
+    "wrongNetwork": "Wrong network",
+    "switchNetwork": "Switch networks in Freighter: Settings → Network.",
+    "ariaWalletAddress": "Wallet address {address}. Click to copy.",
+    "ariaDisconnect": "Disconnect wallet",
+    "ariaConnecting": "Connecting"
+  },
+  "networkBanner": {
+    "wrongNetwork": "Wrong network:",
+    "dismiss": "Dismiss network mismatch warning"
+  },
+  "errors": {
+    "freighterNotInstalled": "Selected wallet is not installed.",
+    "noAccount": "No account found in selected wallet",
+    "walletConnectFailed": "Failed to connect wallet",
+    "meterLoadFailed": "Failed to load meter data: {error}",
+    "retry": "Retry",
+    "installFreighter": "Install Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "My Meters",
+      "connectWallet": "Connect your wallet to view your meters.",
+      "noMeters": "No meters found for your address.",
+      "loading": "Loading meters…",
+      "balance": "Balance",
+      "unitsUsed": "Units Used",
+      "active": "Active",
+      "inactive": "Inactive",
+      "plan": "Plan",
+      "expiry": "Expiry"
+    },
+    "provider": {
+      "title": "Provider Dashboard",
+      "allMeters": "All Meters",
+      "deactivate": "Deactivate",
+      "deactivating": "Deactivating…"
+    }
+  },
+  "report": {
+    "title": "Meter Status Report",
+    "printReport": "Print Report",
+    "print": "Print",
+    "back": "← Back",
+    "meterId": "Meter ID",
+    "owner": "Owner",
+    "balance": "Balance",
+    "plan": "Plan",
+    "status": "Status",
+    "expiry": "Expiry",
+    "unitsUsed": "Units Used",
+    "generatedAt": "Generated at",
+    "recentReadings": "Recent Readings (Last 5)",
+    "noReadings": "No readings available.",
+    "date": "Date",
+    "units": "Units",
+    "amount": "Amount",
+    "qrCode": "QR Code",
+    "scanToView": "Scan to view this meter",
+    "never": "Never",
+    "active": "Active",
+    "inactive": "Inactive"
+  },
+  "history": {
+    "title": "Payment History",
+    "noHistory": "No payment history found.",
+    "date": "Date",
+    "meter": "Meter",
+    "plan": "Plan",
+    "amount": "Amount",
+    "transaction": "Transaction",
+    "viewExplorer": "View on Explorer ↗",
+    "export": "Export CSV",
+    "exporting": "Exporting…",
+    "prev": "Previous",
+    "next": "Next",
+    "page": "Page {page} / {total}"
+  },
+  "pay": {
+    "title": "Make a Payment",
+    "meterId": "Meter ID",
+    "amount": "Amount (XLM)",
+    "plan": "Plan",
+    "submit": "Pay",
+    "submitting": "Processing…",
+    "success": "Payment successful!",
+    "daily": "Daily",
+    "weekly": "Weekly",
+    "usage": "Usage"
+  },
+  "pauseBanner": {
+    "title": "Emergency pause active",
+    "message": "Payments and meter registration are temporarily disabled. Usage reporting remains available."
+  },
+  "common": {
+    "loading": "Loading…",
+    "error": "Error",
+    "close": "Close",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "back": "Back",
+    "xlm": "XLM"
+  }
+}

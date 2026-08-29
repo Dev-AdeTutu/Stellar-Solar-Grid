@@ -9,9 +9,17 @@
  */
 
 import mqtt from "mqtt";
+import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
-import { persistAndSubmitUsageEvent, insertSubmittedUsageEvents, getKV, setKV } from "../lib/usageEvents.js";
+import {
+  persistAndSubmitUsageEvent,
+  insertSubmittedUsageEvents,
+  getKV,
+  setKV,
+  getTypicalWeeklyUsageStroops,
+} from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
+import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -20,7 +28,7 @@ import {
   CONTRACT_ID,
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { mqttMessages } from "../lib/metrics.js";
+import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, contractEventsProcessed } from "../lib/metrics.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -28,13 +36,78 @@ const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
 export function getMqttClient() { return mqttClient; }
-const FLUSH_INTERVAL_MS = Number(process.env.BATCH_FLUSH_MS ?? 5_000);
+const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
+);
+// The on-chain `batch_update_usage` call rejects batches larger than 50
+// entries (see contracts/solar_grid/src/lib.rs). Large in-memory queues
+// (e.g. after MQTT broker downtime) are chunked to this size before being
+// submitted so we never build a single oversized payload or hold the whole
+// backlog in memory at once. Configurable, but capped at the contract limit.
+const MAX_BATCH_SIZE = Math.min(
+  Number(process.env.MAX_BATCH_SIZE ?? 50),
+  50,
 );
 
 // Bridge initialization guards to prevent duplicate startup
 let bridgeStarted = false;
+
+const FALLBACK_LOW_BALANCE_THRESHOLD = parseInt(
+  process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
+); // 0.1 XLM in stroops
+
+// Module-scope batch state so shutdown and flush share the same buffer
+let pending: Reading[] = [];
+let flushIntervalHandle: ReturnType<typeof setInterval> | null = null;
+
+async function flush() {
+  if (pending.length === 0) return;
+  const batch = pending.splice(0);
+  batch.sort((a, b) => a.priority - b.priority);
+  logger.info(`Flushing batch of ${batch.length} meter update(s)`);
+  try {
+    const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
+    logger.info(`Batch recorded on-chain: ${hash}`);
+    try {
+      insertSubmittedUsageEvents(
+        batch.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
+        hash,
+      );
+    } catch (err) {
+      logger.error("Failed to persist batch usage events to local DB", { err });
+    }
+    for (const reading of batch) {
+      checkAndNotifyLowBalance(reading.meterId).catch((err) => {
+        logger.error("Low balance check failed", { meterId: reading.meterId, err });
+      });
+    }
+  } catch (err) {
+    logger.error("Batch submission error", { err });
+  }
+}
+
+export async function stopIoTBridge(): Promise<void> {
+  const pendingCount = pending.length;
+  if (flushIntervalHandle !== null) {
+    clearInterval(flushIntervalHandle);
+    flushIntervalHandle = null;
+  }
+  let flushed = false;
+  if (pendingCount > 0) {
+    await flush();
+    flushed = true;
+  }
+  logger.info("IoT bridge shutting down", { pendingCount, flushed });
+  mqttClient?.end(true);
+}
+
+process.on("SIGTERM", () => {
+  stopIoTBridge().catch((err) => logger.error("Shutdown error on SIGTERM", { err }));
+});
+process.on("SIGINT", () => {
+  stopIoTBridge().catch((err) => logger.error("Shutdown error on SIGINT", { err }));
+});
 
 const LOW_BALANCE_THRESHOLD = parseInt(
   process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
@@ -44,10 +117,47 @@ interface Reading {
   meterId: string;
   units: number;
   cost: number;
+  /** balance/daily_limit ratio at receive time; lower = more urgent (Issue #601). */
+  priority: number;
+}
+
+/**
+ * Priority score for batch ordering: the meter's current balance/daily_limit
+ * ratio. Meters near a zero balance relative to their daily budget get a
+ * lower (more urgent) score and are processed first in the next batch.
+ *
+ * Meters with no daily limit configured (0 = unlimited) or that fail to
+ * resolve have no meaningful ratio to prioritise on, so they sort last
+ * rather than being assumed urgent.
+ */
+async function getPriority(meterId: string): Promise<number> {
+  try {
+    const result = await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    const meter = StellarSdk.scValToNative(result) as {
+      balance: bigint;
+      daily_limit: bigint;
+      [key: string]: unknown;
+    };
+    const dailyLimit = Number(meter.daily_limit);
+    if (dailyLimit <= 0) return Number.POSITIVE_INFINITY;
+    return Number(meter.balance) / dailyLimit;
+  } catch (err) {
+    logger.warn("Failed to compute batch priority for meter, deprioritising", {
+      meterId,
+      err,
+    });
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 /** Fire webhook notification when meter balance drops below threshold */
 async function checkAndNotifyLowBalance(meterId: string) {
+  // Read fresh each call — /api/webhooks/low-balance may register a URL
+  // after this module was first loaded.
+  const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
+  if (!webhookUrl) return;
   const urls = getWebhookUrls();
   if (urls.size === 0) return;
 
@@ -57,17 +167,61 @@ async function checkAndNotifyLowBalance(meterId: string) {
     ]);
     const meter = StellarSdk.scValToNative(result) as {
       balance: bigint;
+      owner?: string;
+      emergency_contact?: string | null;
       [key: string]: unknown;
     };
     const balance = Number(meter.balance);
+    const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
+    const dynamicThreshold =
+      weeklyTypicalStroops > 0
+        ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
+        : FALLBACK_LOW_BALANCE_THRESHOLD;
 
-    if (balance <= LOW_BALANCE_THRESHOLD) {
+    if (balance <= dynamicThreshold) {
+      const ownerAddress = typeof meter.owner === "string" ? meter.owner : "";
       const body = JSON.stringify({
         event: "low_balance",
         meter_id: meterId,
         balance,
-        threshold: LOW_BALANCE_THRESHOLD,
+        threshold: dynamicThreshold,
+        weekly_typical_stroops: weeklyTypicalStroops,
         timestamp: new Date().toISOString(),
+      });
+
+      const urls = getWebhookUrls();
+      if (urls.size > 0) {
+        // Fire webhooks with automatic retry
+        await Promise.all([...urls].map((url) => fireWebhook(url, body)));
+      }
+
+      if (ownerAddress) {
+        await sendLowBalanceNotification({
+          ownerAddress,
+          emergencyContactAddress:
+            typeof meter.emergency_contact === "string" ? meter.emergency_contact : undefined,
+          meterId,
+          balanceStroops: balance,
+          thresholdStroops: dynamicThreshold,
+          weeklyTypicalStroops,
+        });
+      }
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      const secret = process.env.PROVIDER_WEBHOOK_SECRET;
+      if (secret) {
+        const signature = crypto
+          .createHmac("sha256", secret)
+          .update(body)
+          .digest("hex");
+        headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
+      }
+
+      await fetch(webhookUrl, {
+        method: "POST",
+        headers,
+        body,
       });
 
       // Fire webhooks with automatic retry
@@ -75,7 +229,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
         [...urls].map((url) => fireWebhook(url, body)),
       );
 
-      logger.info("Low balance webhook fired", { meterId, balance });
+      logger.info("Low balance notifications fired", { meterId, balance });
     }
   } catch (err) {
     logger.error("Low balance webhook check failed", { meterId, err });
@@ -94,7 +248,57 @@ function encodeBatch(readings: Reading[]): StellarSdk.xdr.ScVal {
   return StellarSdk.xdr.ScVal.scvVec(entries);
 }
 
+// ── Duplicate message detection (Issue #765) ────────────────────────────────
+//
+// MQTT QoS 1/2 guarantees "at least once" delivery: if the broker never
+// receives our PUBACK/PUBREC (dropped ack, network blip, reconnect mid-flight)
+// it redelivers the same PUBLISH. Without a dedupe gate, a redelivered usage
+// message is processed twice and the meter is billed twice for the same
+// reading.
+//
+// Dedupe key is a hash of (topic, raw payload bytes) rather than the MQTT
+// packet messageId: messageId is only unique within a single broker session
+// and mqtt.js recycles it, so it can't reliably distinguish "same reading
+// resent" from "different reading that happens to reuse an old id" across
+// reconnects. Content hashing catches the actual duplicate regardless of
+// session boundaries.
+//
+// Entries expire after MQTT_DEDUPE_TTL_MS so the map can't grow unbounded on
+// a long-running bridge; a redelivery observed after the TTL window is
+// treated as a new message (broker retries for an unacked QoS 1/2 message
+// happen on the order of seconds, not minutes).
+const MQTT_DEDUPE_TTL_MS = Number(process.env.MQTT_DEDUPE_TTL_MS ?? 60_000);
+const recentMessageHashes = new Map<string, number>(); // hash -> expiresAt (ms)
+
+function messageDedupeKey(topic: string, payload: Buffer): string {
+  return crypto.createHash("sha1").update(topic).update(payload).digest("hex");
+}
+
+/**
+ * Returns true (and records the message) if this exact (topic, payload) was
+ * already processed within the TTL window; false if it's new.
+ */
+function isDuplicateMessage(topic: string, payload: Buffer): boolean {
+  const now = Date.now();
+  // Opportunistic cleanup — bounds map growth without a separate timer.
+  for (const [key, expiresAt] of recentMessageHashes) {
+    if (expiresAt <= now) recentMessageHashes.delete(key);
+  }
+
+  const key = messageDedupeKey(topic, payload);
+  if (recentMessageHashes.has(key)) {
+    return true;
+  }
+  recentMessageHashes.set(key, now + MQTT_DEDUPE_TTL_MS);
+  return false;
+}
+
 export async function processMqttMessage(topic: string, payload: Buffer) {
+  if (isDuplicateMessage(topic, payload)) {
+    logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+    return;
+  }
+
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -107,9 +311,11 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
-  const parsed = UsageUpdateSchema.safeParse(raw);
+  // Merge meterId from the topic so the full { meterId, units, cost } triple is validated together
+  const parsed = UsageUpdateSchema.safeParse(raw as object);
   if (!parsed.success) {
     logger.error("Invalid MQTT payload (schema validation failed)", {
+      event: "mqtt_payload_invalid",
       topic,
       raw: rawStr,
       errors: parsed.error.flatten().fieldErrors,
@@ -171,8 +377,16 @@ function startMqttBridge() {
   client.on('reconnect', () => {
     reconnectAttempts++;
     if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
-      logger.error('MQTT reconnect attempts exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
-      client.end(); // stop reconnecting
+      logger.error('Max MQTT reconnect attempts reached. IoT bridge stopped.', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
+      // #528: flip the Prometheus gauge so Grafana alerting can page on-call
+      mqttReconnectExhausted.set(1);
+      client.end(true, () => {
+        // Exit the process so Docker's restart policy (restart: unless-stopped /
+        // on-failure) can bring the service back cleanly rather than leaving it
+        // in a permanently-broken, non-recovering state.
+        logger.fatal('Exiting process after MQTT reconnect exhaustion — expecting Docker/supervisor restart');
+        process.exit(1);
+      });
       return;
     }
     const delay = Math.min(1000 * 2 ** reconnectAttempts, 30_000);
@@ -186,27 +400,41 @@ function startMqttBridge() {
     if (pending.length === 0) return;
     const batch = pending.splice(0);
     logger.info(`Flushing batch of ${batch.length} meter update(s)`);
-    try {
-      const hash = await adminInvoke("batch_update_usage", [
-        encodeBatch(batch),
-      ]);
-      logger.info(`Batch recorded on-chain: ${hash}`);
 
-      // Persist each reading locally with the on-chain tx hash for historical reporting
+    // Process in fixed-size chunks so a large backlog (e.g. built up during
+    // MQTT broker downtime) never produces a single oversized on-chain call
+    // or keeps the entire backlog referenced in memory at once — each chunk
+    // is submitted and released before the next one is sliced off.
+    for (let offset = 0; offset < batch.length; offset += MAX_BATCH_SIZE) {
+      const chunk = batch.slice(offset, offset + MAX_BATCH_SIZE);
       try {
-        insertSubmittedUsageEvents(
-          batch.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
-          hash,
-        );
+        const hash = await adminInvoke("batch_update_usage", [
+          encodeBatch(chunk),
+        ]);
+        logger.info(`Batch chunk recorded on-chain: ${hash}`, {
+          chunkSize: chunk.length,
+          offset,
+          totalBatchSize: batch.length,
+        });
+
+        // Persist each reading locally with the on-chain tx hash for historical reporting
+        try {
+          insertSubmittedUsageEvents(
+            chunk.map((b) => ({ meterId: b.meterId, units: b.units, cost: b.cost, sourceTopic: null })),
+            hash,
+          );
+        } catch (err) {
+          logger.error("Failed to persist batch usage events to local DB", { err });
+        }
       } catch (err) {
-        logger.error("Failed to persist batch usage events to local DB", { err });
+        logger.error("Batch submission error", { err, offset, chunkSize: chunk.length });
       }
-    } catch (err) {
-      logger.error("Batch submission error", { err });
     }
   };
 
   setInterval(flush, FLUSH_INTERVAL_MS);
+  // Issue #601: submit near-zero-balance meters first within the batch.
+  flushIntervalHandle = setInterval(flush, FLUSH_INTERVAL_MS);
 
   client.on("connect", () => {
     reconnectAttempts = 0;
@@ -218,8 +446,17 @@ function startMqttBridge() {
   });
 
   client.on("message", async (topic, payload) => {
-    mqttMessages.inc();
+    const segments = topic.split("/");
+    const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
+    mqttMessages.inc({ topic: labelTopic });
     try {
+      // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
+      // missed ack) before they're persisted/submitted a second time.
+      if (isDuplicateMessage(topic, payload)) {
+        logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+        return;
+      }
+
       const meterId = topic.split("/")[2];
 
       let raw: unknown;
@@ -230,9 +467,10 @@ function startMqttBridge() {
         return;
       }
 
-      const parsed = UsageUpdateSchema.safeParse(raw);
+      const parsed = UsageUpdateSchema.safeParse(raw as object);
       if (!parsed.success) {
         logger.error("Invalid MQTT payload (schema validation failed)", {
+          event: "mqtt_payload_invalid",
           topic,
           errors: parsed.error.flatten().fieldErrors,
         });
@@ -269,7 +507,11 @@ function startMqttBridge() {
           eventId: event.id,
         });
       }
-      await processMqttMessage(topic as string, payload as Buffer);
+      // Issue #601: queue for the next priority-ordered batch flush instead
+      // of submitting immediately, so near-zero-balance meters can be
+      // sequenced first within the batch.
+      const priority = await getPriority(meterId);
+      pending.push({ meterId, units, cost, priority });
     } catch (err) {
       // Catch any unexpected errors from processing to ensure the bridge keeps running
       logger.error("Unhandled error in MQTT message handler", { topic, raw: payload.toString(), err });
@@ -336,7 +578,7 @@ async function pollContractEvents() {
   }
 }
 
-async function handleContractEvent(
+export async function handleContractEvent(
   event: StellarSdk.SorobanRpc.Api.EventResponse,
 ) {
   try {
@@ -353,34 +595,65 @@ async function handleContractEvent(
     const eventKey = `${ns}:${action}`;
 
     switch (eventKey) {
-      case "payment:received": {
+      case "solargrid:payment": {
         const data = event.value;
-        const native = StellarSdk.scValToNative(data) as [
-          string,
-          bigint,
-          unknown,
-        ];
-        const [meterId, amount] = native;
-        logger.info("payment_received contract event", {
-          meterId: String(meterId),
-          amountXlm: Number(amount) / 10_000_000,
+        let amountXlm = 0;
+        let planName = "Unknown";
+
+        if (data) {
+          try {
+            const native = StellarSdk.scValToNative(data) as any[];
+            if (Array.isArray(native) && native.length >= 4) {
+              amountXlm = Number(native[2]) / 10_000_000;
+              const planRaw = native[3];
+              if (planRaw) {
+                if (typeof planRaw === "string") {
+                  planName = planRaw;
+                } else if (typeof planRaw === "object") {
+                  planName = Object.keys(planRaw)[0] ?? "Unknown";
+                }
+              }
+            }
+          } catch (err) {
+            logger.error("Failed to parse payment event data", { err });
+          }
+        }
+
+        const meterId = subject;
+        logger.info("payment contract event received", {
+          meterId,
+          amountXlm,
+          plan: planName,
         });
-        await onPaymentReceived(String(meterId), Number(amount));
+
+        // Increment XLM payment volume with plan label
+        paymentVolume.inc({ plan: planName }, amountXlm);
+
+        contractEventsProcessed.inc({ topic: eventKey });
+        await onPaymentReceived(meterId, amountXlm * 10_000_000);
         break;
       }
 
-      case "meter:activated": {
-        const data = event.value;
-        const meterId = String(StellarSdk.scValToNative(data));
+      case "solargrid:mtr_actv": {
+        const meterId = subject;
         logger.info("meter_activated contract event", { meterId });
+        contractEventsProcessed.inc({ topic: eventKey });
         await onMeterActivated(meterId);
         break;
       }
 
-      case "meter:deactivated": {
-        const data = event.value;
-        const meterId = String(StellarSdk.scValToNative(data));
+      case "solargrid:mtr_deact": {
+        const meterId = subject;
         logger.info("meter_deactivated contract event", { meterId });
+        contractEventsProcessed.inc({ topic: eventKey });
+        await onMeterDeactivated(meterId);
+        break;
+      }
+
+      case "solargrid:limit_hit": {
+        const meterId = subject;
+        logger.info("limit_hit contract event received", { meterId });
+        contractEventsProcessed.inc({ topic: eventKey });
         await onMeterDeactivated(meterId);
         break;
       }
@@ -389,12 +662,78 @@ async function handleContractEvent(
         const owner = String(StellarSdk.scValToNative(event.value));
         const meterId = subject;
         logger.info("meter_registered contract event", { meterId, owner });
+        contractEventsProcessed.inc({ topic: eventKey });
         mqttClient?.publish(
           "meters/new",
           JSON.stringify({ meterId, owner }),
           { qos: 1 },
           (err) => { if (err) logger.error({ meterId, err }, "Failed to publish meters/new"); },
         );
+        break;
+      }
+
+      case "solargrid:mtr_xfer": {
+        const newOwner = String(StellarSdk.scValToNative(event.value));
+        const meterId = subject;
+        logger.info("meter_ownership_transferred contract event", { meterId, newOwner });
+        contractEventsProcessed.inc({ topic: eventKey });
+        mqttClient?.publish(
+          `meters/${meterId}/owner-changed`,
+          JSON.stringify({ meterId, newOwner }),
+          { qos: 1 },
+          (err) => {
+            if (err) logger.error({ meterId, err }, "Failed to publish owner-changed");
+          },
+        );
+        break;
+      }
+
+      case "solargrid:frz_on": {
+        logger.info("CONTRACT_FROZEN — freeze event received");
+        contractEventsProcessed.inc({ topic: eventKey });
+        mqttClient?.publish(
+          "control/contract",
+          JSON.stringify({ cmd: "FREEZE", timestamp: new Date().toISOString() }),
+          { qos: 1 },
+          (err) => { if (err) logger.error({ err }, "Failed to publish FREEZE command"); },
+        );
+        break;
+      }
+
+      case "solargrid:frz_off": {
+        logger.info("CONTRACT_UNFROZEN — unfreeze event received");
+        contractEventsProcessed.inc({ topic: eventKey });
+        mqttClient?.publish(
+          "control/contract",
+          JSON.stringify({ cmd: "UNFREEZE", timestamp: new Date().toISOString() }),
+          { qos: 1 },
+          (err) => { if (err) logger.error({ err }, "Failed to publish UNFREEZE command"); },
+        );
+        break;
+      }
+
+      case "solargrid:rev_wdrl": {
+        const [tokenAddress, amount] = StellarSdk.scValToNative(event.value) as [string, bigint];
+        logger.info("revenue_withdrawal contract event", {
+          provider: subject,
+          tokenAddress,
+          amount: amount.toString(),
+        });
+        contractEventsProcessed.inc({ topic: eventKey });
+        break;
+      }
+
+      case "solargrid:adm_prop": {
+        const proposed = String(StellarSdk.scValToNative(event.value));
+        logger.info("admin_transfer_proposed contract event", { proposedAdmin: proposed });
+        contractEventsProcessed.inc({ topic: eventKey });
+        break;
+      }
+
+      case "solargrid:adm_acc": {
+        const accepted = String(StellarSdk.scValToNative(event.value));
+        logger.info("admin_transfer_accepted contract event", { newAdmin: accepted });
+        contractEventsProcessed.inc({ topic: eventKey });
         break;
       }
 
@@ -405,6 +744,7 @@ async function handleContractEvent(
           oldLimit: Number(oldLimit),
           newLimit: Number(newLimit),
         });
+        contractEventsProcessed.inc({ topic: eventKey });
         break;
       }
 
@@ -428,20 +768,38 @@ async function onPaymentReceived(meterId: string, amountStroops: number) {
 }
 
 async function onMeterActivated(meterId: string) {
-  logger.info({ meterId }, 'Sending ON signal to meter relay');
+  const topic = `solargrid/meters/${meterId}/control`;
+  const command = 'ON';
+  logger.info({
+    event: 'relay_command',
+    meterId,
+    command,
+    topic,
+    ts: new Date().toISOString(),
+  }, 'Sending ON signal to meter relay');
+  activeMeters.set({ meter_id: meterId }, 1);
   mqttClient?.publish(
-    `solargrid/meters/${meterId}/control`,
-    JSON.stringify({ cmd: 'ON', timestamp: new Date().toISOString() }),
+    topic,
+    JSON.stringify({ cmd: command, timestamp: new Date().toISOString() }),
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish ON command'); },
   );
 }
 
 async function onMeterDeactivated(meterId: string) {
-  logger.info({ meterId }, 'Sending OFF signal to meter relay');
+  const topic = `solargrid/meters/${meterId}/control`;
+  const command = 'OFF';
+  logger.warn({
+    event: 'relay_command',
+    meterId,
+    command,
+    topic,
+    ts: new Date().toISOString(),
+  }, 'Sending OFF signal to meter relay');
+  activeMeters.set({ meter_id: meterId }, 0);
   mqttClient?.publish(
-    `solargrid/meters/${meterId}/control`,
-    JSON.stringify({ cmd: 'OFF', timestamp: new Date().toISOString() }),
+    topic,
+    JSON.stringify({ cmd: command, timestamp: new Date().toISOString() }),
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish OFF command'); },
   );

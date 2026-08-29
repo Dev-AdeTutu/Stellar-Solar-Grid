@@ -1,12 +1,22 @@
-openapi: 3.1.0
+openapi: "3.1.0"
+
 info:
-  title: Stellar Solar Grid API
-  version: 0.1.0
-  description: REST API for the Stellar SolarGrid PAYG solar energy platform.
+  title: SolarGrid Backend API
+  description: |
+    REST API for the Stellar SolarGrid PAYG solar energy platform.
+
+    Provides access to smart meter data, payment processing, energy statistics,
+    provider revenue, webhook management, and admin utilities.  Most write
+    endpoints and admin endpoints require the `X-Admin-Key` header.
+  version: "0.1.0"
+  license:
+    name: MIT
 
 servers:
   - url: http://localhost:3001
-    description: Local development
+    description: Local development server
+
+# ── Security ──────────────────────────────────────────────────────────────────
 
 components:
   securitySchemes:
@@ -14,106 +24,46 @@ components:
       type: apiKey
       in: header
       name: X-Admin-Key
+      description: >
+        Admin API key set via the `ADMIN_API_KEY` environment variable.
+        Required for all write and admin-only endpoints.
 
   schemas:
+    # ── Common ────────────────────────────────────────────────────────────────
+
     Error:
       type: object
-      required: [error, code]
+      required: [error]
       properties:
         error:
           type: string
         code:
           type: string
-        hint:
-          type: string
 
-    ValidationError:
-      allOf:
-        - $ref: '#/components/schemas/Error'
-        - type: object
-          properties:
-            details:
-              type: array
-              items:
-                type: object
-
-    HealthResponse:
+    TxHash:
       type: object
-      required: [status, version, uptimeSec, dependencies]
+      required: [hash]
       properties:
-        status:
+        hash:
           type: string
-          enum: [ok, degraded]
-        version:
-          type: string
-        uptimeSec:
-          type: integer
-        dependencies:
-          type: object
-          required: [stellarRpc, mqtt]
-          properties:
-            stellarRpc:
-              type: string
-              enum: [ok, unreachable]
-            mqtt:
-              type: string
-              enum: [ok, unreachable]
+          description: Stellar transaction hash
 
-    Pagination:
-      type: object
-      required: [page, pageSize, total, pages]
-      properties:
-        page:
-          type: integer
-        pageSize:
-          type: integer
-        total:
-          type: integer
-        pages:
-          type: integer
+    # ── Meter ─────────────────────────────────────────────────────────────────
 
-    Meter:
+    MeterBalance:
       type: object
+      required: [meter_id, balance, units_used, active]
       properties:
-        owner:
+        meter_id:
           type: string
-        active:
-          type: boolean
+        balance:
+          type: integer
+          description: Current balance in stroops
         units_used:
           type: integer
-        plan:
-          type: string
-        last_payment:
-          type: integer
-        expires_at:
-          type: integer
-        daily_limit:
-          type: integer
-
-    PaymentRecord:
-      type: object
-      required: [txHash, date, meterId, amountXlm, plan]
-      properties:
-        txHash:
-          type: string
-        date:
-          type: string
-          format: date-time
-        meterId:
-          type: string
-        amountXlm:
-          type: number
-        plan:
-          type: string
-
-    CollaboratorShare:
-      type: object
-      required: [address, basisPoints]
-      properties:
-        address:
-          type: string
-        basisPoints:
-          type: integer
+          description: Total energy units consumed
+        active:
+          type: boolean
 
     UsageEvent:
       type: object
@@ -125,89 +75,373 @@ components:
         units:
           type: integer
         cost:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        source_topic:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [pending, submitted, failed]
+        attempt_count:
           type: integer
+        last_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
         on_chain_tx_hash:
           type: string
           nullable: true
+        submitted_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    # ── Stats ─────────────────────────────────────────────────────────────────
+
+    ContractStats:
+      type: object
+      required: [totalMeters, activeMeters, totalUnits, totalRevenue]
+      properties:
+        totalMeters:
+          type: integer
+          description: Total registered meters on-chain
+        activeMeters:
+          type: integer
+          description: Meters currently active (paid and within validity period)
+        totalUnits:
+          type: integer
+          description: Total energy units consumed across all meters
+        totalRevenue:
+          type: integer
+          description: Provider total revenue in stroops
+
+    MetricsSummary:
+      type: object
+      required: [mqttMessages, contractCalls, activeMeters, paymentVolumeXlm]
+      properties:
+        mqttMessages:
+          type: number
+          description: Total MQTT messages received since process start
+        contractCalls:
+          type: number
+          description: Total Soroban contract invocations since process start
+        activeMeters:
+          type: number
+          description: Current active meter gauge value
+        paymentVolumeXlm:
+          type: number
+          description: Cumulative payment volume in XLM
+
+    # ── Provider ──────────────────────────────────────────────────────────────
+
+    ProviderSummary:
+      type: object
+      required: [provider, totalRevenue, totalMeters, activeMeters, totalUnitsUsed]
+      properties:
+        provider:
+          type: string
+          nullable: true
+          description: Admin address (ADMIN_ADDRESS env var)
+        totalRevenue:
+          type: integer
+          description: Provider revenue in stroops
+        totalMeters:
+          type: integer
+        activeMeters:
+          type: integer
+        totalUnitsUsed:
+          type: integer
+
+    # ── Dead-letter ───────────────────────────────────────────────────────────
+
+    MeterNote:
+      type: object
+      required: [id, meter_id, text, created_at]
+      properties:
+        id:
+          type: integer
+        meter_id:
+          type: string
+        author_ip:
+          type: string
+          nullable: true
+          description: IP address of the admin who created the note
+        text:
+          type: string
+          maxLength: 1000
         created_at:
           type: string
           format: date-time
 
-  responses:
-    BadRequest:
-      description: Invalid request parameters or body
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    Unauthorized:
-      description: Missing or invalid admin key
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    NotFound:
-      description: Resource not found
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    PayloadTooLarge:
-      description: Request body exceeds the 100 kb limit
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
-    InternalError:
-      description: Unexpected server error
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/Error'
+    MeterNoteList:
+      type: object
+      required: [notes, total, page, pageSize, hasMore]
+      properties:
+        notes:
+          type: array
+          items:
+            $ref: "#/components/schemas/MeterNote"
+        total:
+          type: integer
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        hasMore:
+          type: boolean
+
+    DeadLetterList:
+      type: object
+      required: [total, limit, offset, events]
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/UsageEvent"
+
+    # ── Webhook ───────────────────────────────────────────────────────────────
+
+    WebhookRecord:
+      type: object
+      required: [id, provider_id, url, created_at, failure_count]
+      properties:
+        id:
+          type: integer
+        provider_id:
+          type: string
+        url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time
+        last_triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+        failure_count:
+          type: integer
+          description: Total failed delivery attempts
+
+    WebhookDelivery:
+      type: object
+      required: [id, webhook_id, attempted_at, status]
+      properties:
+        id:
+          type: integer
+        webhook_id:
+          type: integer
+        attempted_at:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [success, failed]
+        http_status:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+
+    # ── Collaborator ──────────────────────────────────────────────────────────
+
+    CollaboratorShare:
+      type: object
+      required: [address, basisPoints]
+      properties:
+        address:
+          type: string
+          description: Stellar account address
+        basisPoints:
+          type: integer
+          description: Revenue share in basis points (100 = 1%)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
 
 paths:
-  # ── Health ──────────────────────────────────────────────────────────────────
-  /api/health:
-    get:
-      operationId: getHealth
-      summary: Health check
-      description: Returns service version, uptime, and dependency status. Used by load balancers and Docker healthchecks.
-      tags: [Health]
-      responses:
-        '200':
-          description: All dependencies healthy
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
-        '503':
-          description: One or more dependencies unreachable
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HealthResponse'
 
-  # ── Meters ──────────────────────────────────────────────────────────────────
+  # ── Health ──────────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      summary: Service health check
+      description: >
+        Returns the health of the Stellar RPC and MQTT broker connections.
+        Also surfaces the current count of dead-lettered usage events.
+      operationId: getHealth
+      responses:
+        "200":
+          description: All services healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]
+                  checks:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  deadLetterEvents:
+                    type: integer
+        "503":
+          description: One or more services degraded
+
+  # ── Stats ────────────────────────────────────────────────────────────────────
+
+  /api/stats:
+    get:
+      summary: Contract-derived meter statistics
+      description: |
+        Queries the Soroban contract for a real-time aggregate of all meters:
+        total count, active count, total units consumed, and provider revenue.
+
+        Response is cached for **30 seconds** to reduce RPC load.
+      operationId: getStats
+      responses:
+        "200":
+          description: Meter statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContractStats"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/stats/summary:
+    get:
+      summary: Prom-client metrics snapshot
+      description: |
+        Returns a JSON snapshot of the four core prom-client counters/gauges
+        for the admin dashboard.  Does **not** require Prometheus or Grafana
+        to be running.
+
+        Response is cached for **15 seconds**.
+      operationId: getStatsSummary
+      responses:
+        "200":
+          description: Metrics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSummary"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Provider ─────────────────────────────────────────────────────────────────
+
+  /api/provider:
+    get:
+      summary: Provider revenue and meter summary
+      description: |
+        Returns the energy provider's on-chain revenue alongside an aggregate
+        summary of all meters.  Requires admin authentication.
+
+        Response is cached for **30 seconds**.
+      operationId: getProvider
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Provider summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/provider/webhook:
+    post:
+      summary: Register provider low-balance webhook
+      description: |
+        Register or replace the webhook URL that receives low-balance
+        notifications when a meter's balance drops below `LOW_BALANCE_THRESHOLD`.
+
+        Alias for `POST /api/webhooks/low-balance` in the provider-facing
+        namespace.  Requires admin authentication.
+      operationId: registerProviderWebhook
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [webhook_url]
+              properties:
+                webhook_url:
+                  type: string
+                  format: uri
+                  example: "https://provider.example.com/hooks/low-balance"
+      responses:
+        "200":
+          description: Webhook registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  webhook_url:
+                    type: string
+                    format: uri
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Meters ────────────────────────────────────────────────────────────────────
+
   /api/meters:
     get:
+      summary: List all meters (paginated, filterable)
       operationId: listMeters
-      summary: List all meters (paginated)
-      tags: [Meters]
       parameters:
-        - in: query
-          name: page
-          schema:
-            type: integer
-            default: 1
-        - in: query
-          name: pageSize
-          schema:
-            type: integer
-            default: 25
-            maximum: 100
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+        - name: owner
+          in: query
+          description: Filter to meters belonging to a specific owner address
+          schema: { type: string }
+        - name: active
+          in: query
+          description: Filter by activation status
+          schema: { type: string, enum: ["true", "false"] }
+        - name: plan
+          in: query
+          description: Filter by payment plan
+          schema: { type: string, enum: [daily, weekly, usage_based] }
+        - name: expiresBefore
+          in: query
+          description: Filter meters whose expires_at is before this ISO 8601 timestamp
+          schema: { type: string, format: date-time }
       responses:
-        '200':
-          description: Paginated list of meters
+        "200":
+          description: Paginated meter list
           content:
             application/json:
               schema:
@@ -215,17 +449,14 @@ paths:
                 properties:
                   meters:
                     type: array
-                    items:
-                      $ref: '#/components/schemas/Meter'
+                    items: {}
                   pagination:
-                    $ref: '#/components/schemas/Pagination'
-        '500':
-          $ref: '#/components/responses/InternalError'
-
+                    type: object
+        "400":
+          $ref: "#/components/responses/ValidationError"
     post:
-      operationId: registerMeter
       summary: Register a new meter (admin only)
-      tags: [Meters]
+      operationId: registerMeter
       security:
         - AdminKey: []
       requestBody:
@@ -238,66 +469,41 @@ paths:
               properties:
                 meter_id:
                   type: string
+                  maxLength: 12
                 owner:
                   type: string
-                  description: Stellar Ed25519 public key
+                  description: Stellar account address (G…)
       responses:
-        '200':
-          description: Meter registered; returns transaction hash
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
-  /api/meters/export:
-    get:
-      operationId: exportMeters
-      summary: Export all meter data as CSV or JSON
-      tags: [Meters]
-      parameters:
-        - in: query
-          name: format
-          schema:
-            type: string
-            enum: [csv, json]
-            default: csv
+  /api/meters/bulk:
+    post:
+      summary: Bulk meter status query
+      description: >-
+        Batch alternative to calling GET /api/meters/{id}/status once per
+        meter. Capped at 100 meter_ids per request.
+      operationId: getMeterStatusBulk
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_ids]
+              properties:
+                meter_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items: { type: string }
       responses:
-        '200':
-          description: Meter data file
-          content:
-            text/csv:
-              schema:
-                type: string
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Meter'
-
-  /api/meters/owner/{address}:
-    get:
-      operationId: getMetersByOwner
-      summary: List all meters for a given owner address
-      tags: [Meters]
-      parameters:
-        - in: path
-          name: address
-          required: true
-          schema:
-            type: string
-          description: Stellar Ed25519 public key
-      responses:
-        '200':
-          description: Meters owned by address
+        "200":
+          description: Per-meter status, with per-meter errors reported separately
           content:
             application/json:
               schema:
@@ -306,465 +512,264 @@ paths:
                   meters:
                     type: array
                     items:
-                      $ref: '#/components/schemas/Meter'
-                  owner:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-
-  /api/meters/{id}:
-    get:
-      operationId: getMeter
-      summary: Get meter status
-      tags: [Meters]
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Meter data
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  meter:
-                    $ref: '#/components/schemas/Meter'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/meters/{id}/access:
-    get:
-      operationId: checkMeterAccess
-      summary: Check whether a meter is currently active
-      tags: [Meters]
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Active flag
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  active:
-                    type: boolean
+                      type: object
+                      properties:
+                        id: { type: string }
+                        balance: { type: string }
+                        active: { type: boolean }
+                  errors:
+                    type: object
+                    additionalProperties: { type: string }
+                  count: { type: integer }
+                  requested: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
   /api/meters/{id}/balance:
     get:
+      summary: Live meter balance
+      description: Response is cached for 5 seconds.
       operationId: getMeterBalance
-      summary: Live balance for a single meter (cached 5 s)
-      tags: [Meters]
       parameters:
-        - in: path
-          name: id
+        - name: id
+          in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
-        '200':
-          description: Meter balance
+        "200":
+          description: Balance data
           content:
             application/json:
               schema:
-                type: object
-                required: [meter_id, balance, units_used, active]
-                properties:
-                  meter_id:
-                    type: string
-                  balance:
-                    type: integer
-                  units_used:
-                    type: integer
-                  active:
-                    type: boolean
-        '404':
-          $ref: '#/components/responses/NotFound'
+                $ref: "#/components/schemas/MeterBalance"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
-  /api/meters/balances:
-    get:
-      operationId: getBatchMeterBalances
-      summary: Batch balance query for multiple meters (cached 5 s per meter)
-      description: |
-        Returns balances for multiple meters in a single request. Reuses the existing
-        per-meter cache where fresh. Optimizes dashboard polling for multi-meter scenarios
-        by reducing HTTP round trips and RPC calls.
-        
-        Maximum 50 meter IDs per request to prevent unbounded batch queries.
-      tags: [Meters]
+  /api/meters/{id}/deactivate:
+    post:
+      summary: Admin deactivate a meter
+      operationId: deactivateMeter
+      security:
+        - AdminKey: []
       parameters:
-        - in: query
-          name: ids
+        - name: id
+          in: path
           required: true
-          schema:
-            type: string
-          description: Comma-separated list of meter IDs (max 50)
-          example: "METER1,METER2,METER3"
+          schema: { type: string }
       responses:
-        '200':
-          description: Batch balance response
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [balances, count, requested]
-                properties:
-                  balances:
-                    type: array
-                    items:
-                      type: object
-                      required: [meter_id, balance, units_used, active]
-                      properties:
-                        meter_id:
-                          type: string
-                        balance:
-                          type: integer
-                        units_used:
-                          type: integer
-                        active:
-                          type: boolean
-                  errors:
-                    type: object
-                    additionalProperties:
-                      type: string
-                    description: Map of meter_id to error message for failed queries
-                  count:
-                    type: integer
-                    description: Number of successful balance queries
-                  requested:
-                    type: integer
-                    description: Total number of meter IDs requested
-              example:
-                balances:
-                  - meter_id: "METER1"
-                    balance: 5000000
-                    units_used: 1200
-                    active: true
-                  - meter_id: "METER2"
-                    balance: 3000000
-                    units_used: 800
-                    active: true
-                errors:
-                  METER3: "Meter not found"
-                count: 2
-                requested: 3
-        '400':
-          description: Invalid request (missing ids, too many ids, etc.)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-              examples:
-                missing_ids:
-                  value:
-                    error: "ids query parameter is required"
-                    code: "VALIDATION_ERROR"
-                batch_size_exceeded:
-                  value:
-                    error: "Maximum 50 meter IDs allowed per request, received 75"
-                    code: "BATCH_SIZE_EXCEEDED"
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/activate:
+    post:
+      summary: Admin activate a meter
+      operationId: activateMeter
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/meters/{id}/history:
     get:
-      operationId: getMeterHistory
       summary: Paginated local usage history for a meter
-      tags: [Meters]
+      operationId: getMeterHistory
       parameters:
-        - in: path
-          name: id
+        - name: id
+          in: path
           required: true
-          schema:
-            type: string
-        - in: query
-          name: page
-          schema:
-            type: integer
-            default: 1
-        - in: query
-          name: pageSize
-          schema:
-            type: integer
-            default: 25
-            maximum: 100
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based)
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Events per page (default 20, max 100)
       responses:
-        '200':
+        "200":
           description: Usage history
           content:
             application/json:
               schema:
                 type: object
+                required: [events, page, pageSize, total, hasMore]
                 properties:
                   events:
                     type: array
                     items:
-                      $ref: '#/components/schemas/UsageEvent'
-                  pagination:
-                    $ref: '#/components/schemas/Pagination'
+                      $ref: "#/components/schemas/UsageEvent"
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
-  /api/meters/{id}/usage:
-    post:
-      operationId: reportUsage
-      summary: IoT oracle reports energy usage for a meter (admin only)
-      tags: [Meters]
-      security:
-        - AdminKey: []
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [units, cost]
-              properties:
-                units:
-                  type: integer
-                  minimum: 1
-                cost:
-                  type: integer
-                  minimum: 1
-      responses:
-        '200':
-          description: Usage event persisted
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  event:
-                    $ref: '#/components/schemas/UsageEvent'
-                  hash:
-                    type: string
-                    nullable: true
-                  queued:
-                    type: boolean
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
-
-  /api/meters/{id}/activate:
-    post:
-      operationId: activateMeter
-      summary: Admin manually activates a meter
-      tags: [Meters]
-      security:
-        - AdminKey: []
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Meter activated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-                  meter_id:
-                    type: string
-                  active:
-                    type: boolean
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/meters/{id}/deactivate:
-    post:
-      operationId: deactivateMeter
-      summary: Admin manually deactivates a meter
-      tags: [Meters]
-      security:
-        - AdminKey: []
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Meter deactivated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-                  meter_id:
-                    type: string
-                  active:
-                    type: boolean
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/meters/{id}/set-daily-limit:
-    post:
-      operationId: setDailyLimit
-      summary: Admin sets daily spending limit for a meter
-      tags: [Meters]
-      security:
-        - AdminKey: []
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [limit]
-              properties:
-                limit:
-                  type: integer
-                  minimum: 0
-                  description: Daily limit in stroops
-      responses:
-        '200':
-          description: Daily limit set
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-                  meter_id:
-                    type: string
-                  daily_limit:
-                    type: integer
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ── Payments ────────────────────────────────────────────────────────────────
-  /api/payments/{address}:
+  /api/meters/{id}/notes:
     get:
-      operationId: getPayments
-      summary: Payment history for a Stellar address
-      tags: [Payments]
+      summary: List all notes for a meter
+      operationId: getMeterNotes
       parameters:
-        - in: path
-          name: address
+        - name: id
+          in: path
           required: true
-          schema:
-            type: string
-          description: Stellar Ed25519 public key
-        - in: query
-          name: page
-          schema:
-            type: integer
-            default: 1
-        - in: query
-          name: limit
-          schema:
-            type: integer
-            default: 10
-            maximum: 50
-        - in: query
-          name: sort
-          schema:
-            type: string
-            enum: [asc, desc]
-            default: desc
-        - in: query
-          name: days
-          schema:
-            type: integer
-            default: 30
-            maximum: 90
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
       responses:
-        '200':
-          description: Payment history
+        "200":
+          description: Paginated notes list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterNoteList"
+    post:
+      summary: Create a note for a meter (admin only)
+      operationId: createMeterNote
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  maxLength: 1000
+      responses:
+        "201":
+          description: Note created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterNote"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/meters/{id}/notes/{noteId}:
+    delete:
+      summary: Delete a meter note (admin only)
+      operationId: deleteMeterNote
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: noteId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Note deleted
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  payments:
+                  deleted: { type: boolean }
+                  noteId: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Webhooks ──────────────────────────────────────────────────────────────────
+
+  /api/webhooks:
+    get:
+      summary: List all registered webhooks (admin only)
+      description: |
+        Returns all registered webhooks with audit fields: id, provider_id, url,
+        created_at, last_triggered_at, and failure_count. Requires admin authentication.
+      operationId: listWebhooks
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Webhook list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhooks, count]
+                properties:
+                  webhooks:
                     type: array
                     items:
-                      $ref: '#/components/schemas/PaymentRecord'
-                  pagination:
-                    $ref: '#/components/schemas/Pagination'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '500':
-          $ref: '#/components/responses/InternalError'
+                      $ref: "#/components/schemas/WebhookRecord"
+                  count:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
-  # ── Webhooks ─────────────────────────────────────────────────────────────────
-  /api/webhooks/sms-payment:
-    post:
-      operationId: smsPaymentWebhook
-      summary: Telecom partner webhook — triggers on-chain payment
-      description: Requires a valid HMAC-SHA256 signature in the X-Webhook-Signature header.
-      tags: [Webhooks]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [meter_id, amount_xlm]
-              properties:
-                meter_id:
-                  type: string
-                amount_xlm:
-                  type: number
-                plan:
-                  type: string
-                  default: daily
+  /api/webhooks/{id}/deliveries:
+    get:
+      summary: Last 50 delivery attempts for a webhook
+      operationId: getWebhookDeliveries
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
       responses:
-        '200':
-          description: Payment submitted on-chain
+        "200":
+          description: Delivery history
           content:
             application/json:
               schema:
                 type: object
+                required: [deliveries, count]
                 properties:
-                  hash:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '413':
-          $ref: '#/components/responses/PayloadTooLarge'
+                  deliveries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WebhookDelivery"
+                  count:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
   /api/webhooks/low-balance:
     post:
+      summary: Register low-balance webhook URL
+      description: |
+        Register a webhook URL to receive `low_balance` notifications.
+        Multiple URLs may be registered; all receive the notification.
       operationId: registerLowBalanceWebhook
-      summary: Register a webhook URL for low-balance notifications
-      tags: [Webhooks]
       requestBody:
         required: true
         content:
@@ -777,29 +782,48 @@ paths:
                   type: string
                   format: uri
       responses:
-        '200':
+        "200":
           description: Webhook registered
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  message:
-                    type: string
-                  webhook_url:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
-  # ── Allowlist ────────────────────────────────────────────────────────────────
+  /api/webhooks/sms-payment:
+    post:
+      summary: Telecom partner SMS payment webhook
+      description: |
+        Receives a signed payment event from a telecom partner and triggers
+        `make_payment` on-chain.  Requires a valid `X-Webhook-Signature` header
+        (HMAC-SHA256 of the raw request body using `TELECOM_WEBHOOK_SECRET`).
+      operationId: handleSmsPaymentWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meter_id, amount_xlm]
+              properties:
+                meter_id: { type: string }
+                amount_xlm: { type: number }
+                plan:
+                  type: string
+                  enum: [Daily, Weekly, Usage, UsageBased]
+                  default: Daily
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          description: Invalid webhook signature
+
+  # ── Allowlist ─────────────────────────────────────────────────────────────────
+
   /api/allowlist:
     get:
-      operationId: getAllowlist
       summary: Get all allowlisted addresses
-      tags: [Allowlist]
+      operationId: getAllowlist
       responses:
-        '200':
-          description: Allowlisted addresses
+        "200":
+          description: List of allowlisted Stellar addresses
           content:
             application/json:
               schema:
@@ -807,13 +831,10 @@ paths:
                 properties:
                   addresses:
                     type: array
-                    items:
-                      type: string
-
+                    items: { type: string }
     post:
+      summary: Add address to allowlist (admin only)
       operationId: addToAllowlist
-      summary: Add an address to the allowlist (admin only)
-      tags: [Allowlist]
       security:
         - AdminKey: []
       requestBody:
@@ -826,57 +847,38 @@ paths:
               properties:
                 address:
                   type: string
-                  minLength: 56
-                  maxLength: 56
+                  description: 56-character Stellar address
       responses:
-        '200':
-          description: Address added
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /api/allowlist/{address}:
     delete:
+      summary: Remove address from allowlist (admin only)
       operationId: removeFromAllowlist
-      summary: Remove an address from the allowlist (admin only)
-      tags: [Allowlist]
       security:
         - AdminKey: []
       parameters:
-        - in: path
-          name: address
+        - name: address
+          in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
-        '200':
-          description: Address removed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
-  # ── Collaborators ────────────────────────────────────────────────────────────
+  # ── Collaborators ─────────────────────────────────────────────────────────────
+
   /api/collaborators:
     get:
-      operationId: getCollaborators
       summary: List all collaborators and their revenue shares
-      tags: [Collaborators]
+      operationId: getCollaborators
       responses:
-        '200':
+        "200":
           description: Collaborator list
           content:
             application/json:
@@ -886,12 +888,10 @@ paths:
                   collaborators:
                     type: array
                     items:
-                      $ref: '#/components/schemas/CollaboratorShare'
-
+                      $ref: "#/components/schemas/CollaboratorShare"
     post:
+      summary: Add collaborator (admin only)
       operationId: addCollaborator
-      summary: Add a collaborator (admin only)
-      tags: [Collaborators]
       security:
         - AdminKey: []
       requestBody:
@@ -904,117 +904,621 @@ paths:
               properties:
                 address:
                   type: string
+                  description: Stellar account address
                 basis_points:
                   type: integer
-                  minimum: 0
-                  maximum: 10000
+                  description: Revenue share in basis points
       responses:
-        '200':
-          description: Collaborator added
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  hash:
-                    type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
   /api/collaborators/{address}:
     delete:
+      summary: Remove collaborator (admin only)
       operationId: removeCollaborator
-      summary: Remove a collaborator (admin only)
-      tags: [Collaborators]
       security:
         - AdminKey: []
       parameters:
-        - in: path
-          name: address
+        - name: address
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          $ref: "#/components/responses/TxHash"
+        "400":
+          description: Invalid Stellar address
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Delegates ─────────────────────────────────────────────────────────────────
+
+  /api/delegates/add:
+    post:
+      summary: Add a delegate who can make payments on behalf of meter owner
+      description: |
+        Authorize a delegate address to make payments for a specific meter. The meter
+        owner retains full control and can revoke delegation at any time. Multiple
+        delegates can be authorized per meter.
+      operationId: addDelegate
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, delegate, owner]
+              properties:
+                meterId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The meter ID to authorize delegate for
+                delegate:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the delegate to authorize
+                owner:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the meter owner
+      responses:
+        "200":
+          description: Delegate added successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, hash, meterId, delegate]
+                properties:
+                  success:
+                    type: boolean
+                  hash:
+                    type: string
+                    description: Transaction hash
+                  meterId:
+                    type: string
+                  delegate:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Contract error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+
+  /api/delegates/remove:
+    post:
+      summary: Remove a delegate's authorization to make payments
+      description: |
+        Revoke a delegate's authorization to make payments for a specific meter.
+        Only the meter owner can remove delegates.
+      operationId: removeDelegate
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, delegate, owner]
+              properties:
+                meterId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The meter ID to remove delegate from
+                delegate:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the delegate to remove
+                owner:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the meter owner
+      responses:
+        "200":
+          description: Delegate removed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, hash, meterId, delegate]
+                properties:
+                  success:
+                    type: boolean
+                  hash:
+                    type: string
+                    description: Transaction hash
+                  meterId:
+                    type: string
+                  delegate:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Contract error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+
+  /api/delegates/{meterId}:
+    get:
+      summary: Get all delegates authorized to make payments for a meter
+      description: |
+        Returns a list of all delegate addresses authorized to make payments on
+        behalf of the meter owner. Public read access.
+      operationId: getDelegates
+      parameters:
+        - name: meterId
+          in: path
           required: true
           schema:
             type: string
+          description: The meter ID to query delegates for
       responses:
-        '200':
-          description: Collaborator removed
+        "200":
+          description: Delegate list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [meterId, delegates, count]
+                properties:
+                  meterId:
+                    type: string
+                  delegates:
+                    type: array
+                    items:
+                      type: string
+                      description: Stellar address (G…)
+                  count:
+                    type: integer
+                    description: Number of authorized delegates
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          description: Contract error
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  error:
+                    type: string
+                  code:
+                    type: string
+
+  /api/delegates/payment:
+    post:
+      summary: Make a payment on behalf of a meter owner as an authorized delegate
+      description: |
+        Allows an authorized delegate to make a payment for a meter without
+        transferring ownership. The delegate must have been previously authorized
+        via `POST /api/delegates/add`.
+        
+        **Use cases:**
+        - Parents paying for adult children's energy
+        - Employers subsidizing worker housing
+        - Property managers paying for rental units
+        - Energy provider incentive programs
+      operationId: makeDelegatedPayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId, delegate, amount]
+              properties:
+                meterId:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: The meter ID to pay for
+                delegate:
+                  type: string
+                  minLength: 56
+                  maxLength: 56
+                  description: Stellar address (G…) of the authorized delegate
+                amount:
+                  type: integer
+                  minimum: 1
+                  description: Payment amount in stroops (1 XLM = 10^7 stroops)
+                plan:
+                  type: string
+                  enum: [Daily, Weekly, UsageBased]
+                  default: Daily
+                  description: Payment plan type
+                memo:
+                  type: string
+                  maxLength: 100
+                  description: Optional payment memo
+      responses:
+        "200":
+          description: Payment successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, hash, meterId, delegate, amount, plan]
+                properties:
+                  success:
+                    type: boolean
                   hash:
                     type: string
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  # ── Stats ────────────────────────────────────────────────────────────────────
-  /api/stats:
-    get:
-      operationId: getStats
-      summary: Contract-derived meter statistics (cached 30 s)
-      tags: [Stats]
-      responses:
-        '200':
-          description: Aggregate stats
+                    description: Transaction hash
+                  meterId:
+                    type: string
+                  delegate:
+                    type: string
+                  amount:
+                    type: integer
+                  plan:
+                    type: string
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Contract error
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  totalMeters:
-                    type: integer
-                  activeMeters:
-                    type: integer
-                  totalUnits:
-                    type: integer
-                  totalRevenue:
-                    type: integer
+                  error:
+                    type: string
+                  code:
+                    type: string
 
-  /api/stats/summary:
-    get:
-      operationId: getStatsSummary
-      summary: Prometheus counter/gauge snapshot for the admin dashboard (cached 15 s)
-      tags: [Stats]
+  # ── Usage Events ─────────────────────────────────────────────────────────────
+
+  /api/usage-events:
+    delete:
+      summary: Purge submitted usage events older than N days (admin only)
+      description: |
+        Hard-deletes usage events with `status = submitted` older than `olderThanDays` days.
+        Defaults to 90 days. Only submitted events are deleted — pending and failed events
+        are never purged.
+      operationId: purgeUsageEvents
+      security:
+        - AdminKey: []
+      parameters:
+        - name: olderThanDays
+          in: query
+          schema: { type: integer, default: 90, minimum: 0 }
       responses:
-        '200':
-          description: Metrics snapshot
+        "200":
+          description: Deleted count
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  mqttMessages:
-                    type: number
-                  contractCalls:
-                    type: number
-                  activeMeters:
-                    type: number
-                  paymentVolumeXlm:
-                    type: number
+                  deletedCount: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 
-  # ── Metrics ──────────────────────────────────────────────────────────────────
+  /api/usage-events/failed:
+    get:
+      summary: List dead-lettered usage events (admin only)
+      description: |
+        Returns events with `status = failed` (exhausted all retry attempts) with pagination.
+      operationId: getFailedUsageEvents
+      security:
+        - AdminKey: []
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 10, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated failed events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UsageEvent"
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      pageSize: { type: integer }
+                      total: { type: integer }
+                      pages: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/usage-events/{id}/replay:
+    post:
+      summary: Replay a failed usage event (admin only)
+      description: |
+        Resets a failed event back to `pending` with `attempt_count = 0` so
+        the retry worker picks it up on its next tick.
+      operationId: replayUsageEvent
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Updated event record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageEvent"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Admin: Dead-letter ────────────────────────────────────────────────────────
+
+  /api/admin/dead-letters:
+    get:
+      summary: List dead-lettered usage events (admin only)
+      description: |
+        Returns usage events that have been dead-lettered after exhausting all
+        retry attempts (`MAX_RETRY_ATTEMPTS`, default 5).
+
+        These events were not submitted on-chain and require manual review or
+        reprocessing via `POST /api/admin/dead-letters/{id}/reprocess`.
+      operationId: getDeadLetters
+      security:
+        - AdminKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Dead-letter event list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeadLetterList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/admin/dead-letters/{id}/reprocess:
+    post:
+      summary: Requeue a dead-lettered event (admin only)
+      description: |
+        Resets the event status to `pending` and zeroes the attempt counter so
+        the retry worker picks it up on its next tick.
+      operationId: reprocessDeadLetter
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Event requeued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  event:
+                    $ref: "#/components/schemas/UsageEvent"
+        "400":
+          description: Invalid event id
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Event not found or not in dead-letter state
+
+  # ── Metrics ───────────────────────────────────────────────────────────────────
+
   /api/metrics/summary:
     get:
+      summary: JSON metrics snapshot for admin dashboard
+      description: |
+        Returns a JSON snapshot of core prom-client counters/gauges.  Does not
+        require Prometheus or Grafana to be running.  Cached for 15 seconds.
+
+        Note: `/api/stats/summary` provides the same payload — this endpoint
+        is kept for backwards compatibility.
       operationId: getMetricsSummary
-      summary: JSON snapshot of core prom-client counters/gauges (cached 15 s)
-      tags: [Metrics]
       responses:
-        '200':
+        "200":
           description: Metrics snapshot
           content:
             application/json:
               schema:
+                $ref: "#/components/schemas/MetricsSummary"
+
+  /metrics:
+    get:
+      summary: Prometheus scrape endpoint (text format)
+      description: Standard Prometheus exposition format for scraping.
+      operationId: getPrometheusMetrics
+      responses:
+        "200":
+          description: Prometheus metrics text
+
+  # ── Solar ─────────────────────────────────────────────────────────────────────
+
+  /api/solar/forecast:
+    get:
+      summary: Estimate solar energy production and revenue
+      description: |
+        Returns per-period (daily/weekly/monthly/yearly) kWh production estimates
+        and revenue projections for a given panel setup. All calculations are
+        server-side; no external data sources are used.
+      operationId: getSolarForecast
+      tags: [solar]
+      parameters:
+        - name: capacityKw
+          in: query
+          required: true
+          description: Total panel capacity in kilowatts (e.g. 5)
+          schema: { type: number, exclusiveMinimum: 0, maximum: 10000 }
+        - name: peakSunHours
+          in: query
+          required: true
+          description: Average daily peak sun hours for the location
+          schema: { type: number, exclusiveMinimum: 0, maximum: 24 }
+        - name: efficiency
+          in: query
+          description: Panel efficiency 0–1 (default 0.20)
+          schema: { type: number, exclusiveMinimum: 0, maximum: 1, default: 0.20 }
+        - name: panelAgeYears
+          in: query
+          description: Age of panels in years for degradation calculation (default 0)
+          schema: { type: number, minimum: 0, default: 0 }
+        - name: ratePerKwh
+          in: query
+          description: Local electricity rate in XLM/kWh (default 0.12)
+          schema: { type: number, minimum: 0, default: 0.12 }
+      responses:
+        "200":
+          description: Solar production forecast
+          content:
+            application/json:
+              schema:
                 type: object
+                required: [panelCapacityKw, peakSunHours, efficiency, panelAgeYears, effectiveDegradation, dailyKwh, forecast, assumptions]
                 properties:
-                  mqttMessages:
-                    type: number
-                  contractCalls:
-                    type: number
-                  activeMeters:
-                    type: number
-                  paymentVolumeXlm:
-                    type: number
+                  panelCapacityKw: { type: number }
+                  peakSunHours: { type: number }
+                  efficiency: { type: number }
+                  panelAgeYears: { type: number }
+                  effectiveDegradation: { type: number }
+                  dailyKwh: { type: number }
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      required: [period, days, estimatedKwh, estimatedRevenue]
+                      properties:
+                        period: { type: string }
+                        days: { type: integer }
+                        estimatedKwh: { type: number }
+                        estimatedRevenue: { type: number }
+                  assumptions:
+                    type: object
+                    properties:
+                      systemLoss: { type: number }
+                      degradationRatePerYear: { type: number }
+                      ratePerKwh: { type: number }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/solar/irradiance-zones:
+    get:
+      summary: Reference peak sun hours by climate zone
+      description: |
+        Returns a static list of common climate zones with their reference peak
+        sun-hour values. Useful for populating dropdowns on the frontend.
+      operationId: getSolarIrradianceZones
+      tags: [solar]
+      responses:
+        "200":
+          description: Irradiance zone list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [zones]
+                properties:
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, peakSunHours]
+                      properties:
+                        name: { type: string }
+                        peakSunHours: { type: number }
+
+# ── Shared response components ────────────────────────────────────────────────
+
+  responses:
+    TxHash:
+      description: On-chain transaction hash
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TxHash"
+
+    Unauthorized:
+      description: Missing or invalid X-Admin-Key
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+    ValidationError:
+      description: Request body validation failed
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              code: { type: string }
+              details: { type: object }
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"

@@ -1,41 +1,75 @@
-
 import winston from "winston";
+import { getReqId, getRequestId } from "./requestContext.js";
+import { sanitizeForLogging } from "./errorSanitizer.js";
 
 const isProduction = process.env.NODE_ENV === "production";
+const useJson = (process.env.LOG_FORMAT ?? (isProduction ? "json" : "text")) === "json";
+const SERVICE_NAME = "solargrid-backend";
 
-const fmt = isProduction
-  ? winston.format.combine(winston.format.timestamp(), winston.format.json())
-  : winston.format.combine(
-      winston.format.colorize(),
-      winston.format.timestamp({ format: "HH:mm:ss" }),
-      winston.format.printf(({ timestamp, level, message, ...meta }) => {
-        const metaStr = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : "";
-        return `${timestamp} ${level} ${message}${metaStr}`;
-      }),
-    );
+const withRequestIdFormat = winston.format((info) => {
+  const requestId = getReqId() ?? getRequestId();
+  if (requestId) {
+    (info as { request_id?: string }).request_id = requestId;
+  }
+  return info;
+});
+
+const developmentFormat = winston.format.combine(
+  withRequestIdFormat(),
+  winston.format.errors({ stack: true }),
+  winston.format.colorize(),
+  winston.format.timestamp({ format: "HH:mm:ss" }),
+  winston.format.printf(({ timestamp, level, message, request_id, ...meta }) => {
+    const metaKeys = Object.keys(meta);
+    const metaStr = metaKeys.length > 0 ? ` ${JSON.stringify(meta)}` : "";
+    const reqStr = request_id ? ` [${request_id}]` : "";
+    return `${timestamp} ${level}${reqStr} ${message}${metaStr}`;
+  }),
+);
+
+const structuredFormat = winston.format.combine(
+  withRequestIdFormat(),
+  winston.format.errors({ stack: true }),
+  winston.format.timestamp(),
+  winston.format.json(),
+);
 
 const winstonLogger = winston.createLogger({
   level: process.env.LOG_LEVEL ?? "info",
-  format: fmt,
-  transports: [new winston.transports.Console()],
+  defaultMeta: { service: SERVICE_NAME },
+  format: useJson ? structuredFormat : developmentFormat,
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: "logs/error.log", level: "error" }),
+    new winston.transports.File({ filename: "logs/combined.log" }),
+  ],
 });
+
+export function getComponentLogger(component: string) {
+  return winstonLogger.child({ component });
+}
 
 type Meta = Record<string, unknown>;
 
-// Pino-style: logger.info({ meta }, "msg") or logger.info("msg")
-// Winston-style: logger.info("msg", { meta }) or logger.info("msg")
-// This wrapper accepts both call signatures.
+function withRequestIdMeta(meta: Meta): Meta {
+  const requestId = getReqId() ?? getRequestId();
+  const safeMeta = sanitizeForLogging(meta) as Meta;
+  if (requestId) {
+    return { requestId, ...safeMeta };
+  }
+  return safeMeta;
+}
+
 function makeLogFn(level: "fatal" | "error" | "warn" | "info" | "debug") {
   return (msgOrMeta: string | Meta, msgOrMeta2?: string | Meta, ...rest: unknown[]) => {
     if (typeof msgOrMeta === "string") {
-      // Called as: logger.info("msg", { meta }) — winston style
-      const meta = typeof msgOrMeta2 === "object" ? msgOrMeta2 : {};
-      winstonLogger.log(level === "fatal" ? "error" : level, msgOrMeta, meta);
-    } else {
-      // Called as: logger.info({ meta }, "msg") — pino style
-      const msg = typeof msgOrMeta2 === "string" ? msgOrMeta2 : String(rest[0] ?? "");
-      winstonLogger.log(level === "fatal" ? "error" : level, msg, msgOrMeta as Meta);
+      const meta = typeof msgOrMeta2 === "object" && msgOrMeta2 !== null ? msgOrMeta2 : {};
+      winstonLogger.log(level === "fatal" ? "error" : level, msgOrMeta, withRequestIdMeta(meta as Meta));
+      return;
     }
+
+    const msg = typeof msgOrMeta2 === "string" ? msgOrMeta2 : String(rest[0] ?? "");
+    winstonLogger.log(level === "fatal" ? "error" : level, msg, withRequestIdMeta(msgOrMeta as Meta));
   };
 }
 

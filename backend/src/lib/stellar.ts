@@ -1,15 +1,32 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { contractCalls } from "./metrics.js";
+import { getReqId } from "./requestContext.js";
+import { logger } from "./logger.js";
+import { RpcPool } from "./rpcPool.js";
 
 const NETWORK = process.env.STELLAR_NETWORK ?? "testnet";
 
 export const NETWORK_PASSPHRASE =
   NETWORK === "mainnet" ? StellarSdk.Networks.PUBLIC : StellarSdk.Networks.TESTNET;
 
-export const RPC_URL =
-  NETWORK === "mainnet"
-    ? "https://soroban-rpc.stellar.org"
-    : "https://soroban-testnet.stellar.org";
+export const RPC_URLS: string[] = process.env.STELLAR_RPC_URLS
+  ? process.env.STELLAR_RPC_URLS.split(",").map((u) => u.trim()).filter(Boolean)
+  : [
+      process.env.STELLAR_RPC_URL ??
+        (NETWORK === "mainnet"
+          ? "https://soroban-rpc.stellar.org"
+          : "https://soroban-testnet.stellar.org"),
+    ];
+
+export const RPC_URL = RPC_URLS[0];
+
+export const HORIZON_URL =
+  process.env.HORIZON_URL ??
+  (NETWORK === "mainnet"
+    ? "https://horizon.stellar.org"
+    : "https://horizon-testnet.stellar.org");
+
+export const rpcPool = new RpcPool(RPC_URLS);
 
 const SECRET_ENV = process.env.ADMIN_SECRET_KEY ?? "";
 
@@ -35,9 +52,29 @@ export class StellarService {
   public readonly adminKeypair: StellarSdk.Keypair;
   public readonly contractId: string;
   public readonly networkPassphrase: string;
+  public readonly pool?: RpcPool;
 
-  constructor(config: { rpcUrl: string; adminSecret: string; contractId: string; network: string }) {
-    this.server = new StellarSdk.SorobanRpc.Server(config.rpcUrl);
+  constructor(config: {
+    rpcUrl?: string;
+    rpcUrls?: string[];
+    rpcPool?: RpcPool;
+    adminSecret: string;
+    contractId: string;
+    network: string;
+  }) {
+    if (config.rpcPool) {
+      this.pool = config.rpcPool;
+      this.server = config.rpcPool.createProxy();
+    } else if (config.rpcUrls && config.rpcUrls.length > 0) {
+      this.pool = new RpcPool(config.rpcUrls);
+      this.server = this.pool.createProxy();
+    } else if (config.rpcUrl) {
+      this.pool = new RpcPool([config.rpcUrl]);
+      this.server = this.pool.createProxy();
+    } else {
+      this.pool = rpcPool;
+      this.server = rpcPool.createProxy();
+    }
     this.adminKeypair = StellarSdk.Keypair.fromSecret(config.adminSecret);
     this.contractId = config.contractId;
     this.networkPassphrase = config.network;
@@ -61,6 +98,8 @@ export class StellarService {
     maxAttempts = Number(process.env.TX_MAX_ATTEMPTS ?? 15),
     pollIntervalMs = Number(process.env.TX_POLL_INTERVAL_MS ?? 2_000),
   ): Promise<string> {
+    const requestId = getReqId();
+    logger.debug({ method, requestId }, "Stellar invoke");
     try {
       const account = await this.server.getAccount(this.adminKeypair.publicKey());
       const contract = new StellarSdk.Contract(this.contractId);
@@ -94,6 +133,8 @@ export class StellarService {
   }
 
   async query(method: string, args: StellarSdk.xdr.ScVal[]) {
+    const requestId = getReqId();
+    logger.debug({ method, requestId }, "Stellar query");
     try {
       const account = await this.server.getAccount(this.adminKeypair.publicKey());
       const contract = new StellarSdk.Contract(this.contractId);

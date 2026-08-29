@@ -1,5 +1,6 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { useWalletStore } from "@/store/walletStore";
+import { env } from "@/lib/env";
 
 export interface MeterData {
   version: number;
@@ -10,13 +11,11 @@ export interface MeterData {
   last_payment: bigint;
   expires_at: bigint;
   balance: bigint;
+  grace_expires_at?: bigint | null;
   meter_id?: string;
 }
 
-const REQUEST_TIMEOUT_MS =
-  typeof window !== "undefined"
-    ? parseInt(process.env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS || "10000")
-    : 10000;
+const REQUEST_TIMEOUT_MS = env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;
 
 export class ContractClient {
   private server: StellarSdk.SorobanRpc.Server;
@@ -101,9 +100,9 @@ export class ContractClient {
 }
 
 export const client = new ContractClient(
-  process.env.NEXT_PUBLIC_CONTRACT_ID!,
-  process.env.NEXT_PUBLIC_RPC_URL ?? "https://soroban-testnet.stellar.org",
-  process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? StellarSdk.Networks.TESTNET,
+  env.NEXT_PUBLIC_CONTRACT_ID,
+  env.NEXT_PUBLIC_RPC_URL,
+  env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
 );
 
 export async function fetchMeter(meterId: string): Promise<MeterData> {
@@ -136,6 +135,12 @@ export async function checkMeterAccess(meterId: string): Promise<boolean> {
   const retval = await client.query("check_access", [
     StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
   ]);
+  return StellarSdk.scValToNative(retval) as boolean;
+}
+
+/** Read the contract-wide emergency pause state for the global banner. */
+export async function isContractPaused(): Promise<boolean> {
+  const retval = await client.query("is_paused", []);
   return StellarSdk.scValToNative(retval) as boolean;
 }
 

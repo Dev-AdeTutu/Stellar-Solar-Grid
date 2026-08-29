@@ -3,30 +3,28 @@
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
+import UsageForecast from "@/components/UsageForecast";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
 import { useInterval } from "@/hooks/useInterval";
+import {
+  requestPushPermissionOnFirstDashboardVisit,
+  setupLowBalancePushNotifications,
+} from "@/services/pushService";
+import { env } from "@/lib/env";
+import { formatXLM } from "@/lib/format";
 
-const STROOPS_PER_XLM = 10_000_000n;
-
-const API = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
-
-// Honour NEXT_PUBLIC_POLL_INTERVAL_MS env override, fall back to 30 s
-const BALANCE_POLL_INTERVAL_MS: number = (() => {
-  const env = process.env.NEXT_PUBLIC_POLL_INTERVAL_MS;
-  const parsed = env ? parseInt(env, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 30_000;
-})();
+const API = env.NEXT_PUBLIC_BACKEND_URL;
+const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
 
 function stroopsToXlm(stroops: bigint): string {
-  const whole = stroops / STROOPS_PER_XLM;
-  const frac = stroops % STROOPS_PER_XLM;
-  return `${whole}.${frac.toString().padStart(7, "0").replace(/0+$/, "") || "0"}`;
+  return formatXLM(stroops);
 }
 
 function StatusBadge({ active }: { active: boolean }) {
@@ -48,6 +46,7 @@ function PlanBadge({ plan }: { plan: string }) {
   const styles: Record<string, string> = {
     Daily: "bg-blue-900/40 text-blue-300 border-blue-700/40",
     Weekly: "bg-purple-900/40 text-purple-300 border-purple-700/40",
+    Monthly: "bg-amber-900/40 text-amber-300 border-amber-700/40",
     UsageBased: "bg-green-900/40 text-green-300 border-green-700/40",
     Usage: "bg-green-900/40 text-green-300 border-green-700/40",
   };
@@ -90,7 +89,7 @@ function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
 }
 
 function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }) {
-  const isTimedPlan = plan === "Daily" || plan === "Weekly";
+  const isTimedPlan = plan === "Daily" || plan === "Weekly" || plan === "Monthly";
   const expSec = Number(expiresAt);
   const hasExpiry = expSec > 0 && expSec !== Number.MAX_SAFE_INTEGER;
 
@@ -119,7 +118,45 @@ function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }
   return <span className="text-xs font-mono text-solar-yellow">{h}:{m}:{s}</span>;
 }
 
+const COMMON_EMOJIS = ["☀️", "🏠", "🏬", "⚡", "🔋", "🏭"];
+
 function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
+  const [nickname, setNickname] = useState<string>("");
+  const [isEditing, setIsEditing] = useState(false);
+  const [tempNickname, setTempNickname] = useState("");
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`meter_nickname_${meterId}`);
+      if (saved) {
+        setNickname(saved);
+        setTempNickname(saved);
+      }
+    } catch {
+      // LocalStorage might be unavailable
+    }
+  }, [meterId]);
+
+  const handleSaveNickname = () => {
+    const trimmed = tempNickname.trim().slice(0, 30);
+    setNickname(trimmed);
+    setIsEditing(false);
+    try {
+      if (trimmed) {
+        localStorage.setItem(`meter_nickname_${meterId}`, trimmed);
+      } else {
+        localStorage.removeItem(`meter_nickname_${meterId}`);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const handleCancelNickname = () => {
+    setTempNickname(nickname);
+    setIsEditing(false);
+  };
+
   const now = Date.now() / 1000; // Current time in seconds
   const expiresAt = Number(meter.expires_at);
   const isExpired = expiresAt !== Number.MAX_SAFE_INTEGER && expiresAt > 0 && now >= expiresAt;
@@ -130,11 +167,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
 
   useEffect(() => {
     setLoadingHistory(true);
-    fetch('/api/meters/' + meterId + '/history?limit=7')
+    fetch(`${API}/api/meters/${meterId}/history?page=1&pageSize=100`)
       .then(r => r.json())
       .then(d => {
-        const events: UsageDataPoint[] = (d.events || []).map((e: { recorded_at: string; units: number; cost?: number }) => ({
-          date: new Date(e.recorded_at).toLocaleDateString(),
+        // Pass the raw ISO 8601 timestamp through — UsageChart formats it in
+        // the viewer's local timezone (with a timezone indicator) itself, so
+        // pre-formatting here would throw away the time-of-day and tz info.
+        const events: UsageDataPoint[] = (d.events || []).map((e: { received_at?: string; recorded_at?: string; units: number; cost?: number }) => ({
+          date: e.received_at ?? e.recorded_at ?? "",
           units: e.units,
           cost: e.cost,
         }));
@@ -162,12 +202,101 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
     <div className="rounded-xl border border-white/10 bg-solar-accent p-4 sm:p-5 space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-mono text-sm text-solar-yellow font-semibold">{meterId}</span>
+        <div className="flex-1 min-w-0">
+          {nickname ? (
+            <div>
+              <div className="flex items-center gap-1.5 group">
+                <h3 className="font-semibold text-white text-base truncate">{nickname}</h3>
+                {!isEditing && (
+                  <button
+                    onClick={() => {
+                      setTempNickname(nickname);
+                      setIsEditing(true);
+                    }}
+                    className="text-gray-400 hover:text-solar-yellow text-xs opacity-70 group-hover:opacity-100 transition"
+                    title="Edit nickname"
+                    aria-label="Edit nickname"
+                  >
+                    ✏️
+                  </button>
+                )}
+              </div>
+              <span className="font-mono text-xs text-gray-400 truncate block mt-0.5">{meterId}</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-sm text-solar-yellow font-semibold">{meterId}</span>
+              {!isEditing && (
+                <button
+                  onClick={() => {
+                    setTempNickname("");
+                    setIsEditing(true);
+                  }}
+                  className="text-xs text-gray-400 hover:text-solar-yellow underline transition"
+                >
+                  Set nickname
+                </button>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <StatusBadge active={hasAccess} />
           <PlanBadge plan={meter.plan} />
         </div>
       </div>
+
+      {/* Nickname Editor */}
+      {isEditing && (
+        <div className="rounded-lg bg-solar-dark/50 border border-white/10 p-3 space-y-2">
+          <label className="text-xs text-gray-400 block">Set nickname (max 30 chars)</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              maxLength={30}
+              value={tempNickname}
+              onChange={(e) => setTempNickname(e.target.value)}
+              placeholder="e.g. Home Solar ☀️"
+              className="flex-1 rounded border border-white/20 bg-solar-dark px-2.5 py-1 text-xs text-white placeholder-gray-500 focus:border-solar-yellow focus:outline-none"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveNickname();
+                if (e.key === "Escape") handleCancelNickname();
+              }}
+            />
+            <button
+              onClick={handleSaveNickname}
+              className="rounded bg-solar-yellow px-2.5 py-1 text-xs font-semibold text-solar-dark hover:opacity-90 transition"
+            >
+              Save
+            </button>
+            <button
+              onClick={handleCancelNickname}
+              className="rounded border border-white/20 px-2 py-1 text-xs text-gray-400 hover:text-white transition"
+            >
+              Cancel
+            </button>
+          </div>
+          {/* Quick Emoji Picker */}
+          <div className="flex items-center gap-1.5 pt-1">
+            <span className="text-[10px] text-gray-500">Quick emojis:</span>
+            {COMMON_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => {
+                  if (tempNickname.length + emoji.length <= 30) {
+                    setTempNickname((prev) => (prev ? `${prev} ${emoji}` : emoji).slice(0, 30));
+                  }
+                }}
+                className="rounded px-1.5 py-0.5 text-xs hover:bg-white/10 transition"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 min-[480px]:grid-cols-2 sm:grid-cols-4 gap-3">
@@ -194,8 +323,16 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         </div>
       )}
 
-      {/* Warning for expired or low balance */}
-      {(isExpired || meter.balance === 0n) && (
+      {/* Warning for grace period, expired, or low balance */}
+      {meter.grace_expires_at && Number(meter.grace_expires_at) > now ? (
+        <div className="rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-amber-300 text-xs flex items-start gap-2">
+          <span className="mt-0.5">⚠️</span>
+          <p>
+            Meter is in <strong>grace period</strong> until{" "}
+            {new Date(Number(meter.grace_expires_at) * 1000).toLocaleTimeString()}. Top up your balance to avoid disconnection!
+          </p>
+        </div>
+      ) : (isExpired || meter.balance === 0n) ? (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 p-3 text-yellow-300 text-xs flex items-start gap-2">
           <span className="mt-0.5">⚠</span>
           <p>
@@ -204,7 +341,15 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
             Top up to restore access.
           </p>
         </div>
-      )}
+      ) : null}
+
+      {/* Usage Forecasting */}
+      <UsageForecast
+        meterId={meterId}
+        balance={meter.balance}
+        history={history}
+        loading={loadingHistory}
+      />
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">
@@ -296,6 +441,13 @@ export default function UserDashboardPage() {
     fetchAll();
   }, [address, fetchAll]);
 
+  useEffect(() => {
+    if (!address) return;
+    requestPushPermissionOnFirstDashboardVisit().catch(() => {
+      // Permission API might fail on unsupported browser modes.
+    });
+  }, [address]);
+
   // Poll individual meter balances for live updates.
   // useInterval does NOT fire on mount, so fetchAll() above handles the
   // first load — no double-fetch on first render.
@@ -319,6 +471,14 @@ export default function UserDashboardPage() {
             },
           };
         });
+
+        const threshold = Number(data.low_balance_threshold_stroops ?? 0);
+        const currentBalance = Number(data.balance ?? 0);
+        if (threshold > 0 && currentBalance <= threshold) {
+          setupLowBalancePushNotifications(address).catch(() => {
+            // Avoid interrupting dashboard polling if push setup fails.
+          });
+        }
       } catch {
         // Silently skip — full refresh will recover on next interval
       }
@@ -332,7 +492,7 @@ export default function UserDashboardPage() {
   return (
     <ErrorBoundary>
       <Navbar />
-      <main className="min-h-screen px-4 py-8 max-w-3xl mx-auto">
+      <main id="main-content" tabIndex={-1} className="min-h-screen px-4 py-8 max-w-3xl mx-auto">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
           <div>

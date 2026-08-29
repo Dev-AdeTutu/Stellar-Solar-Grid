@@ -12,6 +12,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3
@@ -19,6 +21,8 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build and push backend image
       - uses: docker/build-push-action@v5
         with:
           context: ./backend
@@ -26,6 +30,36 @@ jobs:
           tags: |
             ${{ env.BACKEND_IMAGE }}:latest
             ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+
+      # Trivy scan: backend
+      - name: Trivy scan — backend
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.BACKEND_IMAGE }}:${{ github.sha }}
+          format: sarif
+          output: trivy-backend.sarif
+          severity: CRITICAL
+          exit-code: '1'
+        continue-on-error: false
+
+      # Upload backend SARIF as downloadable artifact
+      - name: Upload backend SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-backend-sarif
+          path: trivy-backend.sarif
+          retention-days: 30
+
+      # Upload backend SARIF to GitHub Security tab
+      - name: Upload backend SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-backend.sarif
+          category: trivy-backend
+
+      # Build and push frontend image
       - uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -36,3 +70,31 @@ jobs:
           build-args: |
             VITE_CONTRACT_ID=${{ secrets.VITE_CONTRACT_ID }}
             VITE_RPC_URL=${{ secrets.VITE_RPC_URL }}
+
+      # Trivy scan: frontend
+      - name: Trivy scan — frontend
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.FRONTEND_IMAGE }}:${{ github.sha }}
+          format: sarif
+          output: trivy-frontend.sarif
+          severity: CRITICAL
+          exit-code: '1'
+        continue-on-error: false
+
+      # Upload frontend SARIF as downloadable artifact
+      - name: Upload frontend SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-frontend-sarif
+          path: trivy-frontend.sarif
+          retention-days: 30
+
+      # Upload frontend SARIF to GitHub Security tab
+      - name: Upload frontend SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-frontend.sarif
+          category: trivy-frontend

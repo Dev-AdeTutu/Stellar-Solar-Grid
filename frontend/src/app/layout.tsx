@@ -1,11 +1,20 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { ToastProvider } from "@/components/ToastProvider";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { OfflineBanner } from "@/components/OfflineBanner";
+import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
+import { I18nProvider } from "@/components/I18nProvider";
+import { ContractPauseBanner } from "@/components/ContractPauseBanner";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Stellar SolarGrid",
   description: "Pay-as-you-go solar energy on the Stellar blockchain",
+  manifest: "/manifest.json",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#f5b300",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -24,8 +33,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body>
+        <a href="#main-content" className="skip-link">
+          Skip to main content
+        </a>
         <ErrorBoundary>
-          <ToastProvider>{children}</ToastProvider>
+          <ToastProvider>
+            <ServiceWorkerRegister />
+            <OfflineBanner />
+            {children}
+          </ToastProvider>
+          <I18nProvider>
+            <ContractPauseBanner />
+            <ToastProvider>{children}</ToastProvider>
+          </I18nProvider>
         </ErrorBoundary>
       </body>
     </html>

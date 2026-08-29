@@ -1,0 +1,147 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "Mon Compteur",
+    "pay": "Payer",
+    "provider": "Fournisseur",
+    "history": "Historique",
+    "toggleTheme": "Changer de thème",
+    "openMenu": "Ouvrir le menu",
+    "closeMenu": "Fermer le menu",
+    "languageToggle": "English",
+    "languageLabel": "Changer de langue"
+  },
+  "home": {
+    "tagline": "Énergie solaire abordable et prépayée, propulsée par la blockchain Stellar. Sans frais initiaux élevés — juste de l'énergie propre selon vos conditions.",
+    "userDashboard": "Tableau de bord utilisateur",
+    "providerDashboard": "Tableau de bord fournisseur"
+  },
+  "meterCard": {
+    "balance": "Solde",
+    "plan": "Plan",
+    "expiry": "Expiration",
+    "never": "Jamais",
+    "daysLeft": "{days}j restants",
+    "deactivate": "Désactiver le compteur",
+    "deactivating": "Désactivation…",
+    "ariaLabel": "Compteur {meterId}"
+  },
+  "meterStatus": {
+    "active": "Actif",
+    "inactive": "Inactif",
+    "expired": "Expiré",
+    "ariaLabel": "Statut du compteur : {status}"
+  },
+  "wallet": {
+    "connect": "Connecter le portefeuille",
+    "connectCompact": "Connecter",
+    "connecting": "Connexion…",
+    "disconnect": "Déconnecter",
+    "copyAddress": "Cliquer pour copier l'adresse complète",
+    "copied": "✓ Copié",
+    "freighterNotDetected": "Freighter non détecté",
+    "installFreighter": "Installer Freighter ↗",
+    "wrongNetwork": "Mauvais réseau",
+    "switchNetwork": "Changer de réseau dans Freighter : Paramètres → Réseau.",
+    "ariaWalletAddress": "Adresse du portefeuille {address}. Cliquer pour copier.",
+    "ariaDisconnect": "Déconnecter le portefeuille",
+    "ariaConnecting": "Connexion en cours"
+  },
+  "networkBanner": {
+    "wrongNetwork": "Mauvais réseau :",
+    "dismiss": "Fermer l'avertissement de réseau incorrect"
+  },
+  "errors": {
+    "freighterNotInstalled": "Le portefeuille sélectionné n'est pas installé.",
+    "noAccount": "Aucun compte trouvé dans le portefeuille sélectionné",
+    "walletConnectFailed": "Échec de la connexion du portefeuille",
+    "meterLoadFailed": "Échec du chargement des données du compteur : {error}",
+    "retry": "Réessayer",
+    "installFreighter": "Installer Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "Mes compteurs",
+      "connectWallet": "Connectez votre portefeuille pour voir vos compteurs.",
+      "noMeters": "Aucun compteur trouvé pour votre adresse.",
+      "loading": "Chargement des compteurs…",
+      "balance": "Solde",
+      "unitsUsed": "Unités utilisées",
+      "active": "Actif",
+      "inactive": "Inactif",
+      "plan": "Plan",
+      "expiry": "Expiration"
+    },
+    "provider": {
+      "title": "Tableau de bord fournisseur",
+      "allMeters": "Tous les compteurs",
+      "deactivate": "Désactiver",
+      "deactivating": "Désactivation…"
+    }
+  },
+  "report": {
+    "title": "Rapport de statut du compteur",
+    "printReport": "Imprimer le rapport",
+    "print": "Imprimer",
+    "back": "← Retour",
+    "meterId": "ID du compteur",
+    "owner": "Propriétaire",
+    "balance": "Solde",
+    "plan": "Plan",
+    "status": "Statut",
+    "expiry": "Expiration",
+    "unitsUsed": "Unités utilisées",
+    "generatedAt": "Généré le",
+    "recentReadings": "Lectures récentes (5 dernières)",
+    "noReadings": "Aucune lecture disponible.",
+    "date": "Date",
+    "units": "Unités",
+    "amount": "Montant",
+    "qrCode": "Code QR",
+    "scanToView": "Scanner pour voir ce compteur",
+    "never": "Jamais",
+    "active": "Actif",
+    "inactive": "Inactif"
+  },
+  "history": {
+    "title": "Historique des paiements",
+    "noHistory": "Aucun historique de paiement trouvé.",
+    "date": "Date",
+    "meter": "Compteur",
+    "plan": "Plan",
+    "amount": "Montant",
+    "transaction": "Transaction",
+    "viewExplorer": "Voir sur Explorer ↗",
+    "export": "Exporter CSV",
+    "exporting": "Exportation…",
+    "prev": "Précédent",
+    "next": "Suivant",
+    "page": "Page {page} / {total}"
+  },
+  "pay": {
+    "title": "Effectuer un paiement",
+    "meterId": "ID du compteur",
+    "amount": "Montant (XLM)",
+    "plan": "Plan",
+    "submit": "Payer",
+    "submitting": "Traitement…",
+    "success": "Paiement réussi !",
+    "daily": "Quotidien",
+    "weekly": "Hebdomadaire",
+    "usage": "Usage"
+  },
+  "pauseBanner": {
+    "title": "Pause d'urgence active",
+    "message": "Les paiements et l'enregistrement des compteurs sont temporairement désactivés. Le suivi de la consommation reste disponible."
+  },
+  "common": {
+    "loading": "Chargement…",
+    "error": "Erreur",
+    "close": "Fermer",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "save": "Enregistrer",
+    "back": "Retour",
+    "xlm": "XLM"
+  }
+}

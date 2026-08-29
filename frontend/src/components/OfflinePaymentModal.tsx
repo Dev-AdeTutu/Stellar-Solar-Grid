@@ -1,14 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useModalA11y } from "@/hooks/useModalA11y";
 import { useOffline } from "@/hooks/useOffline";
+import { env } from "@/lib/env";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
-const FALLBACK_SHORTCODE = process.env.NEXT_PUBLIC_SMS_SHORTCODE ?? "20880";
+const SMS_SHORTCODE = env.NEXT_PUBLIC_SMS_SHORTCODE;
+const SMS_WEBHOOK_DOCS = env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS;
+const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 const SMS_CONFIG_CACHE_KEY = "sms-provider-config";
-const SMS_WEBHOOK_DOCS =
-  process.env.NEXT_PUBLIC_SMS_WEBHOOK_DOCS ??
-  "https://github.com/damiedee96/Stellar-Solar-Grid/blob/main/backend/README.md";
 
 interface SmsProviderConfig {
   shortcode: string;
@@ -31,6 +31,7 @@ const PLANS = [
 export default function OfflinePaymentModal({ meterId, region, onClose }: Props) {
   const isOffline = useOffline();
   const [copied, setCopied] = useState(false);
+  const panelRef = useModalA11y<HTMLDivElement>(onClose);
   const [copyFailed, setCopyFailed] = useState(false);
   const [smsConfig, setSmsConfig] = useState<SmsProviderConfig | null>(() => {
     if (typeof window === "undefined") return null;
@@ -43,7 +44,7 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
   });
   const exampleMeter = meterId?.trim() || "METER1";
   const exampleSms = `PAY ${exampleMeter} 5 D`;
-  const smsShortcode = smsConfig?.shortcode ?? FALLBACK_SHORTCODE;
+  const smsShortcode = smsConfig?.shortcode ?? SMS_SHORTCODE;
 
   // Fetch the per-region/per-provider shortcode from the backend so
   // different deployments/telecom partners can show the correct code
@@ -108,8 +109,11 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
       />
 
       {/* Panel — slides up from bottom on mobile */}
-      <div className="relative w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-solar-accent border border-white/10 shadow-2xl overflow-hidden">
-
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="relative w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-solar-accent border border-white/10 shadow-2xl overflow-hidden"
+      >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 bg-yellow-900/20">
           <div className="flex items-center gap-2">

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
 import { useToast } from "@/components/ToastProvider";
@@ -9,19 +9,22 @@ import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
 import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
+import { env } from "@/lib/env";
 
-type Plan = "Daily" | "Weekly" | "Usage";
+type Plan = "Daily" | "Weekly" | "Monthly" | "Usage";
 type Status = "idle" | "loading";
 
 const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Daily", label: "Daily", desc: "Billed every 24 hours" },
   { value: "Weekly", label: "Weekly", desc: "Billed every 7 days" },
+  { value: "Monthly", label: "Monthly", desc: "Billed every 30 days" },
   { value: "Usage", label: "Usage-Based", desc: "Pay per kWh consumed" },
 ];
 
 const PLAN_AMOUNT_HINTS: Record<Plan, string> = {
   Daily: "Suggested: 10 XLM/day",
   Weekly: "Suggested: 50 XLM/week",
+  Monthly: "Suggested: 150 XLM/month",
   Usage: "Amount (billed per kWh consumed)",
 };
 
@@ -32,6 +35,10 @@ export default function PayPage() {
   const isOffline = useOffline();
 
   const [amount, setAmount] = useState("");
+  // Issue #766: optional free-text note attached to the payment on-chain.
+  const MEMO_MAX_LEN = 100;
+  const [memo, setMemo] = useState("");
+  const [recentAmounts, setRecentAmounts] = useState<number[]>([]);
   const [status, setStatus] = useState<Status>("idle");
   const [showSmsModal, setShowSmsModal] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -39,12 +46,21 @@ export default function PayPage() {
   const [currency, setCurrency] = useState("NGN");
   const [txHash, setTxHash] = useState<string | null>(null);
 
-  // Load currency preference from localStorage
+  // Load currency preference and recent payment amounts from localStorage
   useEffect(() => {
     const savedCurrency = localStorage.getItem("preferredCurrency");
     if (savedCurrency) {
       setCurrency(savedCurrency);
     }
+    try {
+      const savedRecent = localStorage.getItem("recentPaymentAmounts");
+      if (savedRecent) {
+        const parsed = JSON.parse(savedRecent);
+        if (Array.isArray(parsed)) {
+          setRecentAmounts(parsed.filter((n): n is number => typeof n === "number" && n > 0).slice(0, 3));
+        }
+      }
+    } catch {}
   }, []);
 
   // Fetch XLM exchange rate
@@ -74,7 +90,7 @@ export default function PayPage() {
     localStorage.setItem("preferredCurrency", newCurrency);
   };
 
-  const EXPLORER_BASE = import.meta.env.VITE_NETWORK_PASSPHRASE?.includes("Test")
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 
@@ -89,7 +105,26 @@ export default function PayPage() {
     setShowConfirm(true);
   }
 
+  // Issue #768: guards against a double-click submitting two transactions.
+  // `status === "loading"` alone isn't enough — the button's `disabled`
+  // attribute only updates once React commits the re-render, and a second
+  // click dispatched before that paint still lands on an enabled button.
+  // This ref is set synchronously on the very first call, before any
+  // `await` or state update, so a second call in the same tick is rejected
+  // immediately regardless of render timing.
+  const isSubmittingRef = useRef(false);
+
   async function confirmPayment() {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    try {
+      await submitPayment();
+    } finally {
+      isSubmittingRef.current = false;
+    }
+  }
+
+  async function submitPayment() {
     if (isOffline) {
       showToast({
         variant: "error",
@@ -104,8 +139,19 @@ export default function PayPage() {
     setStatus("loading");
     setTxHash(null);
 
+    const amountNum = parseFloat(amount);
     try {
-      const hash = await makePayment(address, meterId.trim(), parseFloat(amount), plan);
+      const hash = await makePayment(address, meterId.trim(), amountNum, plan, memo);
+      // Remember last 3 payment amounts in localStorage
+      if (!isNaN(amountNum) && amountNum > 0) {
+        setRecentAmounts((prev) => {
+          const updated = [amountNum, ...prev.filter((a) => a !== amountNum)].slice(0, 3);
+          try {
+            localStorage.setItem("recentPaymentAmounts", JSON.stringify(updated));
+          } catch {}
+          return updated;
+        });
+      }
       showToast({
         variant: "success",
         title: "Payment successful",
@@ -114,6 +160,7 @@ export default function PayPage() {
         actionLabel: "View transaction",
       });
       setAmount("");
+      setMemo("");
       setTxHash(hash);
     } catch (err: unknown) {
       const friendly = parseWalletError(err);
@@ -148,7 +195,7 @@ export default function PayPage() {
         </div>
       )}
 
-      <main className="min-h-screen flex items-start justify-center px-4 py-8 sm:py-16">
+      <main id="main-content" tabIndex={-1} className="min-h-screen flex items-start justify-center px-4 py-8 sm:py-16">
         <div className="w-full max-w-md">
           <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">Make a Payment</h1>
           <p className="text-gray-400 text-sm mb-6">
@@ -270,21 +317,105 @@ export default function PayPage() {
                   </div>
                 </div>
 
+                {/* Quick Top-Up Presets */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-300">Quick Top-Up</label>
+                    <span className="text-xs text-gray-400">Select preset</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    {[5, 10, 20, 50].map((preset) => {
+                      const isSelected = amount === String(preset);
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => {
+                            setAmount(String(preset));
+                            setTxHash(null);
+                          }}
+                          className={`py-3 px-4 rounded-xl border text-center font-semibold text-sm transition-all active:scale-95 ${
+                            isSelected
+                              ? "border-solar-yellow bg-solar-yellow/20 text-solar-yellow ring-1 ring-solar-yellow shadow-lg shadow-solar-yellow/10"
+                              : "border-white/10 bg-solar-dark text-white hover:border-white/30 hover:bg-white/5"
+                          }`}
+                        >
+                          {preset} XLM
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Remembered recent payment amounts */}
+                  {recentAmounts.length > 0 && (
+                    <div className="mt-3 flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-gray-400">Recent:</span>
+                      {recentAmounts.map((recent) => (
+                        <button
+                          key={recent}
+                          type="button"
+                          onClick={() => {
+                            setAmount(String(recent));
+                            setTxHash(null);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg border text-xs font-medium transition ${
+                            amount === String(recent)
+                              ? "border-solar-yellow bg-solar-yellow/20 text-solar-yellow"
+                              : "border-white/10 bg-solar-dark/60 text-gray-300 hover:border-white/30"
+                          }`}
+                        >
+                          {recent} XLM
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Usage-based recommendation */}
+                  <div className="mt-3 flex items-center justify-between rounded-lg border border-solar-yellow/20 bg-solar-yellow/5 px-3 py-2">
+                    <div className="flex items-center gap-2 text-xs text-solar-yellow">
+                      <span>💡</span>
+                      <span>
+                        {plan === "Daily"
+                          ? "Recommended: 10 XLM for 1 day"
+                          : plan === "Weekly"
+                          ? "Recommended: 12 XLM for 7 days"
+                          : "Recommended: 20 XLM for 7 days"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rec = plan === "Daily" ? "10" : plan === "Weekly" ? "12" : "20";
+                        setAmount(rec);
+                        setTxHash(null);
+                      }}
+                      className="text-xs font-semibold text-solar-yellow hover:underline"
+                    >
+                      Apply
+                    </button>
+                  </div>
+                </div>
+
                 {/* Amount */}
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                    Amount (XLM)
+                    Or custom amount:
                   </label>
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => { setAmount(e.target.value); setTxHash(null); }}
-                    placeholder="0.00"
-                    min="0.0000001"
-                    step="any"
-                    required
-                    className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
-                  />
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={amount}
+                      onChange={(e) => { setAmount(e.target.value); setTxHash(null); }}
+                      placeholder="0.00"
+                      min="0.0000001"
+                      step="any"
+                      required
+                      className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 pr-14 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+                    />
+                    <span className="absolute right-4 top-2.5 text-sm font-medium text-gray-400 pointer-events-none">
+                      XLM
+                    </span>
+                  </div>
                   <p className="mt-1.5 text-xs text-gray-500">{PLAN_AMOUNT_HINTS[plan]}</p>
                   {xlmRate && amount && (
                     <div className="mt-2 flex items-center justify-between">
@@ -306,6 +437,28 @@ export default function PayPage() {
                       </select>
                     </div>
                   )}
+                </div>
+
+                {/* Memo (optional) */}
+                <div>
+                  <label
+                    htmlFor="payment-memo"
+                    className="block text-sm font-medium text-gray-300 mb-1.5"
+                  >
+                    Note <span className="text-gray-500 font-normal">(optional)</span>
+                  </label>
+                  <input
+                    id="payment-memo"
+                    type="text"
+                    value={memo}
+                    onChange={(e) => setMemo(e.target.value.slice(0, MEMO_MAX_LEN))}
+                    placeholder="e.g. August electricity"
+                    maxLength={MEMO_MAX_LEN}
+                    className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+                  />
+                  <p className="mt-1.5 text-right text-xs text-gray-500">
+                    {memo.length}/{MEMO_MAX_LEN}
+                  </p>
                 </div>
 
               {/* Submit */}
@@ -374,6 +527,12 @@ export default function PayPage() {
                     )}
                   </div>
                 </div>
+                {memo.trim() && (
+                  <div className="flex justify-between gap-4">
+                    <span className="text-gray-400 shrink-0">Note</span>
+                    <strong className="text-white text-right break-words">{memo.trim()}</strong>
+                  </div>
+                )}
               </div>
               <div className="mt-6 flex gap-3">
                 <button
