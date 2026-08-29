@@ -1,5 +1,3 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001/api";
-const API_BASE = `${import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001"}/api`;
 import { env } from "@/lib/env";
 
 const API_BASE = env.NEXT_PUBLIC_COLLAB_API_URL;

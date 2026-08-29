@@ -9,7 +9,7 @@ export interface MeterCardProps {
   active: boolean;
   balance: bigint;
   expiresAt: bigint;
-  plan: "Daily" | "Weekly" | "Usage";
+  plan: "Daily" | "Weekly" | "Monthly" | "Usage";
   graceExpiresAt?: bigint | null;
   onDeactivate?: () => void;
   isDeactivating?: boolean;

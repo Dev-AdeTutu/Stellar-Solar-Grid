@@ -161,6 +161,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     } finally {
       set({ isTransactionPending: false });
     }
+    const { signedTxXdr } = await kit.signTransaction(xdr, {
+      address,
+      networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
+    });
+    return signedTxXdr;
   },
 
   recordTopUp: (meterId: string, amount: bigint) => {

@@ -16,7 +16,7 @@ const MeterRouteParamsSchema = z
   })
   .strict();
 
-const PaymentPlanSchema = z.enum(["Daily", "Weekly", "Usage", "UsageBased"]);
+const PaymentPlanSchema = z.enum(["Daily", "Weekly", "Monthly", "Usage", "UsageBased"]);
 
 export const RegisterMeterSchema = z
   .object({
@@ -24,6 +24,24 @@ export const RegisterMeterSchema = z
     owner: z
       .string()
       .regex(STELLAR_ACCOUNT_REGEX, "Invalid Stellar account address format"),
+  })
+  .strict();
+
+export const BatchRegisterMetersSchema = z
+  .object({
+    meters: z
+      .array(RegisterMeterSchema)
+      .min(1, "meters must contain at least one entry")
+      .max(100, "batch size cannot exceed 100 meters"),
+  })
+  .strict();
+
+export const BulkMeterStatusSchema = z
+  .object({
+    meter_ids: z
+      .array(MeterIdSchema)
+      .min(1, "meter_ids must contain at least one entry")
+      .max(100, "meter_ids cannot exceed 100 per request"),
   })
   .strict();
 
