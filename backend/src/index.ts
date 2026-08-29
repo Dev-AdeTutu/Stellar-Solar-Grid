@@ -1,6 +1,5 @@
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
-import express from "express";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -27,6 +26,7 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
+import { analyticsRouter } from "./routes/analytics.js";
 import { graphqlRouter } from "./routes/graphql.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
@@ -241,9 +241,9 @@ app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
+app.use("/api/analytics", analyticsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
-app.use("/api/usage-events", usageEventsRouter);
 
 // ── Health ────────────────────────────────────────────────────────────────────
 

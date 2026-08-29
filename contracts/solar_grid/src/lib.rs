@@ -76,6 +76,7 @@ const MAX_PAUSE_DURATION: u64 = 48 * 60 * 60;
 pub enum PaymentPlan {
     Daily,
     Weekly,
+    Monthly,
     UsageBased,
 }
 
@@ -213,11 +214,13 @@ fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
 /// completely independent of local timezones or Daylight Saving Time (DST) changes.
 /// - Daily: exactly SECONDS_PER_DAY (86,400 seconds / 24 hours elapsed)
 /// - Weekly: exactly SECONDS_PER_WEEK (604,800 seconds / 7 days elapsed)
+/// - Monthly: exactly 30 * SECONDS_PER_DAY (2,592,000 seconds / 30 days elapsed)
 /// - UsageBased: u64::MAX (no time expiry; saturating_add with any timestamp yields u64::MAX).
 fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
     match plan {
         PaymentPlan::Daily => SECONDS_PER_DAY,
         PaymentPlan::Weekly => SECONDS_PER_WEEK,
+        PaymentPlan::Monthly => 30 * SECONDS_PER_DAY,
         PaymentPlan::UsageBased => u64::MAX,
     }
 }
@@ -3359,6 +3362,22 @@ mod tests {
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly, &None);
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at - before, SECONDS_PER_WEEK);
+    }
+
+    /// Monthly plan sets expires_at = now + 30 days.
+    #[test]
+    fn test_plan_duration_monthly_sets_correct_expiry() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = symbol_short!("PD_MONT");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let before = env.ledger().timestamp();
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Monthly, &None);
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.expires_at - before, 30 * SECONDS_PER_DAY);
     }
 
     /// UsageBased plan sets expires_at = u64::MAX (no time expiry).

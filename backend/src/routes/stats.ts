@@ -22,12 +22,12 @@ const revenueHistoryCache = new Map<
 >();
 
 /** Billing plans reported by /meters-by-plan, keyed exactly as the contract names them. */
-type PlanKey = "Daily" | "Weekly" | "UsageBased";
+type PlanKey = "Daily" | "Weekly" | "Monthly" | "UsageBased";
 
 type PlanBreakdown = Record<PlanKey, number> & { total: number };
 
 function emptyPlanBreakdown(): PlanBreakdown {
-  return { Daily: 0, Weekly: 0, UsageBased: 0, total: 0 };
+  return { Daily: 0, Weekly: 0, Monthly: 0, UsageBased: 0, total: 0 };
 }
 
 /**
@@ -47,6 +47,8 @@ function normalizePlan(raw: unknown): PlanKey | null {
       return "Daily";
     case "Weekly":
       return "Weekly";
+    case "Monthly":
+      return "Monthly";
     case "Usage":
     case "UsageBased":
       return "UsageBased";
