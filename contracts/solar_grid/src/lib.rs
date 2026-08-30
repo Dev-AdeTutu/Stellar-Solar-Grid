@@ -77,6 +77,16 @@ const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
 
+/// #737 — Retention cap for the on-chain `OwnershipHistory` list.
+///
+/// The contract intentionally follows an event-sourcing model: every usage
+/// update / transfer / payment emits an off-chain event and only the *current*
+/// state is kept in persistent storage, so per-event usage history never
+/// accumulates on-chain. The one per-meter list that would otherwise grow
+/// forever is the ownership-transfer history; we cap it here and rely on the
+/// emitted `mtr_xfer` events for a complete archive off-chain.
+const MAX_OWNERSHIP_HISTORY: u32 = 20;
+
 // ── Data types ────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -723,6 +733,11 @@ impl SolarGridContract {
             new_owner: new_owner.clone(),
             transferred_at: env.ledger().timestamp(),
         });
+        // #737 — prune the oldest entries so this on-chain list is bounded.
+        // The full audit trail is archived off-chain from the `mtr_xfer` events.
+        while history.len() > MAX_OWNERSHIP_HISTORY {
+            history = history.remove(0);
+        }
         env.storage().persistent().set(&history_key, &history);
 
         env.events().publish(

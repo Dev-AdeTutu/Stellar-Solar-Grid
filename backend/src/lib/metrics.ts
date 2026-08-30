@@ -121,4 +121,37 @@ export const incrementContractEvent = (topic: string, count: number = 1): void =
   contractEventsProcessed.inc({ topic }, count);
 };
 
+// ── #735: SQLite connection-pool monitoring ─────────────────────────────────
+export const sqlitePoolConnections = new Gauge({
+  name: "solargrid_sqlite_pool_connections",
+  help: "Total open SQLite connections (usage-event + meter-notes pools)",
+  labelNames: ["pool"] as const,
+});
+
+export const sqlitePoolIdle = new Gauge({
+  name: "solargrid_sqlite_pool_idle",
+  help: "Idle SQLite connections per pool",
+  labelNames: ["pool"] as const,
+});
+
+export const sqlitePoolBusy = new Gauge({
+  name: "solargrid_sqlite_pool_busy",
+  help: "Busy SQLite connections per pool",
+  labelNames: ["pool"] as const,
+});
+
+/** Refresh the pool gauges from the current pool status snapshots. */
+export function updateSqlitePoolMetrics(
+  pools: Array<{
+    name: string;
+    status: { total: number; idle: number; busy: number };
+  }>,
+): void {
+  for (const { name, status } of pools) {
+    sqlitePoolConnections.set({ pool: name }, status.total);
+    sqlitePoolIdle.set({ pool: name }, status.idle);
+    sqlitePoolBusy.set({ pool: name }, status.busy);
+  }
+}
+
 export { register };
