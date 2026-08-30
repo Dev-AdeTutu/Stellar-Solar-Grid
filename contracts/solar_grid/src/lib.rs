@@ -44,6 +44,7 @@ pub enum ContractError {
     ProposalExpired = 27,
     ProposalAlreadyApproved = 28,
     ProposalNotReady = 29,
+    ReentrantCall = 30,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -58,6 +59,7 @@ const COLLABS: Symbol = symbol_short!("COLLABS");
 const SHARES: Symbol = symbol_short!("SHARES");
 const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const FROZEN: Symbol = symbol_short!("FROZEN");
+const REENTRANCY: Symbol = symbol_short!("REENTR");
 const CONTRACT_VERSION: Symbol = symbol_short!("CTR_VER");
 const DEFAULT_GRACE_PERIOD: u64 = 7200; // 2 hours (in seconds)
 const GRACE_PERIOD: Symbol = symbol_short!("GRACE_P");
@@ -355,6 +357,37 @@ pub struct MeterView {
 
 const EVT_NS: Symbol = symbol_short!("solargrid");
 const CURRENT_CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Guards against reentrancy for any entry point that performs an external
+/// contract call (e.g. a token transfer). A malicious or buggy token
+/// contract could otherwise call back into this contract mid-invocation,
+/// before the outer call's state effects have been applied or its
+/// single-use records (e.g. a spent multisig proposal) have been cleared,
+/// and bypass checks that already ran (see checks-effects-interactions).
+///
+/// Held for the guarded function's whole body via RAII: the lock is
+/// released in `Drop`, which Rust runs on every exit path (including early
+/// `?` returns), so callers only need `let _guard = ReentrancyGuard::enter(&env)?;`.
+struct ReentrancyGuard<'a> {
+    env: &'a Env,
+}
+
+impl<'a> ReentrancyGuard<'a> {
+    fn enter(env: &'a Env) -> Result<Self, ContractError> {
+        let locked: bool = env.storage().instance().get(&REENTRANCY).unwrap_or(false);
+        if locked {
+            return Err(ContractError::ReentrantCall);
+        }
+        env.storage().instance().set(&REENTRANCY, &true);
+        Ok(Self { env })
+    }
+}
+
+impl<'a> Drop for ReentrancyGuard<'a> {
+    fn drop(&mut self) {
+        self.env.storage().instance().set(&REENTRANCY, &false);
+    }
+}
 
 #[contract]
 pub struct SolarGridContract;
@@ -1050,10 +1083,10 @@ impl SolarGridContract {
                 return Err(ContractError::MemoTooLong);
             }
         }
+        let _guard = ReentrancyGuard::enter(&env)?;
         let token_address = Self::get_token_address(&env)?;
-        let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
+        // ── EFFECTS ─────────────────────────────────────────────────────────
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         let now = env.ledger().timestamp();
@@ -1089,6 +1122,11 @@ impl SolarGridContract {
         env.storage()
             .persistent()
             .set(&provider_key, &provider_revenue.saturating_add(amount));
+
+        // ── INTERACTION ─────────────────────────────────────────────────────
+        // External call happens last, after all state above is finalized.
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
         // payment_received
         env.events().publish(
@@ -1149,6 +1187,7 @@ impl SolarGridContract {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
+        let _guard = ReentrancyGuard::enter(&env)?;
 
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -1408,15 +1447,11 @@ impl SolarGridContract {
         let key = DataKey::Meter(meter_id.clone());
         let _meter = Self::get_meter_or_error(&env, &key)?; // Verify meter exists
         let _admin = Self::get_admin(&env)?; // Verify admin exists
+        let _guard = ReentrancyGuard::enter(&env)?;
 
         // ── EFFECTS ─────────────────────────────────────────────────────────
         // Perform all state mutations BEFORE external calls
         let mut meter = Self::get_meter_or_error(&env, &key)?;
-
-        // Transfer tokens from delegate to contract
-        let token_address = Self::get_token_address(&env)?;
-        let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(&delegate, &env.current_contract_address(), &amount);
 
         // Update meter balance
         let bal_key = DataKey::MeterBalance(meter_id.clone());
@@ -1457,12 +1492,17 @@ impl SolarGridContract {
             .persistent()
             .set(&provider_key, &provider_revenue.saturating_add(amount));
 
+        // ── INTERACTION ─────────────────────────────────────────────────────
+        // External call happens last, after all state above is finalized.
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&delegate, &env.current_contract_address(), &amount);
+
         // payment_received - payer is the delegate
         env.events().publish(
             (EVT_NS, symbol_short!("payment"), meter_id.clone()),
             (delegate, token_address, amount, plan.clone(), memo),
         );
-        
+
         // plan_changed
         if old_plan != plan {
             env.events().publish(
@@ -1470,15 +1510,10 @@ impl SolarGridContract {
                 (old_plan, plan, now),
             );
         }
-        
+
         // meter_activated
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id), ());
-
-        // ── INTERACTIONS ────────────────────────────────────────────────────
-        // External call happens AFTER all state updates are complete
-        let token_client = token::Client::new(&env, &token_address);
-        token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
         Ok(())
     }
@@ -1510,6 +1545,7 @@ impl SolarGridContract {
             return Err(ContractError::Unauthorized);
         }
         provider.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
 
         let provider_key = DataKey::ProviderRevenue(provider.clone());
         let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
@@ -1543,6 +1579,7 @@ impl SolarGridContract {
         if admin != stored_admin {
             return Err(ContractError::Unauthorized);
         }
+        let _guard = ReentrancyGuard::enter(&env)?;
 
         let token_address = Self::get_token_address(&env)?;
         let token_client = token::Client::new(&env, &token_address);
@@ -1607,6 +1644,10 @@ impl SolarGridContract {
     }
 
     pub fn execute_admin_operation(env: Env, proposal_id: u32) -> Result<(), ContractError> {
+        // Guards the EmergencyWithdraw arm's external token transfer below: without
+        // this, a malicious token contract could reenter with the same proposal_id
+        // before it's removed from storage and execute the withdrawal twice.
+        let _guard = ReentrancyGuard::enter(&env)?;
         let key = DataKey::AdminProposal(proposal_id);
         let proposal: AdminProposal = env.storage().persistent().get(&key).ok_or(ContractError::ProposalNotFound)?;
         if env.ledger().timestamp() >= proposal.expiry { return Err(ContractError::ProposalExpired); }
@@ -2041,6 +2082,7 @@ impl SolarGridContract {
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
+        let _guard = ReentrancyGuard::enter(&env)?;
 
         let token_address = Self::get_token_address(&env)?;
 
@@ -2075,6 +2117,7 @@ impl SolarGridContract {
         if !frozen {
             return Err(ContractError::ContractNotFrozen);
         }
+        let _guard = ReentrancyGuard::enter(&env)?;
         let token_addr: Address = env
             .storage()
             .instance()
@@ -2487,6 +2530,78 @@ mod tests {
 
         client.update_usage(&meter_id, &100_u64, &5_000_000_i128);
         assert!(!client.check_access(&meter_id));
+    }
+
+    // ── Reentrancy regression test ───────────────────────────────────────────
+    // A malicious "token" contract whose `transfer` calls back into
+    // `make_payment` before returning, simulating a malicious/compromised
+    // payment token attempting to reenter mid-invocation. Must be rejected
+    // by the reentrancy guard rather than allowed to run twice.
+    const ATTACK_TARGET: Symbol = symbol_short!("ATCKTGT");
+    const ATTACK_METER: Symbol = symbol_short!("ATCKMTR");
+    const REENTRY_HIT: Symbol = symbol_short!("REHIT");
+
+    #[contract]
+    struct MaliciousToken;
+
+    #[contractimpl]
+    impl MaliciousToken {
+        pub fn configure(env: Env, target: Address, meter_id: String) {
+            env.storage().instance().set(&ATTACK_TARGET, &target);
+            env.storage().instance().set(&ATTACK_METER, &meter_id);
+        }
+
+        pub fn reentry_attempted(env: Env) -> bool {
+            env.storage().instance().get(&REENTRY_HIT).unwrap_or(false)
+        }
+
+        pub fn transfer(env: Env, from: Address, _to: Address, amount: i128) {
+            env.storage().instance().set(&REENTRY_HIT, &true);
+            let target: Address = env.storage().instance().get(&ATTACK_TARGET).unwrap();
+            let meter_id: String = env.storage().instance().get(&ATTACK_METER).unwrap();
+            let target_client = SolarGridContractClient::new(&env, &target);
+            let result = target_client.try_make_payment(
+                &meter_id,
+                &from,
+                &amount,
+                &PaymentPlan::Daily,
+                &None,
+            );
+            assert_eq!(
+                result,
+                Err(Ok(ContractError::ReentrantCall)),
+                "reentrant make_payment call should have been rejected by the guard",
+            );
+        }
+    }
+
+    #[test]
+    fn test_make_payment_blocks_reentrancy() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let malicious_token_id = env.register_contract(None, MaliciousToken);
+        let malicious_token_client = MaliciousTokenClient::new(&env, &malicious_token_id);
+
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &malicious_token_id);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "REENTRY-METER");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+
+        malicious_token_client.configure(&contract_id, &meter_id);
+
+        // The legitimate outer payment must still succeed exactly once, even
+        // though the malicious token tried to reenter during the transfer.
+        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
+
+        assert!(malicious_token_client.reentry_attempted());
+        assert_eq!(client.get_meter_balance(&meter_id), 1_000_i128);
+        assert!(client.check_access(&meter_id));
     }
 
     #[test]
