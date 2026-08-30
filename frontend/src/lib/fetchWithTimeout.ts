@@ -1,4 +1,5 @@
 import { env } from "@/lib/env";
+import { buildTraceparent } from "@/lib/tracing";
 
 /**
  * Fetch wrapper that adds AbortController timeout to prevent indefinite hangs
@@ -17,6 +18,9 @@ export async function fetchWithTimeout(
   try {
     const response = await fetch(url, {
       ...options,
+      // #763 — propagate a W3C traceparent so this request joins the
+      // backend's trace instead of starting a disconnected one.
+      headers: { traceparent: buildTraceparent(), ...options.headers },
       signal: controller.signal,
     });
     clearTimeout(timeoutId);

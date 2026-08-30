@@ -69,6 +69,26 @@ export const contractEventsProcessed = new Counter({
   labelNames: ["topic"] as const,
 });
 
+/**
+ * #761 — Stellar RPC circuit breaker state, exported so Grafana can alert on
+ * an open circuit without scraping logs. 0=closed, 0.5=half-open, 1=open.
+ */
+export const rpcCircuitBreakerState = new Gauge({
+  name: "solargrid_rpc_circuit_breaker_state",
+  help: "Stellar RPC circuit breaker state: 0=closed, 0.5=half-open, 1=open",
+});
+
+export const rpcCircuitBreakerTrips = new Counter({
+  name: "solargrid_rpc_circuit_breaker_trips_total",
+  help: "Total times the Stellar RPC circuit breaker has opened",
+});
+
+export const rpcCircuitBreakerRejections = new Counter({
+  name: "solargrid_rpc_circuit_breaker_rejections_total",
+  help: "Total requests short-circuited (fast-failed or served from cache) while the RPC circuit breaker was open",
+  labelNames: ["outcome"] as const, // "cached" | "rejected"
+});
+
 // ── Atomic Metric Increment Helpers ──────────────────────────────────────────
 // Use prom-client native atomic counter increments (counter.inc) to prevent
 // race conditions and lost increments under high concurrency (#706).

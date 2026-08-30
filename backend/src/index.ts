@@ -45,6 +45,9 @@ import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
+import { tracingMiddleware } from "./middleware/tracing.js";
+import { shutdownTracing } from "./lib/tracing.js";
+import { getCircuitState } from "./lib/circuitBreaker.js";
 import {
   countDeadLetterEvents,
   getUsageEventPoolStatus,
@@ -165,6 +168,7 @@ app.use(
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 app.use(sanitiseBody);
 app.use(requestLoggerMiddleware);
+app.use(tracingMiddleware);
 
 // â”€â”€ Request timeout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Configurable via REQUEST_TIMEOUT env var (default 15 s).
@@ -389,6 +393,13 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       error: "Validation failed",
       code: "VALIDATION_ERROR",
       details: (err as any).details,
+      requestId,
+    });
+  }
+  if ((err as any).code === "CIRCUIT_OPEN") {
+    return res.status(503).json({
+      error: err.message,
+      code: "CIRCUIT_OPEN",
       requestId,
     });
   }

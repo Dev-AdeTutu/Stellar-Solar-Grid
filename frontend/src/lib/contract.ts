@@ -1,6 +1,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { useWalletStore } from "@/store/walletStore";
 import { env } from "@/lib/env";
+import { padResourceFee as padFee } from "@/lib/fees";
 
 export interface MeterData {
   version: number;
@@ -16,6 +17,18 @@ export interface MeterData {
 }
 
 const REQUEST_TIMEOUT_MS = env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;
+
+/**
+ * #762 — Pad the assembled transaction fee (classic fee + simulated resource
+ * fee) by a safety margin before the wallet signs it. `simulateTransaction`'s
+ * resource-fee estimate is a point-in-time snapshot; actual cost can drift
+ * by submission time, and that drift scales with how many ledger entries the
+ * operation touches — a fixed percentage margin therefore scales with it too.
+ * Mirrors backend/src/lib/stellar.ts's padResourceFee.
+ */
+export function padResourceFee(assembledFee: string): string {
+  return padFee(assembledFee, env.NEXT_PUBLIC_FEE_SAFETY_MARGIN_PCT);
+}
 
 export class ContractClient {
   private server: StellarSdk.SorobanRpc.Server;
@@ -85,6 +98,10 @@ export class ContractClient {
     }
 
     tx = StellarSdk.SorobanRpc.assembleTransaction(tx, sim).build();
+    const paddedFee = padResourceFee(tx.fee);
+    if (paddedFee !== tx.fee) {
+      tx = StellarSdk.TransactionBuilder.cloneFrom(tx, { fee: paddedFee }).build();
+    }
 
     const { signTransaction } = useWalletStore.getState();
     const signedXdr = await signTransaction(tx.toXDR());
