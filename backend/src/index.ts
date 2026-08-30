@@ -40,18 +40,19 @@ import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
-import { register } from "./lib/metrics.js";
+import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import {
   countDeadLetterEvents,
+  getUsageEventPoolStatus,
   initUsageEventStore,
   startUsageEventRetryWorker,
 } from "./lib/usageEvents.js";
+import { initMeterNotesStore, getMeterNotesPoolStatus } from "./lib/meterNotes.js";
 import { closeAllDatabases } from "./lib/databaseLifecycle.js";
-import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
 // Issue #696: Import idempotency cleanup for graceful shutdown
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
@@ -112,14 +113,6 @@ app.set(
   Number.isInteger(TRUST_PROXY_HOPS) && TRUST_PROXY_HOPS >= 0 ? TRUST_PROXY_HOPS : 0,
 );
 
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'none'"],
-      scriptSrc: ["'self'"],
-      connectSrc: ["'self'"],
-
-// â”€â”€ Security headers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -137,9 +130,6 @@ app.use(
 app.use(compression({ threshold: 1024 }));
 
 // â”€â”€ CORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
-  .split(",")
-  .map((o) => o.trim());
 // ── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 
@@ -253,6 +243,11 @@ app.use("/api", globalReadLimiter);
 //   scrapes are never throttled by the per-IP write budget.
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
+  // #735 — surface SQLite connection-pool gauges on every Prometheus scrape.
+  updateSqlitePoolMetrics([
+    { name: "usage-events", status: getUsageEventPoolStatus() },
+    { name: "meter-notes", status: getMeterNotesPoolStatus() },
+  ]);
   res.end(await register.metrics());
 });
 
@@ -307,6 +302,17 @@ app.get("/health", async (_req, res) => {
     const dbPath = process.env.USAGE_EVENTS_DB_PATH ?? "data/usage-events.sqlite";
     const sizeMb = statSync(dbPath, { throwIfNoEntry: false })?.size;
     checks.database = { status: "up", size_mb: sizeMb ? Number((sizeMb / 1024 / 1024).toFixed(2)) : 0 };
+    // #735 — include SQLite connection-pool health in the readiness response.
+    const usagePool = getUsageEventPoolStatus();
+    const notesPool = getMeterNotesPoolStatus();
+    checks.database_pool = {
+      status: usagePool.closed || notesPool.closed ? "down" : "up",
+      connected: !usagePool.closed && !notesPool.closed,
+      error:
+        usagePool.closed || notesPool.closed
+          ? "SQLite connection pool closed"
+          : undefined,
+    };
   } catch (err) {
     logger.error("Database health check failed", { err });
     checks.database = { status: "down", error: "SQLite health check failed" };
@@ -392,7 +398,6 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 // â”€â”€ Server startup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-app.listen(PORT, () => {
 // ── Server startup ───────────────────────────────────────────────────────────
 const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
