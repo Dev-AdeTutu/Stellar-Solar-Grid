@@ -101,6 +101,15 @@ describe("meter notes", () => {
       expect(getLatestMeterNotes("other", 5)).toEqual([]);
     });
 
+    it("#738 sanitizes XSS payloads at write time", () => {
+      const xss = "<script>alert('XSS')</script><img src=x onerror=alert(document.cookie)>";
+      const note = addMeterNote("meter-xss", xss);
+      expect(note.text).not.toContain("<script>");
+      expect(note.text).not.toContain("onerror");
+      expect(note.text).toContain("&lt;script&gt;");
+      expect(note.text).toContain("&lt;img");
+    });
+
     it("treats SQL-like meter IDs as data across every query", () => {
       const injectedId = "meter-1' OR 1=1 --";
       addMeterNote(injectedId, "quoted meter note");

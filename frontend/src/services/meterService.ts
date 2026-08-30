@@ -1,4 +1,4 @@
-import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, contractInvoke, type MeterData } from "@/lib/contract";
+import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, contractInvoke, type MeterData } from "@/lib/contract";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData };
@@ -19,11 +19,23 @@ export async function getAllMeters(): Promise<MeterData[]> {
   return fetchAllMeters();
 }
 
+export async function getMetersPaginated(offset: number, limit: number): Promise<string[]> {
+  return fetchMetersPaginated(offset, limit);
+}
+
+export async function transferOwnership(
+  sourceAddress: string,
+  meterId: string,
+  newOwnerAddress: string,
+): Promise<string> {
+  return transferMeterOwnership(sourceAddress, meterId, newOwnerAddress);
+}
+
 export async function makePayment(
   sourceAddress: string,
   meterId: string,
   amountXlm: number,
-  plan: "Daily" | "Weekly" | "Usage",
+  plan: "Daily" | "Weekly" | "Monthly" | "Usage",
   memo?: string,
 ): Promise<string> {
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
