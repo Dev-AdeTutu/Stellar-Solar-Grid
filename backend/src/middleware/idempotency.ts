@@ -20,6 +20,8 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 
 const TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const MAX_ENTRIES = 10_000;           // memory safety ceiling
+// Issue #696: Active eviction interval (every 5 minutes) to prevent memory buildup
+const EVICTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 interface CacheEntry {
   status: number;
@@ -35,6 +37,9 @@ const store = new Map<string, CacheEntry>();
 // Tracks keys whose first request is still in-flight.
 const inFlight = new Set<string>();
 
+// Issue #696: Periodic cleanup timer reference for graceful shutdown
+let evictionTimer: NodeJS.Timeout | null = null;
+
 /** Derive a stable, opaque store key from the raw Idempotency-Key + route. */
 function storeKey(idempotencyKey: string, routePath: string): string {
   return createHash("sha256")
@@ -47,8 +52,12 @@ function storeKey(idempotencyKey: string, routePath: string): string {
 /** Evict expired entries. Called before every write to keep memory bounded. */
 function evictExpired(): void {
   const now = Date.now();
+  let evicted = 0;
   for (const [k, v] of store) {
-    if (now >= v.expiresAt) store.delete(k);
+    if (now >= v.expiresAt) {
+      store.delete(k);
+      evicted++;
+    }
   }
   // Hard ceiling: if still over limit after eviction, clear oldest half.
   if (store.size >= MAX_ENTRIES) {
@@ -58,13 +67,44 @@ function evictExpired(): void {
 }
 
 /**
+ * Issue #696: Start the periodic eviction timer to prevent memory leaks.
+ * This ensures expired entries are cleaned up even when no requests arrive,
+ * preventing indefinite heap growth in long-running processes.
+ */
+function startEvictionTimer(): void {
+  if (evictionTimer) return; // Already running
+
+  evictionTimer = setInterval(() => {
+    evictExpired();
+  }, EVICTION_INTERVAL_MS);
+
+  // Don't keep the process alive just for eviction
+  if (evictionTimer.unref) evictionTimer.unref();
+}
+
+/**
+ * Issue #696: Stop the periodic eviction timer (useful for testing/shutdown).
+ */
+function stopEvictionTimer(): void {
+  if (evictionTimer) {
+    clearInterval(evictionTimer);
+    evictionTimer = null;
+  }
+}
+
+/**
  * Express middleware factory.
  *
  * When mounted on a route, the route path used in the cache key is derived
  * from `req.baseUrl + req.path` so it is always route-specific even when
  * the middleware is reused across multiple routers.
+ *
+ * Issue #696: Automatically starts the periodic eviction timer on first use.
  */
 export function idempotency(): RequestHandler {
+  // Start the eviction timer on first middleware instantiation
+  startEvictionTimer();
+
   return (req: Request, res: Response, next: NextFunction): void => {
     const raw = req.headers["idempotency-key"];
 
@@ -134,3 +174,5 @@ export function idempotency(): RequestHandler {
 /** Exported for testing only — lets tests inspect or clear the store. */
 export const _idempotencyStore = store;
 export const _idempotencyInFlight = inFlight;
+// Issue #696: Export eviction utilities for testing and graceful shutdown
+export const _stopEvictionTimer = stopEvictionTimer;

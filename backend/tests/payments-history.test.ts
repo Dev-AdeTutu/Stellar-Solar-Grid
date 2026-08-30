@@ -91,12 +91,12 @@ describe("paymentsRouter - GET /api/payments/history/:address", () => {
     // Full integration would require more setup
   });
 
-  it("should validate limit is capped at 200", async () => {
+  it("should validate limit is capped at 100", async () => {
     req.params = { address: validAddress };
     req.query = { limit: "500" };
 
-    // Limit should be capped at 200 by the handler logic
-    expect(Math.min(200, Math.max(1, parseInt("500", 10)))).toBe(200);
+    // Limit should be capped at 100 by the handler logic (Issue #747)
+    expect(Math.min(100, Math.max(1, parseInt("500", 10)))).toBe(100);
   });
 
   it("should reject invalid timestamps", async () => {
@@ -129,7 +129,7 @@ describe("paymentsRouter - GET /api/payments/history/:address", () => {
 
     const from = Number(req.query.from);
     const to = Number(req.query.to);
-    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit), 10)));
+    const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit), 10)));
     const page = Math.max(1, parseInt(String(req.query.page), 10));
 
     expect(Number.isFinite(from)).toBe(true);

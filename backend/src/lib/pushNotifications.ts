@@ -22,6 +22,7 @@ if (pushConfigured) {
 
 type LowBalanceNotificationInput = {
   ownerAddress: string;
+  emergencyContactAddress?: string;
   meterId: string;
   balanceStroops: number;
   thresholdStroops: number;
@@ -51,14 +52,23 @@ export async function sendLowBalanceNotification(input: LowBalanceNotificationIn
     return;
   }
 
-  const subscriptions = listPushSubscriptionsByOwner(input.ownerAddress);
+  const recipients = new Set(
+    [input.ownerAddress, input.emergencyContactAddress].filter(
+      (address): address is string => Boolean(address),
+    ),
+  );
+  const subscriptions = [...recipients]
+    .flatMap((address) => listPushSubscriptionsByOwner(address))
+    .filter((record, index, records) => records.findIndex((candidate) => candidate.endpoint === record.endpoint) === index);
   if (subscriptions.length === 0) {
     return;
   }
 
   const payload = JSON.stringify({
     title: "Low Balance Alert",
-    body: "⚠️ Low Balance: Your meter balance is running low. Top up now to avoid interruption.",
+    body: input.emergencyContactAddress
+      ? "Low balance alert: a designated meter contact may need to top up to avoid interruption."
+      : "Low balance: your meter balance is running low. Top up now to avoid interruption.",
     icon: "/icons/push-warning.svg",
     badge: "/icons/push-badge.svg",
     tag: `low-balance-${input.meterId}`,
