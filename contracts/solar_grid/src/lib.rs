@@ -1103,7 +1103,7 @@ impl SolarGridContract {
 
         // ── EFFECTS ─────────────────────────────────────────────────────────
         let key = DataKey::Meter(meter_id.clone());
-        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        let mut meter = Self::get_meter_or_error(env, &key)?;
         let now = env.ledger().timestamp();
         let expires_at = now.saturating_add(plan_duration_secs(&plan));
 
@@ -1131,7 +1131,7 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         // Track provider (admin) accrued revenue
-        let admin = Self::get_admin(&env)?;
+        let admin = Self::get_admin(env)?;
         let provider_key = DataKey::ProviderRevenue(admin);
         let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
         env.storage()
@@ -2118,7 +2118,7 @@ impl SolarGridContract {
         Ok(payouts)
     }
 
-    // ── Emergency / admin controls ───────────────────────────────────────────
+    // ── Emergency / admin controls (Closes #686) ─────────────────────────────
 
     /// Drain all contract-held token balance to a recovery address. Admin-only.
     /// The contract must be frozen first via `freeze_contract`; returns
@@ -2154,6 +2154,12 @@ impl SolarGridContract {
         }
 
         Ok(())
+    }
+
+    /// Inspect the currently pending emergency-withdrawal announcement, if
+    /// any (amount, recipient, and when it was announced).
+    pub fn get_pending_emergency_withdrawal(env: Env) -> Option<EmergencyWithdrawal> {
+        env.storage().instance().get(&EMRG_WD)
     }
 
     /// Manually expire a meter before its natural expiry. Admin-only.
@@ -4405,38 +4411,322 @@ mod tests {
         assert_eq!(result, Err(Ok(ContractError::CollaboratorNotFound)));
     }
 
-    // ── Issue #415: freeze_contract / emergency_withdraw ──────────────────────
+    // ── Issue #415 / #686: freeze_contract / emergency_withdraw ────────────────
 
-    #[test]
-    fn test_emergency_withdraw_transfers_full_balance() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        let token_client = token::Client::new(&env, &token_address);
-
-        token_admin_client.mint(&client.address, &1_000_i128);
-        client.freeze_contract();
-
-        let recipient = Address::generate(&env);
-        client.emergency_withdraw(&recipient);
-
-        assert_eq!(token_client.balance(&recipient), 1_000);
-        assert_eq!(token_client.balance(&client.address), 0);
+    /// Helper: register a meter and pay into it so TOTAL_REVENUE (and the
+    /// contract's token balance) is populated the same way real funds
+    /// arrive, rather than minting directly to the contract address.
+    fn accrue_revenue_via_payment(
+        env: &Env,
+        client: &SolarGridContractClient,
+        token_address: &Address,
+        amount: i128,
+    ) {
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        let user = Address::generate(env);
+        let meter_id = String::from_str(env, "EMRGMTR");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &amount);
+        client.make_payment(&meter_id, &user, &amount, &PaymentPlan::UsageBased);
     }
 
     #[test]
-    fn test_emergency_withdraw_noop_when_balance_zero() {
-        let (env, client, _admin, _token_address) = setup_with_token();
+    fn test_emergency_withdraw_announce_then_execute_after_timelock() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_client = token::Client::new(&env, &token_address);
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
         client.freeze_contract();
+
         let recipient = Address::generate(&env);
-        client.emergency_withdraw(&recipient);
+
+        // First call announces — no funds move yet.
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        assert_eq!(token_client.balance(&recipient), 0);
+        let pending = client.get_pending_emergency_withdrawal().unwrap();
+        assert_eq!(pending.amount, 1_000_i128);
+        assert_eq!(pending.recipient, recipient);
+
+        // Too early — timelock hasn't elapsed.
+        let result = client.try_emergency_withdraw(&1_000_i128, &recipient);
+        assert_eq!(result, Err(Ok(ContractError::TimelockNotElapsed)));
+
+        // Warp past the 48h timelock, then execute with the same args.
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS + 1);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+
+        assert_eq!(token_client.balance(&recipient), 1_000);
+        assert_eq!(token_client.balance(&client.address), 0);
+        assert!(client.get_pending_emergency_withdrawal().is_none());
     }
 
     #[test]
     fn test_emergency_withdraw_requires_frozen() {
-        let (env, client, _admin, _token_address) = setup_with_token();
+        let (env, client, _admin, token_address) = setup_with_token();
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
         let recipient = Address::generate(&env);
-        let result = client.try_emergency_withdraw(&recipient);
+        let result = client.try_emergency_withdraw(&1_000_i128, &recipient);
         assert_eq!(result, Err(Ok(ContractError::ContractNotFrozen)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_capped_at_total_revenue() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.freeze_contract();
+
+        let recipient = Address::generate(&env);
+        // Only 1,000 has ever been collected — asking for more is rejected
+        // even though nothing has stopped someone minting extra tokens
+        // directly to the contract address.
+        let result = client.try_emergency_withdraw(&1_001_i128, &recipient);
+        assert_eq!(result, Err(Ok(ContractError::AmountExceedsRevenue)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_capped_at_current_balance_if_lower() {
+        // Revenue was collected but some of it already left the contract
+        // (e.g. via withdraw_revenue) — execution should never try to
+        // transfer more than the contract actually holds.
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_client = token::Client::new(&env, &token_address);
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.withdraw_revenue(&admin, &400_i128);
+        assert_eq!(token_client.balance(&client.address), 600);
+
+        client.freeze_contract();
+        let recipient = Address::generate(&env);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS + 1);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+
+        assert_eq!(token_client.balance(&recipient), 600);
+        assert_eq!(token_client.balance(&client.address), 0);
+    }
+
+    #[test]
+    fn test_cancel_emergency_withdrawal() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_client = token::Client::new(&env, &token_address);
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.freeze_contract();
+
+        let recipient = Address::generate(&env);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        assert!(client.get_pending_emergency_withdrawal().is_some());
+
+        client.cancel_emergency_withdrawal();
+        assert!(client.get_pending_emergency_withdrawal().is_none());
+
+        // Even after warping past the timelock, there's nothing to execute —
+        // a fresh call just re-announces instead of transferring funds.
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS + 1);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        assert_eq!(token_client.balance(&recipient), 0);
+        assert!(client.get_pending_emergency_withdrawal().is_some());
+    }
+
+    #[test]
+    fn test_cancel_emergency_withdrawal_requires_pending() {
+        let (_env, client, _admin, _token_address) = setup_with_token();
+        let result = client.try_cancel_emergency_withdrawal();
+        assert_eq!(result, Err(Ok(ContractError::NoWithdrawalAnnounced)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_reannounce_restarts_timelock() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.freeze_contract();
+
+        let recipient_a = Address::generate(&env);
+        let recipient_b = Address::generate(&env);
+        client.emergency_withdraw(&500_i128, &recipient_a);
+
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS - 10);
+        // Different recipient before the first timelock elapsed — replaces
+        // the announcement and restarts the clock rather than executing.
+        client.emergency_withdraw(&500_i128, &recipient_b);
+        let pending = client.get_pending_emergency_withdrawal().unwrap();
+        assert_eq!(pending.recipient, recipient_b);
+
+        let result = client.try_emergency_withdraw(&500_i128, &recipient_b);
+        assert_eq!(result, Err(Ok(ContractError::TimelockNotElapsed)));
+    }
+
+    // ── Issue #687: promotional discount codes ─────────────────────────────────
+
+    #[test]
+    fn test_admin_create_and_get_discount() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let code = String::from_str(&env, "WELCOME20");
+        client.admin_create_discount(&code, &20_u32, &0_u64, &0_u32);
+
+        let discount = client.get_discount(&code);
+        assert_eq!(discount.discount_pct, 20);
+        assert_eq!(discount.uses, 0);
+        assert!(discount.active);
+        assert!(client.is_discount_valid(&code));
+    }
+
+    #[test]
+    fn test_admin_create_discount_rejects_invalid_percent() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let code = String::from_str(&env, "BAD");
+        let result = client.try_admin_create_discount(&code, &0_u32, &0_u64, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::InvalidDiscountPercent)));
+        let result = client.try_admin_create_discount(&code, &101_u32, &0_u64, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::InvalidDiscountPercent)));
+    }
+
+    #[test]
+    fn test_admin_create_discount_rejects_duplicate_code() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let code = String::from_str(&env, "DUPE");
+        client.admin_create_discount(&code, &10_u32, &0_u64, &0_u32);
+        let result = client.try_admin_create_discount(&code, &15_u32, &0_u64, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeAlreadyExists)));
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_applies_percent_off() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let token_client = token::Client::new(&env, &token_address);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+
+        let code = String::from_str(&env, "WELCOME20");
+        client.admin_create_discount(&code, &20_u32, &0_u64, &0_u32);
+
+        token_admin_client.mint(&user, &1_000_i128);
+        let charged = client.make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+
+        // 20% off 1,000 = 800 actually charged.
+        assert_eq!(charged, 800);
+        assert_eq!(token_client.balance(&user), 200);
+        assert_eq!(token_client.balance(&client.address), 800);
+        assert_eq!(client.get_meter_balance(&meter_id), 800);
+        assert!(client.check_access(&meter_id));
+
+        let discount = client.get_discount(&code);
+        assert_eq!(discount.uses, 1);
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_unknown_code() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR2");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let code = String::from_str(&env, "NOPE");
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeNotFound)));
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_respects_max_uses() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR3");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+
+        let code = String::from_str(&env, "ONEUSE");
+        client.admin_create_discount(&code, &10_u32, &0_u64, &1_u32);
+
+        client.make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeExhausted)));
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_respects_expiry() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR4");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let now = env.ledger().timestamp();
+        let code = String::from_str(&env, "EXPIRED");
+        client.admin_create_discount(&code, &10_u32, &now, &0_u32);
+
+        env.ledger().with_mut(|li| li.timestamp = now + 1);
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeExpired)));
+        assert!(!client.is_discount_valid(&code));
+    }
+
+    #[test]
+    fn test_admin_revoke_discount() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR5");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let code = String::from_str(&env, "REVOKED");
+        client.admin_create_discount(&code, &10_u32, &0_u64, &0_u32);
+        client.admin_revoke_discount(&code);
+        assert!(!client.is_discount_valid(&code));
+
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeInactive)));
     }
 
     // ── Issue #417: expire_meter ──────────────────────────────────────────────
