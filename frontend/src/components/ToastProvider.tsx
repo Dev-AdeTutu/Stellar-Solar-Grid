@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, ReactNode } from "react";
+import { createContext, useContext, ReactNode, useCallback, useMemo } from "react";
 import { useToastStore } from "@/store/toastStore";
 import ToastContainer from "./Toast";
 
@@ -23,7 +23,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const add = useToastStore((s) => s.add);
   const remove = useToastStore((s) => s.remove);
 
-  const showToast = (options: ToastOptions) => {
+  const showToast = useCallback((options: ToastOptions) => {
     add({
       message: options.title,
       type: options.variant ?? "success",
@@ -31,10 +31,15 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       actionHref: options.actionHref,
       actionLabel: options.actionLabel,
     });
-  };
+  }, [add]);
+
+  const value = useMemo(
+    () => ({ showToast, dismissToast: remove }),
+    [showToast, remove]
+  );
 
   return (
-    <ToastContext.Provider value={{ showToast, dismissToast: remove }}>
+    <ToastContext.Provider value={value}>
       {children}
       <ToastContainer />
     </ToastContext.Provider>

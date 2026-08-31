@@ -459,6 +459,7 @@ export default function UserDashboardPage() {
   // first load — no double-fetch on first render.
   const pollBalances = useCallback(async () => {
     if (!address || meterIds.length === 0) return;
+    let anyChanged = false;
     for (const id of meterIds) {
       try {
         const res = await fetch(`${API}/api/meters/${id}/balance`);
@@ -467,13 +468,26 @@ export default function UserDashboardPage() {
         setMeters((prev) => {
           const existing = prev[id];
           if (!existing) return prev;
+          const nextBal = BigInt(data.balance ?? existing.balance);
+          const nextUnits = data.units_used ?? existing.units_used;
+          const nextActive = data.active ?? existing.active;
+
+          if (
+            existing.balance === nextBal &&
+            existing.units_used === nextUnits &&
+            existing.active === nextActive
+          ) {
+            return prev;
+          }
+
+          anyChanged = true;
           return {
             ...prev,
             [id]: {
               ...existing,
-              balance: BigInt(data.balance ?? existing.balance),
-              units_used: data.units_used ?? existing.units_used,
-              active: data.active ?? existing.active,
+              balance: nextBal,
+              units_used: nextUnits,
+              active: nextActive,
             },
           };
         });
@@ -489,7 +503,9 @@ export default function UserDashboardPage() {
         // Silently skip — full refresh will recover on next interval
       }
     }
-    setLastRefresh(new Date());
+    if (anyChanged) {
+      setLastRefresh(new Date());
+    }
   }, [address, meterIds]);
 
   // Pause polling when address is gone or no meters loaded yet
