@@ -18,6 +18,7 @@ interface WalletState {
   isTransactionPending: boolean;
   lastTopUpPerMeter: Record<string, bigint>;
   connect: () => Promise<void>;
+  cancelConnect: () => void;
   disconnect: () => void;
   clearConnectError: () => void;
   signTransaction: (xdr: string) => Promise<string>;
@@ -91,16 +92,28 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         throw new Error("Freighter extension is not installed. Please install it to continue.");
       }
       const kit = buildKit();
-      await kit.openModal({
-        onWalletSelected: async (option) => {
-          kit.setWallet(option.id);
-          const { address } = await kit.getAddress();
-          if (!address || address.length < 10) throw new Error("No account found in selected wallet");
-          const networkError = await checkNetworkMismatch();
-          set({ address, kit, networkError });
-        },
+
+      const connectPromise = new Promise<void>((resolve, reject) => {
+        kit.openModal({
+          onWalletSelected: async (option) => {
+            try {
+              kit.setWallet(option.id);
+              const { address } = await kit.getAddress();
+              if (!address || address.length < 10) throw new Error("No account found in selected wallet");
+              const networkError = await checkNetworkMismatch();
+              set({ address, kit, networkError });
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          },
+        }).catch(reject);
       });
+
+      await Promise.race([connectPromise, timeoutPromise]);
     } catch (err: unknown) {
+      // Do not overwrite the error if the user explicitly cancelled
+      if (get().connectCancelled) return;
       const msg =
         err instanceof Error ? err.message : "Failed to connect wallet";
       const isNotInstalled =
@@ -112,6 +125,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
           : msg,
       });
     } finally {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       set({ isConnecting: false });
     }
   },
