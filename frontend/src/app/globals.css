@@ -3,8 +3,12 @@
 @tailwind utilities;
 
 :root {
-  /* Brand accent — constant across themes, used for contrast-critical text/backgrounds */
-  --color-brand-yellow: #f5a623;
+  /* #764 — white-label brand colors, constant across light/dark themes.
+     Defaults here match the built-in SolarGrid brand; overridden per
+     deployment via an inline style on <html> from NEXT_PUBLIC_BRAND_* env
+     vars (see lib/branding.ts and layout.tsx). */
+  --color-brand-primary: #f5a623;
+  --color-brand-secondary: #0d1b2a;
   --color-button-text-on-accent: #0f1419;
 }
 

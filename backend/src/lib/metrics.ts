@@ -69,6 +69,26 @@ export const contractEventsProcessed = new Counter({
   labelNames: ["topic"] as const,
 });
 
+/**
+ * #761 — Stellar RPC circuit breaker state, exported so Grafana can alert on
+ * an open circuit without scraping logs. 0=closed, 0.5=half-open, 1=open.
+ */
+export const rpcCircuitBreakerState = new Gauge({
+  name: "solargrid_rpc_circuit_breaker_state",
+  help: "Stellar RPC circuit breaker state: 0=closed, 0.5=half-open, 1=open",
+});
+
+export const rpcCircuitBreakerTrips = new Counter({
+  name: "solargrid_rpc_circuit_breaker_trips_total",
+  help: "Total times the Stellar RPC circuit breaker has opened",
+});
+
+export const rpcCircuitBreakerRejections = new Counter({
+  name: "solargrid_rpc_circuit_breaker_rejections_total",
+  help: "Total requests short-circuited (fast-failed or served from cache) while the RPC circuit breaker was open",
+  labelNames: ["outcome"] as const, // "cached" | "rejected"
+});
+
 // ── Atomic Metric Increment Helpers ──────────────────────────────────────────
 // Use prom-client native atomic counter increments (counter.inc) to prevent
 // race conditions and lost increments under high concurrency (#706).
@@ -120,5 +140,38 @@ export const incrementDeadLetter = (meterId: string, count: number = 1): void =>
 export const incrementContractEvent = (topic: string, count: number = 1): void => {
   contractEventsProcessed.inc({ topic }, count);
 };
+
+// ── #735: SQLite connection-pool monitoring ─────────────────────────────────
+export const sqlitePoolConnections = new Gauge({
+  name: "solargrid_sqlite_pool_connections",
+  help: "Total open SQLite connections (usage-event + meter-notes pools)",
+  labelNames: ["pool"] as const,
+});
+
+export const sqlitePoolIdle = new Gauge({
+  name: "solargrid_sqlite_pool_idle",
+  help: "Idle SQLite connections per pool",
+  labelNames: ["pool"] as const,
+});
+
+export const sqlitePoolBusy = new Gauge({
+  name: "solargrid_sqlite_pool_busy",
+  help: "Busy SQLite connections per pool",
+  labelNames: ["pool"] as const,
+});
+
+/** Refresh the pool gauges from the current pool status snapshots. */
+export function updateSqlitePoolMetrics(
+  pools: Array<{
+    name: string;
+    status: { total: number; idle: number; busy: number };
+  }>,
+): void {
+  for (const { name, status } of pools) {
+    sqlitePoolConnections.set({ pool: name }, status.total);
+    sqlitePoolIdle.set({ pool: name }, status.idle);
+    sqlitePoolBusy.set({ pool: name }, status.busy);
+  }
+}
 
 export { register };

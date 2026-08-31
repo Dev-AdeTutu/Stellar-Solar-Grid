@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -214,8 +214,11 @@ function periodLabel(period: ComparisonPeriod): string {
   return period === "week" ? "7-day" : period === "month" ? "30-day" : "custom-range";
 }
 
-export default function UsageChart({ data: rawData, loading = false, meterId }: UsageChartProps) {
-  const data: UsageDataPoint[] = Array.isArray(rawData) ? rawData : [];
+export function UsageChart({ data: rawData, loading = false, meterId }: UsageChartProps) {
+  const data: UsageDataPoint[] = useMemo(
+    () => (Array.isArray(rawData) ? rawData : []),
+    [rawData],
+  );
   const [compareEnabled, setCompareEnabled] = useState(false);
   const [period, setPeriod] = useState<ComparisonPeriod>("week");
   const [customStart, setCustomStart] = useState("");
@@ -226,10 +229,55 @@ export default function UsageChart({ data: rawData, loading = false, meterId }: 
     () => buildComparisonData(data, period, customStart, customEnd),
     [data, period, customStart, customEnd],
   );
-  const chartData = compareEnabled ? comparisonData : data;
-  const currentTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + point.units, 0) : data.reduce((sum, point) => sum + point.units, 0);
-  const previousTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + (point.previousUnits ?? 0), 0) : 0;
+  // Memoized so an unchanged dataset does not rebuild the Recharts tree on
+  // parent re-render (dashboards poll balances and re-render MeterCard/UsageChart
+  // on every tick — #736). Without this, Recharts tears down and rebuilds its
+  // SVG/DOM (and its ResizeObserver listeners) each poll, leaking detached trees.
+  const chartData = useMemo(
+    () => (compareEnabled ? comparisonData : data),
+    [compareEnabled, comparisonData, data],
+  );
+  const currentTotal = useMemo(
+    () =>
+      compareEnabled
+        ? comparisonData.reduce((sum, point) => sum + point.units, 0)
+        : data.reduce((sum, point) => sum + point.units, 0),
+    [compareEnabled, comparisonData, data],
+  );
+  const previousTotal = useMemo(
+    () => (compareEnabled ? comparisonData.reduce((sum, point) => sum + (point.previousUnits ?? 0), 0) : 0),
+    [compareEnabled, comparisonData],
+  );
   const differencePercent = previousTotal > 0 ? ((currentTotal - previousTotal) / previousTotal) * 100 : null;
+
+  // Derived flags + a memoized chart subtree (#736).
+  //
+  // We pass the CustomTooltip *component reference* (not a fresh `<CustomTooltip />`
+  // element) and memoize the whole `LineChart` so an unchanged dataset produces a
+  // stable element graph. This stops Recharts from tearing down/rebuilding its
+  // DOM + ResizeObserver listeners on every parent re-render, keeping old chart
+  // instances garbage-collectable instead of accumulating as detached trees.
+  const showCost = data.some((point) => point.cost !== undefined);
+  const showPrevCost =
+    compareEnabled &&
+    comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null);
+
+  const chart = useMemo(
+    () => (
+      <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+        <XAxis dataKey="date" tickFormatter={formatTickLocal} tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+        <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+        <Tooltip content={<CustomTooltip />} labelFormatter={formatTooltipLocal} />
+        <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
+        <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#F5C518" }} connectNulls={false} />
+        {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: 4, fill: "#38bdf8" }} connectNulls={false} />}
+        {!compareEnabled && showCost && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#818cf8" }} />}
+        {showPrevCost && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}
+      </LineChart>
+    ),
+    [chartData, compareEnabled, showCost, showPrevCost],
+  );
 
   return (
     <div className="space-y-3 rounded-xl border border-white/10 bg-solar-accent p-5">
@@ -295,20 +343,16 @@ export default function UsageChart({ data: rawData, loading = false, meterId }: 
           </div>
         ) : (
           <ResponsiveContainer width="100%" height={192}>
-            <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-              <XAxis dataKey="date" tickFormatter={formatTickLocal} tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
-              <Tooltip content={<CustomTooltip />} labelFormatter={formatTooltipLocal} />
-              <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
-              <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#F5C518" }} connectNulls={false} />
-              {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: 4, fill: "#38bdf8" }} connectNulls={false} />}
-              {!compareEnabled && data.some((point) => point.cost !== undefined) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#818cf8" }} />}
-              {compareEnabled && comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}
-            </LineChart>
+            {chart}
           </ResponsiveContainer>
         )}
       </div>
     </div>
   );
 }
+
+// #736 — memoize the whole chart so it only re-renders when its props (data,
+// loading, meterId) actually change. The dashboard re-renders MeterCard on
+// every balance poll; without memo this rebuilds the Recharts tree each tick
+// and old chart instances are never released, so memory climbs unbounded.
+export default memo(UsageChart);

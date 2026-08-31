@@ -16,7 +16,7 @@ const MeterRouteParamsSchema = z
   })
   .strict();
 
-const PaymentPlanSchema = z.enum(["Daily", "Weekly", "Usage", "UsageBased"]);
+const PaymentPlanSchema = z.enum(["Daily", "Weekly", "Monthly", "Usage", "UsageBased"]);
 
 export const RegisterMeterSchema = z
   .object({
