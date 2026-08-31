@@ -15,8 +15,7 @@ interface WalletState {
   connectError: string | null;
   networkError: string | null;
   isConnecting: boolean;
-  /** Set to true when the user explicitly cancels a pending connection. */
-  connectCancelled: boolean;
+  isTransactionPending: boolean;
   lastTopUpPerMeter: Record<string, bigint>;
   connect: () => Promise<void>;
   cancelConnect: () => void;
@@ -24,6 +23,7 @@ interface WalletState {
   clearConnectError: () => void;
   signTransaction: (xdr: string) => Promise<string>;
   recordTopUp: (meterId: string, amount: bigint) => void;
+  setPendingTransaction: (isPending: boolean) => void;
 }
 
 const EXPECTED_NETWORK_PASSPHRASE =
@@ -76,23 +76,17 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   connectError: null,
   networkError: null,
   isConnecting: false,
-  connectCancelled: false,
+  isTransactionPending: false,
   lastTopUpPerMeter: {},
 
   connect: async () => {
-    set({ connectError: null, networkError: null, isConnecting: true, connectCancelled: false });
+    // Issue #694: Prevent multiple simultaneous connection attempts
+    const current = get();
+    if (current.isConnecting) {
+      throw new Error("Connection already in progress");
+    }
 
-    // Closes #743: race the wallet handshake against a 30-second timeout so the
-    // UI never hangs indefinitely when Freighter is installed but locked.
-    const CONNECTION_TIMEOUT_MS = 30_000;
-    let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        reject(new Error("Connection timeout. Wallet is locked — please unlock Freighter and try again."));
-      }, CONNECTION_TIMEOUT_MS);
-    });
-
+    set({ connectError: null, networkError: null, isConnecting: true });
     try {
       if (typeof window === "undefined" || !(window as any).freighter) {
         throw new Error("Freighter extension is not installed. Please install it to continue.");
@@ -136,25 +130,53 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     }
   },
 
-  /** Closes #743: allow the user to abort a pending connection attempt. */
-  cancelConnect: () => {
+  // Issue #694: Improved disconnect with proper cleanup
+  disconnect: () => {
     set({
-      isConnecting: false,
-      connectCancelled: true,
+      address: null,
+      kit: null,
       connectError: null,
+      networkError: null,
+      isTransactionPending: false,
+      lastTopUpPerMeter: {},
     });
   },
 
-  disconnect: () => set({ address: null, kit: null, connectError: null, networkError: null, connectCancelled: false }),
-
   clearConnectError: () => set({ connectError: null }),
 
+  // Issue #694: Add race condition protection for transaction signing
   signTransaction: async (xdr: string) => {
-    const { kit, address } = get();
+    const { kit, address, isTransactionPending } = get();
     if (!kit || !address) throw new Error("Wallet not connected");
+
+    // Prevent concurrent transactions
+    if (isTransactionPending) {
+      throw new Error("Transaction already in progress");
+    }
+
+    set({ isTransactionPending: true });
+    try {
+      // Check wallet is still connected before signing
+      if (get().address !== address) {
+        throw new Error("Wallet was disconnected during transaction");
+      }
+
+      const { signedTxXdr } = await kit.signTransaction(xdr, {
+        address,
+        networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
+      });
+
+      // Verify wallet is still connected after signing
+      if (get().address !== address) {
+        throw new Error("Wallet was disconnected while signing transaction");
+      }
+
+      return signedTxXdr;
+    } finally {
+      set({ isTransactionPending: false });
+    }
     const { signedTxXdr } = await kit.signTransaction(xdr, {
       address,
-      networkPassphrase: process.env.NEXT_PUBLIC_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015',
       networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
@@ -168,16 +190,33 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       },
     }));
   },
+
+  setPendingTransaction: (isPending: boolean) => {
+    set({ isTransactionPending: isPending });
+  },
 }));
 
 export { FREIGHTER_ID, xBullWalletId };
 
+// Issue #694: Properly handle wallet disconnection events with transaction cleanup
 if (typeof window !== "undefined" && (window as any).freighter) {
-  (window as any).freighter.on("accountChanged", (newAddress: string | null) => {
+  const handleAccountChange = (newAddress: string | null) => {
+    const state = useWalletStore.getState();
+
     if (!newAddress) {
-      useWalletStore.getState().disconnect();
-    } else {
-      useWalletStore.setState({ address: newAddress });
+      // Account was disconnected - cleanup properly
+      state.disconnect();
+    } else if (state.address !== newAddress) {
+      // Account was changed - only update if not in a pending transaction
+      // to avoid race conditions during signing
+      if (!state.isTransactionPending) {
+        useWalletStore.setState({ address: newAddress });
+      } else {
+        // If transaction is pending, disconnect to prevent inconsistent state
+        state.disconnect();
+      }
     }
-  });
+  };
+
+  (window as any).freighter.on("accountChanged", handleAccountChange);
 }

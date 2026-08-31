@@ -1,14 +1,21 @@
+﻿import "dotenv/config";
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
+import mqtt from "mqtt";
+import { statSync } from "node:fs";
 import timeout from "connect-timeout";
 import helmet from "helmet";
 import compression from "compression";
-import mqtt from "mqtt";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
+import { WebSocketServer } from "ws";
+import { useServer } from "graphql-ws/use/ws";
+import { schema, rootValue } from "./routes/graphql.js";
+import { parse } from "graphql";
 
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
@@ -25,24 +32,37 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
-import { auditLogsRouter } from "./routes/auditLogs.js";
+import { analyticsRouter } from "./routes/analytics.js";
+import { graphqlRouter } from "./routes/graphql.js";
+import { delegatesRouter } from "./routes/delegates.js";
 import { startIoTBridge } from "./iot/bridge.js";
-import { startLimitWatcher } from "./iot/limitWatcher.js";import { logger } from "./lib/logger.js";
+import { startLimitWatcher } from "./iot/limitWatcher.js";
+import { logger } from "./lib/logger.js";
+import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
-import { register } from "./lib/metrics.js";
+import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
+import { tracingMiddleware } from "./middleware/tracing.js";
+import { shutdownTracing } from "./lib/tracing.js";
+import { getCircuitState } from "./lib/circuitBreaker.js";
 import {
+  countDeadLetterEvents,
+  getUsageEventPoolStatus,
   initUsageEventStore,
   startUsageEventRetryWorker,
-  countDeadLetterEvents,
 } from "./lib/usageEvents.js";
-import { initMeterNotesStore } from "./lib/meterNotes.js";
+import { initMeterNotesStore, getMeterNotesPoolStatus } from "./lib/meterNotes.js";
+import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { getReqId } from "./lib/requestContext.js";
+// Issue #696: Import idempotency cleanup for graceful shutdown
+import { _stopEvictionTimer } from "./middleware/idempotency.js";
+import { buildHealthResponse } from "./lib/health.js";
+import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 
-// ── Rate-limit config ────────────────────────────────────────────────────────
+// â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
 // imports the parsed values so there is a single source of truth shared with
 // middleware/rateLimit.ts.
@@ -53,7 +73,7 @@ import {
   RATE_LIMIT_MESSAGE,
 } from "./config/rateLimits.js";
 
-// ── Bootstrap ────────────────────────────────────────────────────────────────
+// â”€â”€ Bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const _require = createRequire(import.meta.url);
 const { version } = _require("../../package.json") as { version: string };
 
@@ -77,10 +97,25 @@ if (missing.length > 0) {
 
 const PORT = process.env.PORT ?? 3001;
 const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
+const STARTED_AT = Date.now();
 
 const app = express();
+const startTime = Date.now();
 
-// ── Security headers ─────────────────────────────────────────────────────────
+// #TRUST_PROXY: rate limiting keys off req.ip, which Express derives from
+// X-Forwarded-For only when 'trust proxy' is set. Setting it to `true`
+// (trust every hop) lets a client forge X-Forwarded-For and pick any IP it
+// likes, trivially bypassing IP-based rate limits — so we only ever trust a
+// fixed, explicit number of hops (the known reverse proxies/load balancers
+// in front of this service), never "trust all". Default 0 = no proxy in
+// front, so req.ip is always the real socket address unless explicitly
+// configured otherwise for the deployment topology.
+const TRUST_PROXY_HOPS = Number(process.env.TRUST_PROXY_HOPS ?? 0);
+app.set(
+  "trust proxy",
+  Number.isInteger(TRUST_PROXY_HOPS) && TRUST_PROXY_HOPS >= 0 ? TRUST_PROXY_HOPS : 0,
+);
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -97,19 +132,14 @@ app.use(
 // #599: gzip/brotli-compress responses over 1 KB.
 app.use(compression({ threshold: 1024 }));
 
+// â”€â”€ CORS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // ── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
-  .split(",")
-  .map((o) => o.trim());
+const allowedOrigins = parseCorsOrigins(process.env.CORS_ORIGINS);
 
 app.use(
   cors({
     origin: (origin, cb) => {
-      if (
-        !origin ||
-        allowedOrigins.includes("*") ||
-        allowedOrigins.includes(origin)
-      ) {
+      if (isCorsOriginAllowed(origin, allowedOrigins)) {
         cb(null, true);
       } else {
         cb(new Error(`Origin ${origin} not allowed by CORS`));
@@ -118,11 +148,13 @@ app.use(
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
     optionsSuccessStatus: 204,
+    maxAge: 86400,
+    preflightContinue: false,
     credentials: true,
   }),
 );
 
-// ── Body parsing ─────────────────────────────────────────────────────────────
+// â”€â”€ Body parsing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Capture raw body for webhook signature verification before JSON parsing.
 // #423: apply body size limit.
 app.use(
@@ -136,8 +168,9 @@ app.use(
 app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
 app.use(sanitiseBody);
 app.use(requestLoggerMiddleware);
+app.use(tracingMiddleware);
 
-// ── Request timeout ──────────────────────────────────────────────────────────
+// â”€â”€ Request timeout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Configurable via REQUEST_TIMEOUT env var (default 15 s).
 const requestTimeout = process.env.REQUEST_TIMEOUT ?? "15s";
 app.use(timeout(requestTimeout));
@@ -145,11 +178,37 @@ app.use((req: any, _res: any, next: any) => {
   if (!req.timedout) next();
 });
 
+// Assign/propagate a request id so every log line for a request can be
+// correlated, and callers can trace a request via the response header.
+app.use((req, res, next) => {
+  const requestId = (req.headers["x-request-id"] as string | undefined) || randomUUID();
+  res.setHeader("X-Request-Id", requestId);
+  runWithRequestId(requestId, next);
+});
+
+app.use((req, _res, next) => {
+  logger.info("Incoming request", { method: req.method, path: req.path });
+  next();
+});
+
+// ── API versioning ──────────────────────────────────────────────────────────
+// /api/v1/* is the versioned, stable surface. /api/* remains an alias to the
+// latest version (v1 today) so existing clients keep working. When a v2 ships
+// with breaking changes, mount it separately and point the /api/* alias at
+// it, while /api/v1/* keeps serving old clients until its documented sunset
+// date (see docs/API_VERSIONING.md).
+const v1Router = express.Router();
+v1Router.use("/meters", createMeterRouter(stellarService));
+v1Router.use("/payments", paymentsRouter);
+v1Router.use("/webhooks", webhookRouter);
+
+app.use("/api/v1", v1Router);
+app.use("/api", v1Router);
 app.use(requestLogger());
-// ── Rate limiters ─────────────────────────────────────────────────────────────
+// â”€â”€ Rate limiters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Env-var parsing is centralised in config/rateLimits.ts (closes #539).
 
-// Global read limiter — scoped to /api, one counter per IP (#504).
+// Global read limiter â€” scoped to /api, one counter per IP (#504).
 const globalReadLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: RATE_LIMIT_MAX,
@@ -167,9 +226,9 @@ const globalReadLimiter = rateLimit({
 // Apply global read limiter to all /api routes.
 app.use("/api", globalReadLimiter);
 
-// ── Prometheus metrics endpoint ───────────────────────────────────────────────
+// â”€â”€ Prometheus metrics endpoint â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
-// INTENTIONALLY PUBLIC — no authentication required.
+// INTENTIONALLY PUBLIC â€” no authentication required.
 //
 // Design rationale (closes #537):
 //   Prometheus's scrape model requires unauthenticated HTTP GET access to the
@@ -188,10 +247,15 @@ app.use("/api", globalReadLimiter);
 //   scrapes are never throttled by the per-IP write budget.
 app.get("/metrics", async (_req, res) => {
   res.set("Content-Type", register.contentType);
+  // #735 — surface SQLite connection-pool gauges on every Prometheus scrape.
+  updateSqlitePoolMetrics([
+    { name: "usage-events", status: getUsageEventPoolStatus() },
+    { name: "meter-notes", status: getMeterNotesPoolStatus() },
+  ]);
   res.end(await register.metrics());
 });
 
-// ── Routes ───────────────────────────────────────────────────────────────────
+// â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Swagger / OpenAPI docs
 try {
@@ -206,6 +270,7 @@ app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
+app.use("/api/delegates", writeLimiter, delegatesRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
@@ -215,48 +280,69 @@ app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
+app.use("/api/analytics", analyticsRouter);
+app.use("/api/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
-app.use("/api/usage-events", usageEventsRouter);
-// Closes #744: audit log query and export endpoints (admin-only, requires X-Admin-Key).
-app.use("/api/admin/audit-logs", writeLimiter, auditLogsRouter);
 
-// ── Health ────────────────────────────────────────────────────────────────────
+// â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 app.get("/health", async (_req, res) => {
-  const checks: Record<string, string> = {};
+  const checks: Record<string, import("./lib/health.js").DependencyCheck> = {};
 
-  let rpcOk = false;
   try {
+    const started = Date.now();
     await server.getLatestLedger();
-    checks.stellar = "ok";
+    checks.stellar_rpc = { status: "up", latency_ms: Date.now() - started };
+    checks.contract = { status: "up", last_call: new Date().toISOString() };
   } catch (err) {
     logger.error("Stellar health check failed", { err });
-    checks.stellar = "error";
+    checks.stellar_rpc = { status: "down", error: "RPC request failed" };
+    checks.contract = { status: "down", error: "Contract dependency unavailable" };
   }
 
-  const broker = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
   try {
-    const client = mqtt.connect(broker, { reconnectPeriod: 0, connectTimeout: 3000 });
-    const ok = await new Promise<boolean>((resolve) => {
+    const database = initUsageEventStore() as { prepare: (sql: string) => { get: () => unknown } };
+    database.prepare("SELECT 1").get();
+    const dbPath = process.env.USAGE_EVENTS_DB_PATH ?? "data/usage-events.sqlite";
+    const sizeMb = statSync(dbPath, { throwIfNoEntry: false })?.size;
+    checks.database = { status: "up", size_mb: sizeMb ? Number((sizeMb / 1024 / 1024).toFixed(2)) : 0 };
+    // #735 — include SQLite connection-pool health in the readiness response.
+    const usagePool = getUsageEventPoolStatus();
+    const notesPool = getMeterNotesPoolStatus();
+    checks.database_pool = {
+      status: usagePool.closed || notesPool.closed ? "down" : "up",
+      connected: !usagePool.closed && !notesPool.closed,
+      error:
+        usagePool.closed || notesPool.closed
+          ? "SQLite connection pool closed"
+          : undefined,
+    };
+  } catch (err) {
+    logger.error("Database health check failed", { err });
+    checks.database = { status: "down", error: "SQLite health check failed" };
+  }
+
+  try {
+    const client = mqtt.connect(process.env.MQTT_BROKER ?? "mqtt://localhost:1883", {
+      reconnectPeriod: 0,
+      connectTimeout: 3000,
+    });
+    const connected = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => { client.end(true); resolve(false); }, 3000);
       client.once("connect", () => { clearTimeout(timer); client.end(true); resolve(true); });
       client.once("error", () => { clearTimeout(timer); client.end(true); resolve(false); });
     });
-    checks.mqtt = ok ? "ok" : "error";
+    checks.mqtt_broker = connected ? { status: "up", connected: true } : { status: "down", connected: false };
   } catch (err) {
     logger.error("MQTT health check failed", { err });
-    checks.mqtt = "error";
+    checks.mqtt_broker = { status: "down", connected: false, error: "MQTT health check failed" };
   }
 
-  const healthy = Object.values(checks).every((v) => v === "ok");
-  res.status(healthy ? 200 : 503).json({
-    status: healthy ? "ok" : "degraded",
-    checks,
-    deadLetterEvents: countDeadLetterEvents(),
-  });
+  const result = buildHealthResponse(checks, STARTED_AT, countDeadLetterEvents());
+  res.status(result.httpStatus).json(result.body);
 });
 
-// #418: 404 catch-all — must come after all routes.
+// #418: 404 catch-all â€” must come after all routes.
 app.use((_req: Request, res: Response) => {
   res.status(404).json({
     error: "Route not found",
@@ -266,7 +352,7 @@ app.use((_req: Request, res: Response) => {
   });
 });
 
-// ── Error handlers ───────────────────────────────────────────────────────────
+// â”€â”€ Error handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 // Timeout error handler.
 app.use((err: any, req: any, res: any, next: any) => {
@@ -310,13 +396,21 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       requestId,
     });
   }
+  if ((err as any).code === "CIRCUIT_OPEN") {
+    return res.status(503).json({
+      error: err.message,
+      code: "CIRCUIT_OPEN",
+      requestId,
+    });
+  }
   res
     .status(500)
     .json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR", requestId });
 });
 
+// â”€â”€ Server startup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // ── Server startup ───────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   initMeterNotesStore();
@@ -328,3 +422,52 @@ app.listen(PORT, () => {
     logger.error("Failed to start IoT bridge", { err });
   }
 });
+
+// Issue #696: Graceful shutdown — clean up eviction timer and close server
+function gracefulShutdown(signal: string) {
+  logger.info({ signal }, "Received shutdown signal, starting graceful shutdown...");
+  _stopEvictionTimer();
+  httpServer.close(() => {
+    logger.info("Server closed gracefully");
+    process.exit(0);
+  });
+  // Force close after 10 seconds
+  setTimeout(() => {
+    logger.warn("Forcefully closing server after timeout");
+    process.exit(1);
+  }, 10_000);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+const graphqlWs = new WebSocketServer({ server: httpServer, path: "/api/graphql" });
+const graphqlCleanup = useServer({
+  schema,
+  context: ({ connectionParams }) => {
+    const params = (connectionParams ?? {}) as Record<string, unknown>;
+    return { address: typeof params.address === "string" ? params.address : undefined };
+  },
+  onSubscribe: async (_ctx, _id, msg) => {
+    const payload = msg as unknown as { query?: string; variables?: Record<string, unknown>; operationName?: string };
+    if (!payload.query) return [];
+    return { schema, document: parse(payload.query), rootValue, variableValues: payload.variables, operationName: payload.operationName };
+  },
+}, graphqlWs);
+
+function shutdown(signal: string): void {
+  logger.info({ signal }, "SolarGrid backend shutting down");
+  void graphqlCleanup.dispose();
+  graphqlWs.close();
+  httpServer.close(() => {
+    closeAllDatabases();
+  });
+
+  const forceExitTimer = setTimeout(() => {
+    closeAllDatabases();
+    process.exitCode = 1;
+  }, 10_000);
+  forceExitTimer.unref();
+}
+
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));

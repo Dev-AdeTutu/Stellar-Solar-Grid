@@ -9,6 +9,7 @@ export interface PaymentRecord {
   meterId: string;
   amountXlm: number;
   plan: string;
+  status: "Completed" | "Pending" | "Failed";
   /** Optional free-text note attached to the payment (Issue #766). */
   memo?: string;
   /** Opaque cursor identifying this record for pagination (Issue #767). */
@@ -35,14 +36,20 @@ export interface PaymentHistoryResponse {
  * that could shift out from under it. Passing the previous page's
  * `nextCursor` instead anchors each request to a specific, stable record.
  */
+export interface PaymentHistoryFilters {
+  from?: string; to?: string; min?: string; max?: string; plan?: string; status?: string; q?: string;
+}
+
 export async function getPaymentHistory(
   address: string,
   cursor?: string,
   limit = 10,
   sort: "asc" | "desc" = "desc",
+  filters: PaymentHistoryFilters = {},
 ): Promise<PaymentHistoryResponse> {
   const params = new URLSearchParams({ limit: String(limit), sort });
   if (cursor) params.set("cursor", cursor);
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
   const url = `${BACKEND_URL}/api/payments/${address}?${params.toString()}`;
   const res = await fetchWithTimeout(url);
   if (!res.ok) {
