@@ -40,6 +40,9 @@ pub enum ContractError {
     NotPaused = 23,
     /// `make_payment`'s optional memo exceeds MAX_MEMO_LEN bytes.
     MemoTooLong = 24,
+    /// A configuration value (e.g. unit price) is invalid, such as zero,
+    /// which would cause a division-by-zero panic in cost calculations (#733).
+    InvalidConfiguration = 25,
     InvalidMultisigConfiguration = 25,
     ProposalNotFound = 26,
     ProposalExpired = 27,
@@ -78,6 +81,12 @@ const PAUSED: Symbol = symbol_short!("PAUSED");
 const PAUSED_AT: Symbol = symbol_short!("PAUSE_AT");
 /// A pause automatically expires after 48 hours (Unix seconds).
 const MAX_PAUSE_DURATION: u64 = 48 * 60 * 60;
+/// Configurable price per unit (stroops per milli-kWh) used for on-chain cost
+/// calculations. Must always be > 0. If unset, this safe non-zero default is
+/// used so cost math can never divide by zero (#733).
+const DEFAULT_UNIT_PRICE: i128 = 1;
+/// Storage key for the on-chain unit price.
+const UNIT_PRICE: Symbol = symbol_short!("U_PRICE");
 const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
@@ -1095,6 +1104,18 @@ impl SolarGridContract {
         true
     }
 
+    /// Guard against a misconfigured zero unit price before any cost math runs
+    /// (Issue #733). A zero unit price could divide by zero in billing and
+    /// panic the contract, so usage-taking functions refuse to run until a
+    /// positive price is configured via [`SolarGridContract::set_unit_price`].
+    fn ensure_unit_price_valid(env: &Env) -> Result<(), ContractError> {
+        let price: i128 = env.storage().instance().get(&UNIT_PRICE).unwrap_or(DEFAULT_UNIT_PRICE);
+        if price <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        Ok(())
+    }
+
     /// Make a payment to top up a meter's balance and activate it.
     /// `amount` is in the token's smallest unit. `plan` sets the billing cycle.
     /// `memo` is an optional free-text note (e.g. "August electricity") capped
@@ -1785,6 +1806,54 @@ impl SolarGridContract {
             .unwrap_or(DEFAULT_GRACE_PERIOD)
     }
 
+    /// Set the unit price in stroops per milli-kWh (Issue #733).
+    ///
+    /// The price must always be greater than zero. A zero value would make
+    /// cost calculations divide by zero and panic the contract (denial of
+    /// service), so it is rejected here rather than being allowed to poison
+    /// the contract's billing math. Admin-only.
+    ///
+    /// Emits: `prc_set { old, new }`.
+    pub fn set_unit_price(env: Env, price: i128) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if price <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        let old = Self::get_unit_price(env.clone());
+        env.storage().instance().set(&UNIT_PRICE, &price);
+        env.events().publish((EVT_NS, symbol_short!("prc_set")), (old, price));
+        Ok(())
+    }
+
+    /// Return the current unit price (stroops per milli-kWh). When it has not
+    /// been configured, the safe non-zero default is returned so cost math can
+    /// never divide by zero (Issue #733). Internally this is never zero.
+    pub fn get_unit_price(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&UNIT_PRICE)
+            .unwrap_or(DEFAULT_UNIT_PRICE)
+    }
+
+    /// Compute the cost in stroops for `units` (milli-kWh) using the current
+    /// unit price (Issue #733).
+    ///
+    /// Cost math is defensively guarded: if the configured unit price were ever
+    /// zero (misconfiguration), the calculation returns
+    /// [`ContractError::InvalidConfiguration`] instead of dividing by zero and
+    /// panicking the contract.
+    pub fn compute_cost(env: Env, units: u64) -> Result<i128, ContractError> {
+        let price = Self::get_unit_price(env.clone());
+        if price <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        // cost = units * price / 1000 (milli-kWh -> kWh-fractional cost at the
+        // configured stroops-per-unit rate). price is verified > 0 above, so
+        // the division below can never divide by zero.
+        let units_i128 = i128::from(units);
+        Ok(units_i128.saturating_mul(price) / 1000)
+    }
+
     /// Check access status with warning details during grace period.
     pub fn check_access_status(env: Env, meter_id: String) -> Result<AccessStatus, ContractError> {
         let key = DataKey::Meter(meter_id.clone());
@@ -1862,6 +1931,9 @@ impl SolarGridContract {
         if cost < 0 {
             return Err(ContractError::InvalidAmount);
         }
+        // Defensive: never let a misconfigured zero unit price reach cost math
+        // where it could divide by zero (#733).
+        Self::ensure_unit_price_valid(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
 
@@ -2332,6 +2404,9 @@ impl SolarGridContract {
         if updates.len() > 200 {
             return Err(ContractError::BatchTooLarge);
         }
+        // Defensive: never let a misconfigured zero unit price reach cost math
+        // where it could divide by zero (#733).
+        Self::ensure_unit_price_valid(&env)?;
         let now = env.ledger().timestamp();
         let mut failed: Vec<String> = vec![&env];
         let mut processed_count: u32 = 0;
@@ -2712,6 +2787,67 @@ mod tests {
         assert!(malicious_token_client.reentry_attempted());
         assert_eq!(client.get_meter_balance(&meter_id), 1_000_i128);
         assert!(client.check_access(&meter_id));
+    }
+
+    #[test]
+    fn test_set_unit_price_rejects_zero_and_updates_cost() {
+        let (_env, client, _admin) = setup();
+
+        // Admin cannot configure a zero unit price (Issue #733).
+        assert_eq!(
+            client.try_set_unit_price(&0_i128),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
+        // Negative prices are also invalid.
+        assert_eq!(
+            client.try_set_unit_price(&-5_i128),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
+
+        // A safe non-zero default is used when no price is configured.
+        assert_eq!(client.get_unit_price(), DEFAULT_UNIT_PRICE);
+
+        // A positive price is accepted and reflected by get_unit_price.
+        assert!(client.try_set_unit_price(&250_i128).is_ok());
+        assert_eq!(client.get_unit_price(), 250);
+    }
+
+    #[test]
+    fn test_compute_cost_default_price_and_guarded_division() {
+        let (env, client, _admin) = setup();
+        setup_oracle(&env, &client);
+
+        // With the default unit price, cost math works (no division by zero).
+        assert_eq!(client.compute_cost(&2_000_u64), 2);
+
+        // Directly poison the stored unit price to zero (defense in depth:
+        // set_unit_price refuses it, but belt-and-braces guard for any path that
+        // writes it directly). compute_cost must refuse rather than divide by zero.
+        env.storage().instance().set(&UNIT_PRICE, &0_i128);
+        assert_eq!(
+            client.try_compute_cost(&2_000_u64),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
+    }
+
+    #[test]
+    fn test_zero_unit_price_poisoning_blocked_from_usage_paths() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        setup_oracle(&env, &client);
+        let meter_id = symbol_short!("B_M1");
+        register_and_fund(&env, &client, &token_address, &meter_id, 10_000_i128);
+
+        // Poison the stored unit price to zero (Issue #733). Both usage paths
+        // must refuse to run cost math instead of dividing by zero / panicking.
+        env.storage().instance().set(&UNIT_PRICE, &0_i128);
+        assert_eq!(
+            client.try_update_usage(&meter_id, &10_u64, &5_000_i128),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
+        assert_eq!(
+            client.try_batch_update_usage(&vec![&env, (meter_id.clone(), 10_u64, 5_000_i128)]),
+            Err(Ok(ContractError::InvalidConfiguration))
+        );
     }
 
     #[test]

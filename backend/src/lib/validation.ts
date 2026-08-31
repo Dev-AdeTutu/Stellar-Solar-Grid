@@ -55,6 +55,12 @@ export const UsageUpdateSchema = z
       .number()
       .int("cost must be an integer")
       .positive("cost must be positive"),
+    // Issue #731: optional monotonic ordering hints so the bridge can
+    // resequence usage events that arrive out-of-order over MQTT. `timestamp`
+    // is seconds since Unix epoch; `sequence` is an optional per-meter source
+    // counter. When neither is present the message falls back to arrival time.
+    timestamp: z.number().int().nonnegative().optional(),
+    sequence: z.number().int().nonnegative().optional(),
   })
   .strict();
 

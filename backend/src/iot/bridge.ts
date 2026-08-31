@@ -62,8 +62,7 @@ let flushIntervalHandle: ReturnType<typeof setInterval> | null = null;
 
 async function flush() {
   if (pending.length === 0) return;
-  const batch = pending.splice(0);
-  batch.sort((a, b) => a.priority - b.priority);
+  const batch = orderBatch(pending.splice(0));
   logger.info(`Flushing batch of ${batch.length} meter update(s)`);
   try {
     const hash = await adminInvoke("batch_update_usage", [encodeBatch(batch)]);
@@ -118,6 +117,36 @@ interface Reading {
   cost: number;
   /** balance/daily_limit ratio at receive time; lower = more urgent (Issue #601). */
   priority: number;
+  /** Ordering key so usage events that arrive out-of-order are resequenced
+   * before submission (Issue #731). Prefer an explicit per-meter source
+   * timestamp/counter when present; otherwise fall back to arrival time. */
+  timestamp: number;
+  sequence?: number;
+}
+
+/**
+ * Stable comparator that orders readings for on-chain submission.
+ *
+ * Issue #731: MQTT QoS 0/1 does not guarantee ordering, so a meter's usage
+ * events can arrive out of order. Cumulative unit counts must be applied in
+ * source order or the running total drifts (over/under-charging). This sort:
+ *   1. groups by meter id, then
+ *   2. orders each meter's readings by explicit `sequence`/`timestamp`.
+ * A missing timestamp/sequence keeps the reading in its received position.
+ */
+function compareReadings(a: Reading, b: Reading): number {
+  if (a.meterId !== b.meterId) {
+    return a.meterId < b.meterId ? -1 : 1;
+  }
+  const aKey = a.sequence ?? a.timestamp;
+  const bKey = b.sequence ?? b.timestamp;
+  if (aKey === bKey) return 0;
+  return aKey < bKey ? -1 : 1;
+}
+
+/** Sort a batch by meter, preserving each meter's source order (Issue #731). */
+function orderBatch(batch: Reading[]): Reading[] {
+  return [...batch].sort(compareReadings);
 }
 
 /**
@@ -401,7 +430,8 @@ function startMqttBridge() {
 
   const flush = async () => {
     if (pending.length === 0) return;
-    const batch = pending.splice(0);
+    // Issue #731: resequence out-of-order MQTT arrivals before submission.
+    const batch = orderBatch(pending.splice(0));
     logger.info(`Flushing batch of ${batch.length} meter update(s)`);
 
     // Process in fixed-size chunks so a large backlog (e.g. built up during
@@ -443,7 +473,9 @@ function startMqttBridge() {
     reconnectAttempts = 0;
     client.options.reconnectPeriod = 1000;
     logger.info(`IoT bridge connected to ${BROKER}`);
-    client.subscribe(TOPIC, (err) => {
+    // Issue #731: subscribe at QoS 2 (exactly-once, ordered) for meter usage so
+    // the broker guarantees delivery AND ordering for billing-critical data.
+    client.subscribe(TOPIC, { qos: 2 }, (err) => {
       if (err) logger.error("MQTT subscribe error", { err });
     });
   });
@@ -479,12 +511,14 @@ function startMqttBridge() {
         });
         return;
       }
-      const { units, cost } = parsed.data;
+      const { units, cost, timestamp, sequence } = parsed.data;
 
       logger.info("Usage update received from IoT bridge", {
         meterId,
         units,
         cost,
+        timestamp,
+        sequence,
       });
 
       const event = await persistAndSubmitUsageEvent({
@@ -510,11 +544,17 @@ function startMqttBridge() {
           eventId: event.id,
         });
       }
-      // Issue #601: queue for the next priority-ordered batch flush instead
-      // of submitting immediately, so near-zero-balance meters can be
-      // sequenced first within the batch.
+      // Issue #731: capture the source timestamp/sequence so queued readings
+      // can be resequenced before the batch flush. Falls back to arrival time.
       const priority = await getPriority(meterId);
-      pending.push({ meterId, units, cost, priority });
+      pending.push({
+        meterId,
+        units,
+        cost,
+        priority,
+        timestamp: timestamp ?? Math.floor(Date.now() / 1000),
+        sequence,
+      });
     } catch (err) {
       // Catch any unexpected errors from processing to ensure the bridge keeps running
       logger.error("Unhandled error in MQTT message handler", { topic, raw: payload.toString(), err });
