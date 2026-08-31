@@ -8,6 +8,7 @@ import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
 import UsageForecast from "@/components/UsageForecast";
+import EnergyInsights from "@/components/EnergyInsights";
 import { useWalletStore } from "@/store/walletStore";
 import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
@@ -30,11 +31,10 @@ function stroopsToXlm(stroops: bigint): string {
 function StatusBadge({ active }: { active: boolean }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${
-        active
-          ? "border-green-600/40 bg-green-900/30 text-green-400"
-          : "border-red-600/40 bg-red-900/30 text-red-400"
-      }`}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${active
+        ? "border-green-600/40 bg-green-900/30 text-green-400"
+        : "border-red-600/40 bg-red-900/30 text-red-400"
+        }`}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${active ? "bg-green-400" : "bg-red-400"}`} />
       {active ? "Active" : "Inactive"}
@@ -350,6 +350,9 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         history={history}
         loading={loadingHistory}
       />
+
+      {/* Energy Insights */}
+      <EnergyInsights meterId={meterId} />
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">
