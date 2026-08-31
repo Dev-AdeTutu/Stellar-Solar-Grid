@@ -58,6 +58,8 @@ Emitted when a meter ID in `batch_update_usage` is not found and skipped.
 Also emitted (with the same shape) by `batch_register_meters` for each entry
 skipped because the meter ID already exists, is duplicated within the batch,
 or the owner is not on the allowlist.
+Also emitted by `batch_deactivate_meters` for each meter that is not found
+or already inactive.
 
 #### revenue_withdrawn
 - **Topic 0:** `rev_wdrl` (symbol_short)
@@ -93,6 +95,15 @@ All event emissions are covered by unit tests:
 - `test_event_meter_deactivated_via_set_active`
 - `test_event_meter_activated_via_set_active`
 - `test_batch_update_usage_skips_invalid_meter` (includes batch_skip event)
+
+### Batch Deactivate Tests (Issue #664)
+- `test_batch_deactivate_all_active` — deactivates 3 active meters in one call
+- `test_batch_deactivate_skips_inactive` — skips already-inactive meters
+- `test_batch_deactivate_skips_nonexistent` — skips meters that don't exist
+- `test_batch_deactivate_mixed` — mix of active, inactive, and nonexistent
+- `test_batch_deactivate_empty` — empty vector returns zero counts
+- `test_batch_deactivate_too_large` — rejects batches over 50 entries
+- `test_batch_deactivate_emits_events` — verifies mtr_deact events
 
 ## Contract Upgrades & Storage Migration
 

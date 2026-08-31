@@ -363,6 +363,23 @@ pub struct MeterView {
     pub balance: i128,
 }
 
+/// Per-meter result returned by `batch_deactivate_meters`.
+#[contracttype]
+pub struct BatchDeactivateResult {
+    pub meter_id: String,
+    pub success: bool,
+    pub reason: String,
+}
+
+/// Summary returned by `batch_deactivate_meters`.
+#[contracttype]
+pub struct BatchDeactivateSummary {
+    pub total: u32,
+    pub deactivated: u32,
+    pub skipped: u32,
+    pub results: Vec<BatchDeactivateResult>,
+}
+
 // ── Event topics (contract namespace) ────────────────────────────────────────
 
 const EVT_NS: Symbol = symbol_short!("solargrid");
@@ -1933,6 +1950,93 @@ impl SolarGridContract {
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id), ());
         Ok(())
+    }
+
+
+    /// Admin-only: deactivate multiple meters in a single transaction.
+    ///
+    /// Accepts a vector of meter IDs, deactivates every meter that is
+    /// currently active, skips meters that are already inactive or do not
+    /// exist, and emits a `meter_deactivated` event for each successful
+    /// deactivation.
+    ///
+    /// Returns a [BatchDeactivateSummary] with per-meter results and
+    /// aggregate counts so the caller can distinguish successes from skips.
+    ///
+    /// Mirrors the existing `batch_update_usage` pattern (Issue #664).
+    ///
+    /// # Guards
+    /// - Caller must be the contract admin.
+    /// - Maximum batch size: 50 (matches `batch_update_usage`).
+    ///
+    /// # Emits
+    /// - `mtr_deact` for each meter successfully deactivated.
+    /// - `btch_skip` for each meter skipped (not found or already inactive).
+    pub fn batch_deactivate_meters(
+        env: Env,
+        meter_ids: Vec<String>,
+    ) -> Result<BatchDeactivateSummary, ContractError> {
+        Self::require_admin(&env)?;
+
+        let len = meter_ids.len() as u32;
+        if len > 50 {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let mut results: Vec<BatchDeactivateResult> = vec![&env];
+        let mut deactivated: u32 = 0;
+        let mut skipped: u32 = 0;
+
+        for meter_id in meter_ids.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            match env.storage().persistent().get::<DataKey, Meter>(&key) {
+                None => {
+                    // Meter does not exist - skip
+                    skipped += 1;
+                    results.push_back(BatchDeactivateResult {
+                        meter_id: meter_id.clone(),
+                        success: false,
+                        reason: String::from_str(&env, "not_found"),
+                    });
+                    env.events()
+                        .publish((EVT_NS, symbol_short!("btch_skip"), meter_id.clone()), ());
+                }
+                Some(mut meter) => {
+                    if !meter.active {
+                        // Already inactive - skip
+                        skipped += 1;
+                        results.push_back(BatchDeactivateResult {
+                            meter_id: meter_id.clone(),
+                            success: false,
+                            reason: String::from_str(&env, "inactive"),
+                        });
+                        env.events()
+                            .publish((EVT_NS, symbol_short!("btch_skip"), meter_id.clone()), ());
+                    } else {
+                        // Deactivate
+                        meter.active = false;
+                        env.storage().persistent().set(&key, &meter);
+                        deactivated += 1;
+
+                        results.push_back(BatchDeactivateResult {
+                            meter_id: meter_id.clone(),
+                            success: true,
+                            reason: String::from_str(&env, "ok"),
+                        });
+
+                        env.events()
+                            .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()), ());
+                    }
+                }
+            }
+        }
+
+        Ok(BatchDeactivateSummary {
+            total: len,
+            deactivated,
+            skipped,
+            results,
+        })
     }
 
     // ── Collaborator management ───────────────────────────────────────────────
@@ -4823,4 +4927,167 @@ mod tests {
         env.ledger().with_mut(|li| li.timestamp = dst_start_ts + SECONDS_PER_DAY);
         assert!(!client.check_access(&meter_id));
     }
+
+    // ── Issue #664: batch_deactivate_meters tests ─────────────────────────
+
+    #[test]
+    fn test_batch_deactivate_all_active() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        // Register and activate 3 meters
+        let meters = ["BDM1", "BDM2", "BDM3"];
+        for id in &meters {
+            let meter_id = String::from_str(&env, id);
+            let user = Address::generate(&env);
+            allowlist_and_register(&client, &meter_id, &user);
+            token_admin_client.mint(&user, &10_000_i128);
+            client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::Daily, &None);
+        }
+
+        let mut ids: Vec<String> = vec![&env];
+        for id in &meters {
+            ids.push_back(String::from_str(&env, id));
+        }
+
+        let summary = client.batch_deactivate_meters(&ids);
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.deactivated, 3);
+        assert_eq!(summary.skipped, 0);
+
+        // All meters should be inactive now
+        for id in &meters {
+            let meter_id = String::from_str(&env, id);
+            assert!(!client.get_meter(&meter_id).active);
+        }
+    }
+
+    #[test]
+    fn test_batch_deactivate_skips_inactive() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let meter_id1 = String::from_str(&env, "BDM_SK1");
+        let meter_id2 = String::from_str(&env, "BDM_SK2");
+
+        allowlist_and_register(&client, &meter_id1, &user1);
+        allowlist_and_register(&client, &meter_id2, &user2);
+        token_admin_client.mint(&user1, &10_000_i128);
+        token_admin_client.mint(&user2, &10_000_i128);
+        client.make_payment(&meter_id1, &user1, &10_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(&meter_id2, &user2, &10_000_i128, &PaymentPlan::Daily, &None);
+
+        // Manually deactivate M1
+        client.deactivate_meter(&meter_id1);
+
+        let mut ids: Vec<String> = vec![&env];
+        ids.push_back(meter_id1.clone());
+        ids.push_back(meter_id2.clone());
+
+        let summary = client.batch_deactivate_meters(&ids);
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.deactivated, 1);
+        assert_eq!(summary.skipped, 1);
+
+        // M1 was already inactive - should be skipped
+        let r0 = summary.results.get(0).unwrap();
+        assert!(!r0.success);
+
+        // M2 was active - should be deactivated
+        let r1 = summary.results.get(1).unwrap();
+        assert!(r1.success);
+        assert!(!client.get_meter(&meter_id2).active);
+    }
+
+    #[test]
+    fn test_batch_deactivate_skips_nonexistent() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+
+        let mut ids: Vec<String> = vec![&env];
+        ids.push_back(String::from_str(&env, "BDM_NONE"));
+
+        let summary = client.batch_deactivate_meters(&ids);
+        assert_eq!(summary.total, 1);
+        assert_eq!(summary.deactivated, 0);
+        assert_eq!(summary.skipped, 1);
+
+        let r = summary.results.get(0).unwrap();
+        assert!(!r.success);
+    }
+
+    #[test]
+    fn test_batch_deactivate_mixed() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let meter_id1 = String::from_str(&env, "BDM_MX1");
+        let meter_id2 = String::from_str(&env, "BDM_MX2");
+
+        allowlist_and_register(&client, &meter_id1, &user1);
+        allowlist_and_register(&client, &meter_id2, &user2);
+        token_admin_client.mint(&user1, &10_000_i128);
+        token_admin_client.mint(&user2, &10_000_i128);
+        client.make_payment(&meter_id1, &user1, &10_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(&meter_id2, &user2, &10_000_i128, &PaymentPlan::Daily, &None);
+
+        // Deactivate M1 so it's already inactive
+        client.deactivate_meter(&meter_id1);
+
+        let mut ids: Vec<String> = vec![&env];
+        ids.push_back(meter_id1.clone());   // inactive -> skip
+        ids.push_back(meter_id2.clone());   // active -> deactivate
+        ids.push_back(String::from_str(&env, "BDM_MX3")); // nonexistent -> skip
+
+        let summary = client.batch_deactivate_meters(&ids);
+        assert_eq!(summary.total, 3);
+        assert_eq!(summary.deactivated, 1);
+        assert_eq!(summary.skipped, 2);
+    }
+
+    #[test]
+    fn test_batch_deactivate_empty() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let ids: Vec<String> = vec![&env];
+        let summary = client.batch_deactivate_meters(&ids);
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.deactivated, 0);
+        assert_eq!(summary.skipped, 0);
+    }
+
+    #[test]
+    fn test_batch_deactivate_too_large() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let mut ids: Vec<String> = vec![&env];
+        for i in 0..51 {
+            ids.push_back(String::from_str(&env, &format!("TOO_{}", i)));
+        }
+        let result = client.try_batch_deactivate_meters(&ids);
+        assert_eq!(result, Err(Ok(ContractError::BatchTooLarge)));
+    }
+
+    #[test]
+    fn test_batch_deactivate_emits_events() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "BDM_EVT");
+        allowlist_and_register(&client, &meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::Daily, &None);
+
+        let mut ids: Vec<String> = vec![&env];
+        ids.push_back(meter_id);
+
+        client.batch_deactivate_meters(&ids);
+
+        // Verify events were emitted - the contract should have mtr_deact events
+        let meter = client.get_meter(&String::from_str(&env, "BDM_EVT"));
+        assert!(!meter.active);
+    }
+
 }
