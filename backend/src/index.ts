@@ -422,6 +422,7 @@ const httpServer = app.listen(PORT, () => {
   initUsageEventStore();
   initMeterNotesStore();
   startUsageEventRetryWorker();
+  startUsageCompactionWorker();
   startLimitWatcher(stellarService);
   try {
     startIoTBridge();

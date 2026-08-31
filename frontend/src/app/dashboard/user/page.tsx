@@ -18,6 +18,7 @@ import {
 } from "@/services/pushService";
 import { env } from "@/lib/env";
 import { formatXLM } from "@/lib/format";
+import PaymentSchedule from "@/components/PaymentSchedule";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
@@ -454,62 +455,10 @@ function MeterCard({
         <UsageChart data={history} loading={loadingHistory} meterId={meterId} />
       </div>
 
-      {/* Tags (Issue #732) */}
-      {onAddTag && onRemoveTag && (
-        <div className="border-t border-white/10 pt-3 space-y-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Tags:</span>
-            {(tags ?? []).length === 0 ? (
-              <span className="text-xs text-gray-600">none</span>
-            ) : (
-              (tags ?? []).map((tag) => (
-                <span
-                  key={tag}
-                  className="inline-flex items-center gap-1 rounded-full border border-solar-yellow/40 bg-solar-yellow/10 px-2 py-0.5 text-xs text-solar-yellow"
-                >
-                  #{tag}
-                  <button
-                    type="button"
-                    onClick={() => onRemoveTag(meterId, tag)}
-                    className="text-gray-400 hover:text-red-400 transition"
-                    aria-label={`Remove tag ${tag}`}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={tempTag}
-              maxLength={20}
-              onChange={(e) => setTempTag(e.target.value.replace(/\s+/g, "-"))}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && tempTag.trim()) {
-                  onAddTag(meterId, tempTag.trim().toLowerCase().slice(0, 20));
-                  setTempTag("");
-                }
-              }}
-              placeholder="Add a tag…"
-              className="flex-1 rounded border border-white/20 bg-solar-dark px-2.5 py-1 text-xs text-white placeholder-gray-500 focus:border-solar-yellow focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={() => {
-                if (tempTag.trim()) {
-                  onAddTag(meterId, tempTag.trim().toLowerCase().slice(0, 20));
-                  setTempTag("");
-                }
-              }}
-              className="rounded border border-white/20 px-2.5 py-1 text-xs text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
-            >
-              Add
-            </button>
-          </div>
-        </div>
-      )}
+      {/* Payment Schedule — closes #746 */}
+      <div className="pt-4 border-t border-white/10">
+        <PaymentSchedule meterId={meterId} />
+      </div>
 
       {/* Actions */}
       <div className="flex gap-2 pt-1">
@@ -822,6 +771,7 @@ export default function UserDashboardPage() {
   // first load — no double-fetch on first render.
   const pollBalances = useCallback(async () => {
     if (!address || meterIds.length === 0) return;
+    let anyChanged = false;
     for (const id of meterIds) {
       try {
         const res = await fetch(`${API}/api/meters/${id}/balance`);
@@ -830,13 +780,26 @@ export default function UserDashboardPage() {
         setMeters((prev) => {
           const existing = prev[id];
           if (!existing) return prev;
+          const nextBal = BigInt(data.balance ?? existing.balance);
+          const nextUnits = data.units_used ?? existing.units_used;
+          const nextActive = data.active ?? existing.active;
+
+          if (
+            existing.balance === nextBal &&
+            existing.units_used === nextUnits &&
+            existing.active === nextActive
+          ) {
+            return prev;
+          }
+
+          anyChanged = true;
           return {
             ...prev,
             [id]: {
               ...existing,
-              balance: BigInt(data.balance ?? existing.balance),
-              units_used: data.units_used ?? existing.units_used,
-              active: data.active ?? existing.active,
+              balance: nextBal,
+              units_used: nextUnits,
+              active: nextActive,
             },
           };
         });
@@ -852,7 +815,9 @@ export default function UserDashboardPage() {
         // Silently skip — full refresh will recover on next interval
       }
     }
-    setLastRefresh(new Date());
+    if (anyChanged) {
+      setLastRefresh(new Date());
+    }
   }, [address, meterIds]);
 
   // Pause polling when address is gone or no meters loaded yet

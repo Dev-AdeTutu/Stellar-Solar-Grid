@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 extern crate alloc;
 
 use soroban_sdk::{
@@ -60,7 +61,6 @@ const METER_LIST: Symbol = symbol_short!("MLIST");
 const METER_COUNT: Symbol = symbol_short!("MCNT");
 const COLLABS: Symbol = symbol_short!("COLLABS");
 const SHARES: Symbol = symbol_short!("SHARES");
-const PENDING_ADMIN: Symbol = symbol_short!("PADMIN");
 const FROZEN: Symbol = symbol_short!("FROZEN");
 const REENTRANCY: Symbol = symbol_short!("REENTR");
 const CONTRACT_VERSION: Symbol = symbol_short!("CTR_VER");
@@ -70,6 +70,9 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_WEEK: u64 = 604_800;
 /// Max length (bytes) of the optional memo accepted by `make_payment` (Issue #766).
 const MAX_MEMO_LEN: u32 = 100;
+/// Maximum payment duration in seconds (10 years). Closes #745.
+/// Prevents timestamp overflow by capping extremely large durations.
+const MAX_PAYMENT_DURATION_SECS: u64 = 10 * 365 * SECONDS_PER_DAY;
 /// Max total i128 refunded across all recipients per rolling window; 0 = unlimited.
 const REFUND_LIMIT: Symbol = symbol_short!("RFND_LIM");
 const REFUND_WINDOW: Symbol = symbol_short!("RFND_WIN");
@@ -173,11 +176,11 @@ pub struct Meter {
     pub active: bool,
     pub units_used: u64, // kWh * 1000 (milli-kWh for precision)
     pub plan: PaymentPlan,
-    pub last_payment: u64, // ledger timestamp
-    pub expires_at: u64,   // ledger timestamp when access expires
-    pub daily_limit: i128, // max stroops deductible per day; 0 = unlimited
-    pub day_spent: i128,   // stroops spent in the current 24-hour window
-    pub day_start: u64,    // timestamp when the current window started
+    pub last_payment: u64,             // ledger timestamp
+    pub expires_at: u64,               // ledger timestamp when access expires
+    pub daily_limit: i128,             // max stroops deductible per day; 0 = unlimited
+    pub day_spent: i128,               // stroops spent in the current 24-hour window
+    pub day_start: u64,                // timestamp when the current window started
     pub grace_expires_at: Option<u64>, // Timestamp when grace period ends
     /// Optional read-only contact to notify when the balance is critically low.
     pub emergency_contact: Option<Address>,
@@ -305,6 +308,38 @@ fn migrate_meter_v3(env: &Env, old: LegacyMeterV3) -> Meter {
         grace_expires_at: old.grace_expires_at,
         emergency_contact: old.emergency_contact,
         metadata: Map::new(env),
+    }
+}
+
+pub const DAILY_PLAN_COST: i128 = 1_000_000;
+pub const WEEKLY_PLAN_COST: i128 = 5_000_000;
+
+/// Calculate service duration in seconds for a given payment amount and plan.
+/// Pro-rates duration for partial or custom payment amounts (Issue #751):
+/// - Daily: 1 XLM (1,000,000 stroops) = 86,400 seconds (1 day)
+/// - Weekly: 5 XLM (5,000,000 stroops) = 604,800 seconds (7 days), e.g. 1 XLM = 1.4 days (120,960s)
+/// - UsageBased: u64::MAX (no time expiry)
+pub fn calculate_prorated_duration(amount: i128, plan: &PaymentPlan) -> u64 {
+    if amount <= 0 {
+        return 0;
+    }
+    match plan {
+        PaymentPlan::Daily => {
+            let secs = ((amount as u128).saturating_mul(SECONDS_PER_DAY as u128))
+                / (DAILY_PLAN_COST as u128);
+            (secs as u64).max(1)
+        }
+        PaymentPlan::Weekly => {
+            let secs = ((amount as u128).saturating_mul(SECONDS_PER_WEEK as u128))
+                / (WEEKLY_PLAN_COST as u128);
+            (secs as u64).max(1)
+        }
+        PaymentPlan::Monthly => {
+            let secs = ((amount as u128).saturating_mul((30 * SECONDS_PER_DAY) as u128))
+                / ((30 * DAILY_PLAN_COST) as u128);
+            (secs as u64).max(1)
+        }
+        PaymentPlan::UsageBased => u64::MAX,
     }
 }
 
@@ -568,10 +603,8 @@ impl SolarGridContract {
                 || env.storage().persistent().has(&key)
                 || !allowlist.contains(&owner)
             {
-                env.events().publish(
-                    (symbol_short!("btch_skip"), EVT_NS, meter_id.clone()),
-                    (),
-                );
+                env.events()
+                    .publish((symbol_short!("btch_skip"), EVT_NS, meter_id.clone()), ());
                 results.push_back(false);
                 continue;
             }
@@ -690,7 +723,9 @@ impl SolarGridContract {
                 filtered_global_list.push_back(id);
             }
         }
-        env.storage().instance().set(&METER_LIST, &filtered_global_list);
+        env.storage()
+            .instance()
+            .set(&METER_LIST, &filtered_global_list);
 
         let count: u32 = env.storage().instance().get(&METER_COUNT).unwrap_or(0);
         env.storage()
@@ -837,7 +872,7 @@ impl SolarGridContract {
             .get(&METER_LIST)
             .unwrap_or_else(|| vec![&env]);
 
-        let total = meter_ids.len() as u32;
+        let total = meter_ids.len();
 
         // Return empty Vec if offset exceeds meter count
         if offset >= total {
@@ -1062,10 +1097,8 @@ impl SolarGridContract {
         if now.saturating_sub(paused_at) >= MAX_PAUSE_DURATION {
             env.storage().instance().remove(&PAUSED);
             env.storage().instance().remove(&PAUSED_AT);
-            env.events().publish(
-                (EVT_NS, Symbol::new(env, "contract_unpaused")),
-                (now, true),
-            );
+            env.events()
+                .publish((EVT_NS, Symbol::new(env, "contract_unpaused")), (now, true));
             return false;
         }
         true
@@ -1124,9 +1157,27 @@ impl SolarGridContract {
 
         // ── EFFECTS ─────────────────────────────────────────────────────────
         let key = DataKey::Meter(meter_id.clone());
-        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        let mut meter = Self::get_meter_or_error(env, &key)?;
         let now = env.ledger().timestamp();
-        let expires_at = now.saturating_add(plan_duration_secs(&plan));
+
+        // Closes #745: use checked arithmetic for all timestamp calculations to
+        // prevent overflow on edge-case durations. For UsageBased (no time expiry),
+        // the sentinel value u64::MAX is used directly. For timed plans, cap the
+        // duration to MAX_PAYMENT_DURATION_SECS (10 years) and require that
+        // `now + duration` does not overflow u64.
+        let expires_at = match plan_duration_secs(&plan) {
+            None => {
+                // UsageBased: no time expiry — use max sentinel value
+                u64::MAX
+            }
+            Some(duration) => {
+                if duration > MAX_PAYMENT_DURATION_SECS {
+                    return Err(ContractError::PaymentDurationTooLarge);
+                }
+                now.checked_add(duration)
+                    .ok_or(ContractError::TimestampOverflow)?
+            }
+        };
 
         // Track per-meter balance in contract storage
         let bal_key = DataKey::MeterBalance(meter_id.clone());
@@ -1152,7 +1203,7 @@ impl SolarGridContract {
         env.storage().persistent().set(&key, &meter);
 
         // Track provider (admin) accrued revenue
-        let admin = Self::get_admin(&env)?;
+        let admin = Self::get_admin(env)?;
         let provider_key = DataKey::ProviderRevenue(admin);
         let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
         env.storage()
@@ -1181,6 +1232,12 @@ impl SolarGridContract {
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_actv"), meter_id), ());
         Ok(())
+    }
+
+    /// Calculate service duration in seconds given payment amount and plan.
+    /// Pro-rated calculation allowing partial/incremental payments (Issue #751).
+    pub fn calculate_service_duration(_env: Env, amount: i128, plan: PaymentPlan) -> u64 {
+        calculate_prorated_duration(amount, &plan)
     }
 
     /// Refund a previous payment. Admin-only.
@@ -1242,14 +1299,14 @@ impl SolarGridContract {
         let refund_limit: i128 = env.storage().instance().get(&REFUND_LIMIT).unwrap_or(0);
         let now = env.ledger().timestamp();
         if refund_limit > 0 {
-            let mut window: RefundWindow = env
-                .storage()
-                .instance()
-                .get(&REFUND_WINDOW)
-                .unwrap_or(RefundWindow {
-                    window_start: now,
-                    window_spent: 0,
-                });
+            let mut window: RefundWindow =
+                env.storage()
+                    .instance()
+                    .get(&REFUND_WINDOW)
+                    .unwrap_or(RefundWindow {
+                        window_start: now,
+                        window_spent: 0,
+                    });
             if now.saturating_sub(window.window_start) > SECONDS_PER_DAY {
                 window.window_start = now;
                 window.window_spent = 0;
@@ -1285,9 +1342,10 @@ impl SolarGridContract {
         let admin = Self::get_admin(&env)?;
         let provider_key = DataKey::ProviderRevenue(admin);
         let provider_revenue: i128 = env.storage().persistent().get(&provider_key).unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&provider_key, &provider_revenue.saturating_sub(amount).max(0));
+        env.storage().persistent().set(
+            &provider_key,
+            &provider_revenue.saturating_sub(amount).max(0),
+        );
 
         env.storage()
             .persistent()
@@ -1314,10 +1372,8 @@ impl SolarGridContract {
         }
         let old_limit: i128 = env.storage().instance().get(&REFUND_LIMIT).unwrap_or(0);
         env.storage().instance().set(&REFUND_LIMIT, &limit);
-        env.events().publish(
-            (EVT_NS, symbol_short!("rfnd_lim")),
-            (old_limit, limit),
-        );
+        env.events()
+            .publish((EVT_NS, symbol_short!("rfnd_lim")), (old_limit, limit));
         Ok(())
     }
 
@@ -2190,7 +2246,7 @@ impl SolarGridContract {
         Ok(payouts)
     }
 
-    // ── Emergency / admin controls ───────────────────────────────────────────
+    // ── Emergency / admin controls (Closes #686) ─────────────────────────────
 
     /// Drain all contract-held token balance to a recovery address. Admin-only.
     /// The contract must be frozen first via `freeze_contract`; returns
@@ -2226,6 +2282,12 @@ impl SolarGridContract {
         }
 
         Ok(())
+    }
+
+    /// Inspect the currently pending emergency-withdrawal announcement, if
+    /// any (amount, recipient, and when it was announced).
+    pub fn get_pending_emergency_withdrawal(env: Env) -> Option<EmergencyWithdrawal> {
+        env.storage().instance().get(&EMRG_WD)
     }
 
     /// Manually expire a meter before its natural expiry. Admin-only.
@@ -2325,12 +2387,11 @@ impl SolarGridContract {
         Ok(())
     }
 
-    /// Batch update usage for multiple meters in a single transaction.
     /// Batch update usage for multiple meters.
     /// Returns a Vec of failed meter IDs (empty Vec means all succeeded).
     /// Failed IDs can be due to meter not found or other validation errors.
     /// Skips invalid meter IDs and emits a batch_skip event for each.
-    /// Maximum batch size is 50 meters.
+    /// Maximum batch size is 200 meters (Issue #754).
     pub fn batch_update_usage(
         env: Env,
         updates: Vec<(String, u64, i128)>,
@@ -2340,7 +2401,7 @@ impl SolarGridContract {
         if oracle.is_none() {
             return Err(ContractError::OracleNotSet);
         }
-        if updates.len() > 50 {
+        if updates.len() > 200 {
             return Err(ContractError::BatchTooLarge);
         }
         // Defensive: never let a misconfigured zero unit price reach cost math
@@ -2348,6 +2409,9 @@ impl SolarGridContract {
         Self::ensure_unit_price_valid(&env)?;
         let now = env.ledger().timestamp();
         let mut failed: Vec<String> = vec![&env];
+        let mut processed_count: u32 = 0;
+        let mut total_units: u64 = 0;
+        let mut total_cost: i128 = 0;
 
         for (meter_id, units, cost) in updates.iter() {
             let key = DataKey::Meter(meter_id.clone());
@@ -2362,6 +2426,10 @@ impl SolarGridContract {
             match Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now) {
                 Ok(deactivated) => {
                     env.storage().persistent().set(&key, &meter);
+                    processed_count = processed_count.saturating_add(1);
+                    total_units = total_units.saturating_add(units);
+                    total_cost = total_cost.saturating_add(cost);
+
                     env.events().publish(
                         (EVT_NS, symbol_short!("usg_upd"), meter_id.clone()),
                         (units, cost),
@@ -2378,6 +2446,13 @@ impl SolarGridContract {
                 }
             }
         }
+
+        // Summary event is compact (4 simple integers, well below 256 bytes)
+        env.events().publish(
+            (EVT_NS, symbol_short!("btch_done")),
+            (processed_count, failed.len(), total_units, total_cost),
+        );
+
         Ok(failed)
     }
 
@@ -2426,8 +2501,13 @@ impl SolarGridContract {
                 deactivated = true;
             } else {
                 if meter.grace_expires_at.is_none() {
+                    // Closes #745: use checked_add for grace period timestamp to
+                    // prevent overflow if grace_period is set to an extreme value.
+                    let grace_exp = now
+                        .checked_add(grace_period)
+                        .unwrap_or(u64::MAX);
                     // Start grace period without compounding
-                    meter.grace_expires_at = Some(now.saturating_add(grace_period));
+                    meter.grace_expires_at = Some(grace_exp);
                     deactivated = false;
                 } else if let Some(grace_exp) = meter.grace_expires_at {
                     if now >= grace_exp {
@@ -2439,7 +2519,12 @@ impl SolarGridContract {
                 } else {
                     meter.active = false;
                     deactivated = true;
+                } else {
+                    deactivated = false;
                 }
+            } else {
+                meter.active = false;
+                deactivated = true;
             }
         } else {
             meter.grace_expires_at = None;
@@ -2533,8 +2618,8 @@ impl SolarGridContract {
 
 #[cfg(test)]
 mod tests {
-    use alloc::string::ToString;
     use super::*;
+    use alloc::string::ToString;
     use soroban_sdk::{
         symbol_short,
         testutils::{Address as _, Events, Ledger},
@@ -2560,7 +2645,11 @@ mod tests {
     }
 
     /// Helper: allowlist + register a meter in one call.
-    fn allowlist_and_register(client: &SolarGridContractClient, meter_id: impl ToString, user: &Address) {
+    fn allowlist_and_register(
+        client: &SolarGridContractClient,
+        meter_id: impl ToString,
+        user: &Address,
+    ) {
         let env = Env::default();
         let meter_id = String::from_str(&env, &meter_id.to_string());
         client.allowlist_add(user);
@@ -2614,7 +2703,13 @@ mod tests {
         assert!(!client.check_access(&meter_id));
 
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &5_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
         assert!(client.check_access(&meter_id));
         assert_eq!(token_client.balance(&user), 0);
 
@@ -2811,7 +2906,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         client.update_usage(&meter_id, &50_u64, &4_000_000_i128);
         assert_eq!(client.get_meter_balance(&meter_id), 6_000_000);
@@ -2874,7 +2975,13 @@ mod tests {
         assert!(!client.check_access(&meter_id));
 
         token_admin_client.mint(&user, &2_000_000_i128);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Weekly, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &2_000_000_i128,
+            &PaymentPlan::Weekly,
+            &None,
+        );
         assert!(client.check_access(&meter_id));
 
         client.update_usage(&meter_id, &10_u64, &2_000_000_i128);
@@ -2895,7 +3002,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &2_000_000_i128);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &2_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
         assert!(client.check_access(&meter_id));
 
         let meter = client.get_meter(&meter_id);
@@ -2915,7 +3028,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Weekly, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &5_000_000_i128,
+            &PaymentPlan::Weekly,
+            &None,
+        );
         assert!(client.check_access(&meter_id));
 
         let meter = client.get_meter(&meter_id);
@@ -2935,7 +3054,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at, u64::MAX);
@@ -2954,13 +3079,25 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &4_000_000_i128);
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &2_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
 
         let meter = client.get_meter(&meter_id);
         env.ledger().with_mut(|li| li.timestamp = meter.expires_at);
         assert!(!client.check_access(&meter_id));
 
-        client.make_payment(&meter_id, &user, &2_000_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &2_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
         assert!(client.check_access(&meter_id));
 
         let renewed = client.get_meter(&meter_id);
@@ -3028,7 +3165,13 @@ mod tests {
         allowlist_and_register(&client, meter_id.clone(), &user);
 
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &5_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
 
         assert_eq!(client.get_provider_revenue(&admin), 5_000_000_i128);
         assert_eq!(token_client.balance(&client.address), 5_000_000_i128);
@@ -3096,7 +3239,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &5_000_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &5_000_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         client.update_usage(&meter_id, &1_u64, &5_000_000_i128);
         assert_eq!(
@@ -3152,7 +3301,13 @@ mod tests {
 
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_000_i128, &PaymentPlan::Daily, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
 
         let events = env.events().all();
         let has_pmt = events.iter().any(|(_, topics, _)| {
@@ -3783,15 +3938,33 @@ mod tests {
 
         allowlist_and_register(&client, meter_valid1.clone(), &user1);
         token_admin_client.mint(&user1, &5_000_i128);
-        client.make_payment(&meter_valid1, &user1, &5_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_valid1,
+            &user1,
+            &5_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         allowlist_and_register(&client, meter_valid2.clone(), &user2);
         token_admin_client.mint(&user2, &5_000_i128);
-        client.make_payment(&meter_valid2, &user2, &5_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_valid2,
+            &user2,
+            &5_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         allowlist_and_register(&client, meter_valid3.clone(), &user3);
         token_admin_client.mint(&user3, &1_000_i128);
-        client.make_payment(&meter_valid3, &user3, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_valid3,
+            &user3,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // Deactivate the third valid meter
         client.deactivate_meter(&meter_valid3);
@@ -3870,7 +4043,13 @@ mod tests {
         let meter_id = symbol_short!("ORC_NS");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let result = client.try_update_usage(&meter_id, &10_u64, &100_i128);
         assert_eq!(result, Err(Ok(ContractError::OracleNotSet)));
@@ -3886,7 +4065,13 @@ mod tests {
         let meter_id = symbol_short!("ORC_OK");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         client.update_usage(&meter_id, &5_u64, &200_i128);
         assert_eq!(client.get_meter_balance(&meter_id), 800);
@@ -4165,7 +4350,13 @@ mod tests {
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &1_000_i128);
 
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
         let meter = client.get_meter(&meter_id);
         assert_eq!(meter.expires_at, u64::MAX);
     }
@@ -4183,7 +4374,13 @@ mod tests {
         let meter_id = symbol_short!("DL_HIT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // Set daily limit to 500 stroops.
         client.set_daily_limit(&meter_id, &500_i128);
@@ -4207,7 +4404,13 @@ mod tests {
         let meter_id = symbol_short!("DL_EVT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
         client.set_daily_limit(&meter_id, &500_i128);
 
         let result = client.try_update_usage(&meter_id, &1_u64, &600_i128);
@@ -4234,7 +4437,13 @@ mod tests {
         let meter_id = symbol_short!("DL_RST");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         client.set_daily_limit(&meter_id, &500_i128);
 
@@ -4263,7 +4472,13 @@ mod tests {
         let meter_id = symbol_short!("DL_UNL");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &100_000_i128);
-        client.make_payment(&meter_id, &user, &100_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &100_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // daily_limit defaults to 0 (unlimited) — large repeated costs must succeed.
         client.update_usage(&meter_id, &1_u64, &40_000_i128);
@@ -4285,7 +4500,13 @@ mod tests {
         let meter_id = symbol_short!("UA_DEACT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // Meter is now active
         assert!(client.check_access(&meter_id));
@@ -4315,13 +4536,25 @@ mod tests {
         let meter_id1 = String::from_slice(&env, "BM1".as_bytes());
         allowlist_and_register(&client, meter_id1.clone(), &user1);
         token_admin_client.mint(&user1, &10_000_i128);
-        client.make_payment(&meter_id1, &user1, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id1,
+            &user1,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let user2 = Address::generate(&env);
         let meter_id2 = String::from_slice(&env, "BM2".as_bytes());
         allowlist_and_register(&client, meter_id2.clone(), &user2);
         token_admin_client.mint(&user2, &10_000_i128);
-        client.make_payment(&meter_id2, &user2, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id2,
+            &user2,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // Deactivate the first meter
         client.deactivate_meter(&meter_id1);
@@ -4358,7 +4591,13 @@ mod tests {
         let meter_id = symbol_short!("DL_DEACT");
         allowlist_and_register(&client, meter_id.clone(), &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // Set a daily limit
         client.set_daily_limit(&meter_id, &500_i128);
@@ -4541,38 +4780,322 @@ mod tests {
         assert_eq!(result, Err(Ok(ContractError::CollaboratorNotFound)));
     }
 
-    // ── Issue #415: freeze_contract / emergency_withdraw ──────────────────────
+    // ── Issue #415 / #686: freeze_contract / emergency_withdraw ────────────────
 
-    #[test]
-    fn test_emergency_withdraw_transfers_full_balance() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        let token_client = token::Client::new(&env, &token_address);
-
-        token_admin_client.mint(&client.address, &1_000_i128);
-        client.freeze_contract();
-
-        let recipient = Address::generate(&env);
-        client.emergency_withdraw(&recipient);
-
-        assert_eq!(token_client.balance(&recipient), 1_000);
-        assert_eq!(token_client.balance(&client.address), 0);
+    /// Helper: register a meter and pay into it so TOTAL_REVENUE (and the
+    /// contract's token balance) is populated the same way real funds
+    /// arrive, rather than minting directly to the contract address.
+    fn accrue_revenue_via_payment(
+        env: &Env,
+        client: &SolarGridContractClient,
+        token_address: &Address,
+        amount: i128,
+    ) {
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        let user = Address::generate(env);
+        let meter_id = String::from_str(env, "EMRGMTR");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &amount);
+        client.make_payment(&meter_id, &user, &amount, &PaymentPlan::UsageBased);
     }
 
     #[test]
-    fn test_emergency_withdraw_noop_when_balance_zero() {
-        let (env, client, _admin, _token_address) = setup_with_token();
+    fn test_emergency_withdraw_announce_then_execute_after_timelock() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_client = token::Client::new(&env, &token_address);
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
         client.freeze_contract();
+
         let recipient = Address::generate(&env);
-        client.emergency_withdraw(&recipient);
+
+        // First call announces — no funds move yet.
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        assert_eq!(token_client.balance(&recipient), 0);
+        let pending = client.get_pending_emergency_withdrawal().unwrap();
+        assert_eq!(pending.amount, 1_000_i128);
+        assert_eq!(pending.recipient, recipient);
+
+        // Too early — timelock hasn't elapsed.
+        let result = client.try_emergency_withdraw(&1_000_i128, &recipient);
+        assert_eq!(result, Err(Ok(ContractError::TimelockNotElapsed)));
+
+        // Warp past the 48h timelock, then execute with the same args.
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS + 1);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+
+        assert_eq!(token_client.balance(&recipient), 1_000);
+        assert_eq!(token_client.balance(&client.address), 0);
+        assert!(client.get_pending_emergency_withdrawal().is_none());
     }
 
     #[test]
     fn test_emergency_withdraw_requires_frozen() {
-        let (env, client, _admin, _token_address) = setup_with_token();
+        let (env, client, _admin, token_address) = setup_with_token();
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
         let recipient = Address::generate(&env);
-        let result = client.try_emergency_withdraw(&recipient);
+        let result = client.try_emergency_withdraw(&1_000_i128, &recipient);
         assert_eq!(result, Err(Ok(ContractError::ContractNotFrozen)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_capped_at_total_revenue() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.freeze_contract();
+
+        let recipient = Address::generate(&env);
+        // Only 1,000 has ever been collected — asking for more is rejected
+        // even though nothing has stopped someone minting extra tokens
+        // directly to the contract address.
+        let result = client.try_emergency_withdraw(&1_001_i128, &recipient);
+        assert_eq!(result, Err(Ok(ContractError::AmountExceedsRevenue)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_capped_at_current_balance_if_lower() {
+        // Revenue was collected but some of it already left the contract
+        // (e.g. via withdraw_revenue) — execution should never try to
+        // transfer more than the contract actually holds.
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_client = token::Client::new(&env, &token_address);
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.withdraw_revenue(&admin, &400_i128);
+        assert_eq!(token_client.balance(&client.address), 600);
+
+        client.freeze_contract();
+        let recipient = Address::generate(&env);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS + 1);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+
+        assert_eq!(token_client.balance(&recipient), 600);
+        assert_eq!(token_client.balance(&client.address), 0);
+    }
+
+    #[test]
+    fn test_cancel_emergency_withdrawal() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_client = token::Client::new(&env, &token_address);
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.freeze_contract();
+
+        let recipient = Address::generate(&env);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        assert!(client.get_pending_emergency_withdrawal().is_some());
+
+        client.cancel_emergency_withdrawal();
+        assert!(client.get_pending_emergency_withdrawal().is_none());
+
+        // Even after warping past the timelock, there's nothing to execute —
+        // a fresh call just re-announces instead of transferring funds.
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS + 1);
+        client.emergency_withdraw(&1_000_i128, &recipient);
+        assert_eq!(token_client.balance(&recipient), 0);
+        assert!(client.get_pending_emergency_withdrawal().is_some());
+    }
+
+    #[test]
+    fn test_cancel_emergency_withdrawal_requires_pending() {
+        let (_env, client, _admin, _token_address) = setup_with_token();
+        let result = client.try_cancel_emergency_withdrawal();
+        assert_eq!(result, Err(Ok(ContractError::NoWithdrawalAnnounced)));
+    }
+
+    #[test]
+    fn test_emergency_withdraw_reannounce_restarts_timelock() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        accrue_revenue_via_payment(&env, &client, &token_address, 1_000_i128);
+        client.freeze_contract();
+
+        let recipient_a = Address::generate(&env);
+        let recipient_b = Address::generate(&env);
+        client.emergency_withdraw(&500_i128, &recipient_a);
+
+        env.ledger()
+            .with_mut(|li| li.timestamp += EMERGENCY_WITHDRAWAL_TIMELOCK_SECS - 10);
+        // Different recipient before the first timelock elapsed — replaces
+        // the announcement and restarts the clock rather than executing.
+        client.emergency_withdraw(&500_i128, &recipient_b);
+        let pending = client.get_pending_emergency_withdrawal().unwrap();
+        assert_eq!(pending.recipient, recipient_b);
+
+        let result = client.try_emergency_withdraw(&500_i128, &recipient_b);
+        assert_eq!(result, Err(Ok(ContractError::TimelockNotElapsed)));
+    }
+
+    // ── Issue #687: promotional discount codes ─────────────────────────────────
+
+    #[test]
+    fn test_admin_create_and_get_discount() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let code = String::from_str(&env, "WELCOME20");
+        client.admin_create_discount(&code, &20_u32, &0_u64, &0_u32);
+
+        let discount = client.get_discount(&code);
+        assert_eq!(discount.discount_pct, 20);
+        assert_eq!(discount.uses, 0);
+        assert!(discount.active);
+        assert!(client.is_discount_valid(&code));
+    }
+
+    #[test]
+    fn test_admin_create_discount_rejects_invalid_percent() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let code = String::from_str(&env, "BAD");
+        let result = client.try_admin_create_discount(&code, &0_u32, &0_u64, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::InvalidDiscountPercent)));
+        let result = client.try_admin_create_discount(&code, &101_u32, &0_u64, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::InvalidDiscountPercent)));
+    }
+
+    #[test]
+    fn test_admin_create_discount_rejects_duplicate_code() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let code = String::from_str(&env, "DUPE");
+        client.admin_create_discount(&code, &10_u32, &0_u64, &0_u32);
+        let result = client.try_admin_create_discount(&code, &15_u32, &0_u64, &0_u32);
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeAlreadyExists)));
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_applies_percent_off() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let token_client = token::Client::new(&env, &token_address);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+
+        let code = String::from_str(&env, "WELCOME20");
+        client.admin_create_discount(&code, &20_u32, &0_u64, &0_u32);
+
+        token_admin_client.mint(&user, &1_000_i128);
+        let charged = client.make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+
+        // 20% off 1,000 = 800 actually charged.
+        assert_eq!(charged, 800);
+        assert_eq!(token_client.balance(&user), 200);
+        assert_eq!(token_client.balance(&client.address), 800);
+        assert_eq!(client.get_meter_balance(&meter_id), 800);
+        assert!(client.check_access(&meter_id));
+
+        let discount = client.get_discount(&code);
+        assert_eq!(discount.uses, 1);
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_unknown_code() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR2");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let code = String::from_str(&env, "NOPE");
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeNotFound)));
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_respects_max_uses() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR3");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &10_000_i128);
+
+        let code = String::from_str(&env, "ONEUSE");
+        client.admin_create_discount(&code, &10_u32, &0_u64, &1_u32);
+
+        client.make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeExhausted)));
+    }
+
+    #[test]
+    fn test_make_payment_with_discount_respects_expiry() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR4");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let now = env.ledger().timestamp();
+        let code = String::from_str(&env, "EXPIRED");
+        client.admin_create_discount(&code, &10_u32, &now, &0_u32);
+
+        env.ledger().with_mut(|li| li.timestamp = now + 1);
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeExpired)));
+        assert!(!client.is_discount_valid(&code));
+    }
+
+    #[test]
+    fn test_admin_revoke_discount() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "DISCMTR5");
+        client.allowlist_add(&user);
+        client.register_meter(&meter_id, &user);
+        token_admin_client.mint(&user, &1_000_i128);
+
+        let code = String::from_str(&env, "REVOKED");
+        client.admin_create_discount(&code, &10_u32, &0_u64, &0_u32);
+        client.admin_revoke_discount(&code);
+        assert!(!client.is_discount_valid(&code));
+
+        let result = client.try_make_payment_with_discount(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &code,
+        );
+        assert_eq!(result, Err(Ok(ContractError::DiscountCodeInactive)));
     }
 
     // ── Issue #417: expire_meter ──────────────────────────────────────────────
@@ -4622,7 +5145,8 @@ mod tests {
 
         assert_eq!(
             env.events().all(),
-            vec![&env,
+            vec![
+                &env,
                 (
                     client.address.clone(),
                     (EVT_NS, symbol_short!("mtr_actv"), meter_id.clone()).into_val(&env),
@@ -4649,7 +5173,8 @@ mod tests {
 
         assert_eq!(
             env.events().all(),
-            vec![&env,
+            vec![
+                &env,
                 (
                     client.address.clone(),
                     (EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()).into_val(&env),
@@ -4676,7 +5201,8 @@ mod tests {
 
         assert_eq!(
             env.events().all(),
-            vec![&env,
+            vec![
+                &env,
                 (
                     client.address.clone(),
                     (EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()).into_val(&env),
@@ -4697,7 +5223,8 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
 
         client.freeze_contract();
-        let result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
+        let result =
+            client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         assert_eq!(result, Err(Ok(ContractError::ContractFrozen)));
     }
 
@@ -4731,7 +5258,8 @@ mod tests {
 
         // Freeze: payment blocked
         client.freeze_contract();
-        let frozen_result = client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
+        let frozen_result =
+            client.try_make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Daily, &None);
         assert_eq!(frozen_result, Err(Ok(ContractError::ContractFrozen)));
 
         // Unfreeze: payment succeeds
@@ -4758,7 +5286,10 @@ mod tests {
         let has_plan_chg_yet = events_before.iter().any(|(_, topics, _)| {
             topics.len() >= 2 && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("plan_chg"))
         });
-        assert!(!has_plan_chg_yet, "plan_chg should not fire when plan is unchanged");
+        assert!(
+            !has_plan_chg_yet,
+            "plan_chg should not fire when plan is unchanged"
+        );
 
         // Switch to Weekly — should emit plan_chg.
         client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::Weekly, &None);
@@ -4783,7 +5314,13 @@ mod tests {
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &10_000_i128);
 
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
         assert_eq!(client.get_meter_balance(&meter_id), 10_000);
 
         let reason = String::from_str(&env, "duplicate payment");
@@ -4802,15 +5339,20 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND2");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &5_000_i128);
-        client.make_payment(&meter_id, &user, &5_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &5_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let reason = String::from_str(&env, "billing error");
         client.refund_payment(&meter_id, &1_000_i128, &user, &reason);
 
         let events = env.events().all();
         let found = events.iter().any(|(_, topics, _)| {
-            topics.len() >= 2
-                && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("pmt_rfnd"))
+            topics.len() >= 2 && sym_eq(&env, &topics.get(1).unwrap(), symbol_short!("pmt_rfnd"))
         });
         assert!(found, "pmt_rfnd event not emitted");
     }
@@ -4823,7 +5365,13 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND3");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let reason = String::from_str(&env, "abuse attempt");
         let result = client.try_refund_payment(&meter_id, &1_001_i128, &user, &reason);
@@ -4838,7 +5386,13 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND4");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let reason = String::from_str(&env, "partial refund");
         client.refund_payment(&meter_id, &600_i128, &user, &reason);
@@ -4855,7 +5409,13 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND5");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // A recipient who never paid towards this meter has nothing refundable,
         // regardless of the contract's overall token balance.
@@ -4873,7 +5433,13 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND6");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         let reason = String::from_str(&env, "n/a");
         let result = client.try_refund_payment(&meter_id, &0_i128, &user, &reason);
@@ -4888,7 +5454,13 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND7");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &10_000_i128);
-        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &10_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
 
         // Cap total refunds to 500 stroops per 24h window.
         client.set_refund_limit(&500_i128);
@@ -4916,7 +5488,13 @@ mod tests {
         let meter_id = String::from_str(&env, "RFND8");
         allowlist_and_register(&client, &meter_id, &user);
         token_admin_client.mint(&user, &1_000_i128);
-        client.make_payment(&meter_id, &user, &1_000_i128, &PaymentPlan::UsageBased, &None);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_i128,
+            &PaymentPlan::UsageBased,
+            &None,
+        );
         assert!(client.get_meter(&meter_id).active);
 
         let reason = String::from_str(&env, "full refund");
@@ -4948,15 +5526,144 @@ mod tests {
         assert_eq!(meter.expires_at, dst_start_ts + SECONDS_PER_DAY);
 
         // At 23 hours elapsed (1741478400), access must remain active
-        env.ledger().with_mut(|li| li.timestamp = dst_start_ts + 23 * 3600);
+        env.ledger()
+            .with_mut(|li| li.timestamp = dst_start_ts + 23 * 3600);
         assert!(client.check_access(&meter_id));
 
         // At 23 hours and 59 minutes (1741481940), access must remain active
-        env.ledger().with_mut(|li| li.timestamp = dst_start_ts + 86340);
+        env.ledger()
+            .with_mut(|li| li.timestamp = dst_start_ts + 86340);
         assert!(client.check_access(&meter_id));
 
         // At exactly 24 hours elapsed (1741482000), access expires
-        env.ledger().with_mut(|li| li.timestamp = dst_start_ts + SECONDS_PER_DAY);
+        env.ledger()
+            .with_mut(|li| li.timestamp = dst_start_ts + SECONDS_PER_DAY);
         assert!(!client.check_access(&meter_id));
+    }
+
+    // ── Issue #751: Partial payments and incremental service extension ────────
+
+    #[test]
+    fn test_partial_payment_prorated_daily() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_PARTIAL_DAY");
+        allowlist_and_register(&client, &meter_id, &user);
+
+        // 0.5 XLM = 500_000 stroops -> exactly 43,200 seconds (0.5 days)
+        token_admin_client.mint(&user, &500_000_i128);
+        client.make_payment(&meter_id, &user, &500_000_i128, &PaymentPlan::Daily, &None);
+
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.balance, 500_000);
+        assert!(meter.active);
+        assert_eq!(meter.expires_at, env.ledger().timestamp() + 43_200);
+        assert_eq!(
+            client.calculate_service_duration(&500_000_i128, &PaymentPlan::Daily),
+            43_200
+        );
+    }
+
+    #[test]
+    fn test_partial_payment_prorated_weekly() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_PARTIAL_WK");
+        allowlist_and_register(&client, &meter_id, &user);
+
+        // 1 XLM = 1_000_000 stroops on weekly plan (5 XLM nominal) -> exactly 1.4 days = 120,960 seconds
+        token_admin_client.mint(&user, &1_000_000_i128);
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_000_i128,
+            &PaymentPlan::Weekly,
+            &None,
+        );
+
+        let meter = client.get_meter(&meter_id);
+        assert_eq!(meter.balance, 1_000_000);
+        assert!(meter.active);
+        assert_eq!(meter.expires_at, env.ledger().timestamp() + 120_960);
+        assert_eq!(
+            client.calculate_service_duration(&1_000_000_i128, &PaymentPlan::Weekly),
+            120_960
+        );
+    }
+
+    #[test]
+    fn test_incremental_service_extension_on_consecutive_payments() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "MTR_INCR_EXT");
+        allowlist_and_register(&client, &meter_id, &user);
+
+        token_admin_client.mint(&user, &2_000_000_i128);
+        let start_time = env.ledger().timestamp();
+
+        // First payment: 1 XLM on daily plan -> expires at start_time + 86400
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
+        let m1 = client.get_meter(&meter_id);
+        assert_eq!(m1.expires_at, start_time + SECONDS_PER_DAY);
+
+        // Advance time by 10,000 seconds (still active)
+        env.ledger()
+            .with_mut(|li| li.timestamp = start_time + 10_000);
+
+        // Second payment: 1 XLM on daily plan -> extends existing expiry by another 86400 seconds!
+        client.make_payment(
+            &meter_id,
+            &user,
+            &1_000_000_i128,
+            &PaymentPlan::Daily,
+            &None,
+        );
+        let m2 = client.get_meter(&meter_id);
+        assert_eq!(m2.expires_at, start_time + 2 * SECONDS_PER_DAY);
+    }
+
+    // ── Issue #754: Large batch operations with 150 meters ────────────────────
+
+    #[test]
+    fn test_batch_update_usage_with_150_meters_succeeds() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+
+        let oracle = Address::generate(&env);
+        client.set_oracle(&oracle);
+
+        let mut updates = vec![&env];
+        for i in 0..150 {
+            let meter_id = String::from_str(&env, "MTR_BATCH_150");
+            let mut id_bytes = [b'M', b'T', b'R', b'_', b'0', b'0', b'0'];
+            id_bytes[4] = b'0' + ((i / 100) % 10) as u8;
+            id_bytes[5] = b'0' + ((i / 10) % 10) as u8;
+            id_bytes[6] = b'0' + (i % 10) as u8;
+            let m_id = String::from_bytes(&env, &id_bytes);
+
+            let user = Address::generate(&env);
+            client.allowlist_add(&user);
+            client.register_meter(&m_id, &user);
+            token_admin_client.mint(&user, &10_000_i128);
+            client.make_payment(&m_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+
+            updates.push_back((m_id, 10_u64, 100_i128));
+        }
+
+        assert_eq!(updates.len(), 150);
+        let failed = client.batch_update_usage(&updates);
+        assert_eq!(failed.len(), 0);
     }
 }

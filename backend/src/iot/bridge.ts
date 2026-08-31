@@ -9,7 +9,6 @@
  */
 
 import mqtt from "mqtt";
-import * as crypto from "crypto";
 import { logger } from "../lib/logger.js";
 import {
   persistAndSubmitUsageEvent,
@@ -186,9 +185,10 @@ async function checkAndNotifyLowBalance(meterId: string) {
   // Read fresh each call — /api/webhooks/low-balance may register a URL
   // after this module was first loaded.
   const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
-  if (!webhookUrl) return;
   const urls = getWebhookUrls();
-  if (urls.size === 0) return;
+  // Nothing to notify: neither the legacy single-URL env var nor any
+  // provider registered via the webhook registry.
+  if (!webhookUrl && urls.size === 0) return;
 
   try {
     const result = await contractQuery("get_meter", [
@@ -247,13 +247,16 @@ async function checkAndNotifyLowBalance(meterId: string) {
         headers["X-SolarGrid-Signature"] = `sha256=${signature}`;
       }
 
-      await fetch(webhookUrl, {
-        method: "POST",
-        headers,
-        body,
-      });
+        await fetch(webhookUrl, {
+          method: "POST",
+          headers,
+          body,
+        });
+      }
 
-      // Fire webhooks with automatic retry
+      // Fire webhooks registered via the webhook registry — each is signed
+      // with its own secret (or WEBHOOK_SECRET) inside fireWebhook, and
+      // retried automatically on failure.
       await Promise.all(
         [...urls].map((url) => fireWebhook(url, body)),
       );
