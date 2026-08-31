@@ -17,6 +17,10 @@ declare module "better-sqlite3" {
     pragma(source: string): unknown;
     exec(source: string): this;
     prepare(source: string): Statement;
+    close(): void;
+    readonly open: boolean;
+    transaction<T extends (...args: never[]) => unknown>(fn: T): T;
+    backup(destinationFile: string): Promise<void>;
   }
 
   export = Database;

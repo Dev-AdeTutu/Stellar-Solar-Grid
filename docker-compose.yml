@@ -88,6 +88,22 @@ services:
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       - prometheus
+
+  # #763 — Jaeger accepts OTLP/HTTP directly (1.35+), so the backend's
+  # OTEL_EXPORTER_OTLP_ENDPOINT can point straight at it with no collector
+  # in between. UI at http://localhost:16686.
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    profiles:
+      - observability
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686" # Web UI
+      - "4318:4318" # OTLP/HTTP receiver
+    networks:
+      - app-network
+
   frontend:
     build:
       context: ./frontend

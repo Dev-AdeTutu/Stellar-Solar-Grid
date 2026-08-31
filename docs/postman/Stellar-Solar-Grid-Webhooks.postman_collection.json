@@ -1,0 +1,232 @@
+{
+  "info": {
+    "name": "Stellar Solar Grid - Webhooks",
+    "_postman_id": "webhook-collection-001",
+    "description": "Test webhook signatures and endpoints for Stellar Solar Grid",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Low Balance Webhook",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Generate HMAC-SHA256 signature for webhook",
+              "const CryptoJS = require('crypto-js');",
+              "",
+              "const secret = pm.environment.get('WEBHOOK_SECRET');",
+              "if (!secret) {",
+              "    console.error('WEBHOOK_SECRET environment variable not set');",
+              "    return;",
+              "}",
+              "",
+              "const payload = pm.request.body.raw;",
+              "",
+              "// Calculate HMAC-SHA256",
+              "const hash = CryptoJS.HmacSHA256(payload, secret);",
+              "const signature = `sha256=${hash.toString(CryptoJS.enc.Hex)}`;",
+              "",
+              "// Set header",
+              "pm.request.headers.upsert({",
+              "    key: 'X-Webhook-Signature',",
+              "    value: signature",
+              "});",
+              "",
+              "console.log('Generated signature:', signature);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"event\": \"low_balance\",\n  \"meter_id\": \"METER_123\",\n  \"balance\": 50000000,\n  \"threshold\": 100000000,\n  \"owner\": \"GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX\",\n  \"timestamp\": \"{{$isoTimestamp}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/webhooks/low-balance",
+          "host": ["{{BASE_URL}}"],
+          "path": ["webhooks", "low-balance"]
+        },
+        "description": "Test low balance webhook with automatic signature generation"
+      },
+      "response": []
+    },
+    {
+      "name": "Payment Webhook (SMS Provider)",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "exec": [
+              "// Generate HMAC-SHA256 signature for SMS payment webhook",
+              "const CryptoJS = require('crypto-js');",
+              "",
+              "const secret = pm.environment.get('TELECOM_WEBHOOK_SECRET');",
+              "if (!secret) {",
+              "    console.error('TELECOM_WEBHOOK_SECRET environment variable not set');",
+              "    return;",
+              "}",
+              "",
+              "const payload = pm.request.body.raw;",
+              "",
+              "// Calculate HMAC-SHA256",
+              "const hash = CryptoJS.HmacSHA256(payload, secret);",
+              "const signature = `sha256=${hash.toString(CryptoJS.enc.Hex)}`;",
+              "",
+              "// Set header",
+              "pm.request.headers.upsert({",
+              "    key: 'X-Webhook-Signature',",
+              "    value: signature",
+              "});",
+              "",
+              "console.log('Generated signature:', signature);"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"meter_id\": \"METER_123\",\n  \"amount_xlm\": 50,\n  \"plan\": \"Daily\",\n  \"transaction_id\": \"SMS-{{$randomInt}}\",\n  \"timestamp\": \"{{$isoTimestamp}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/webhooks/sms-payment",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "webhooks", "sms-payment"]
+        },
+        "description": "Test SMS payment webhook with signature verification"
+      },
+      "response": []
+    },
+    {
+      "name": "Register Webhook",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          },
+          {
+            "key": "X-Admin-Key",
+            "value": "{{ADMIN_API_KEY}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"webhook_url\": \"https://yourdomain.com/webhooks/low-balance\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/webhooks/low-balance",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "webhooks", "low-balance"]
+        },
+        "description": "Register a new webhook endpoint"
+      },
+      "response": []
+    },
+    {
+      "name": "List Webhooks",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Admin-Key",
+            "value": "{{ADMIN_API_KEY}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/webhooks",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "webhooks"]
+        },
+        "description": "List all registered webhooks"
+      },
+      "response": []
+    },
+    {
+      "name": "Get Webhook Deliveries",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Admin-Key",
+            "value": "{{ADMIN_API_KEY}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/webhooks/:id/deliveries",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "webhooks", ":id", "deliveries"],
+          "variable": [
+            {
+              "key": "id",
+              "value": "1",
+              "description": "Webhook ID"
+            }
+          ]
+        },
+        "description": "Get delivery history for a webhook"
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global pre-request script",
+          "pm.environment.set('timestamp', new Date().toISOString());"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:3001",
+      "type": "string"
+    }
+  ]
+}

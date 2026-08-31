@@ -1,10 +1,12 @@
 import { Router } from "express";
+import { publishRealtime } from "../lib/realtime.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { idempotency } from "../middleware/idempotency.js";
+import { sendPaymentWebhook, stroopsToXlm } from "../lib/paymentWebhook.js";
 
 export const paymentsRouter = Router();
 
@@ -34,6 +36,51 @@ function cleanExpiredIdempotencyKeys() {
   }
 }
 
+/**
+ * Helper function to get meter balance (Issue #692).
+ * Queries the contract for the current balance of a meter.
+ */
+async function getMeterBalance(meterId: string): Promise<number> {
+  try {
+    const result = await stellarService.query("get_meter_balance", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    if (typeof result === "bigint" || typeof result === "number") {
+      return Number(result);
+    }
+    return 0;
+  } catch (err: any) {
+    logger.warn("Failed to get meter balance for webhook", {
+      meterId,
+      error: err.message,
+    });
+    return 0;
+  }
+}
+
+/**
+ * Helper function to get meter plan (Issue #692).
+ * Queries the contract for the meter's payment plan.
+ */
+async function getMeterPlan(meterId: string): Promise<string> {
+  try {
+    const result = await stellarService.query("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    // Extract plan from meter struct if available
+    if (result && typeof result === "object" && "plan" in result) {
+      return result.plan || "Daily";
+    }
+    return "Daily"; // fallback
+  } catch (err: any) {
+    logger.warn("Failed to get meter plan for webhook", {
+      meterId,
+      error: err.message,
+    });
+    return "Daily"; // fallback
+  }
+}
+
 paymentsRouter.post(
   "/",
   idempotency(),
@@ -60,6 +107,31 @@ paymentsRouter.post(
       memoScVal,
     ]);
 
+    // Issue #692: Send webhook notification for successful payment
+    // Fire async webhook in background without blocking response
+    (async () => {
+      try {
+        const balance = await getMeterBalance(meterId);
+        const plan = await getMeterPlan(meterId);
+
+        await sendPaymentWebhook({
+          meter_id: meterId,
+          payer_address: payer,
+          amount,
+          amount_xlm: stroopsToXlm(amount),
+          plan_type: plan,
+          transaction_hash: hash,
+          timestamp: new Date().toISOString(),
+          updated_balance: balance,
+        });
+      } catch (err: any) {
+        logger.error("Failed to send payment webhook", {
+          meterId,
+          hash,
+          error: err.message,
+        });
+      }
+    })();
 
     return res.json({ hash });
   }),
@@ -78,6 +150,7 @@ export interface PaymentRecord {
   meterId: string;
   amountXlm: number;
   plan: string;
+  status: "Completed" | "Pending" | "Failed";
   /** Optional free-text note attached to the payment (Issue #766). */
   memo?: string;
   /**
@@ -119,6 +192,13 @@ paymentsRouter.get(
     const days = Math.min(90, Math.max(1, parseInt((req.query.days as string) ?? "30", 10)));
     const rawCursor = req.query.cursor;
     const cursor = typeof rawCursor === "string" && rawCursor.length > 0 ? rawCursor : undefined;
+    const from = req.query.from ? new Date(`${req.query.from}T00:00:00Z`).getTime() : undefined;
+    const to = req.query.to ? new Date(`${req.query.to}T23:59:59.999Z`).getTime() : undefined;
+    const min = req.query.min ? Number(req.query.min) : undefined;
+    const max = req.query.max ? Number(req.query.max) : undefined;
+    const plan = typeof req.query.plan === "string" && req.query.plan !== "All" ? req.query.plan : undefined;
+    const status = typeof req.query.status === "string" && req.query.status !== "All" ? req.query.status : undefined;
+    const query = typeof req.query.q === "string" ? req.query.q.toLowerCase() : undefined;
 
     try {
       StellarSdk.StrKey.decodeEd25519PublicKey(address);
@@ -127,7 +207,13 @@ paymentsRouter.get(
     }
 
     try {
-      const records = await fetchPaymentEvents(address, sort, days);
+      const records = (await fetchPaymentEvents(address, sort, days)).filter((record) => {
+        const timestamp = new Date(record.date).getTime();
+        const matchesPlan = !plan || record.plan === plan || (plan === "Usage" && record.plan === "UsageBased");
+        const matchesStatus = !status || record.status === status;
+        const haystack = `${record.txHash} ${record.meterId}`.toLowerCase();
+        return (!from || timestamp >= from) && (!to || timestamp <= to) && (min === undefined || record.amountXlm >= min) && (max === undefined || record.amountXlm <= max) && matchesPlan && matchesStatus && (!query || haystack.includes(query));
+      });
 
       // Seek to the record immediately after the cursor. A cursor that no
       // longer matches anything (e.g. it aged out of the `days` window)
@@ -162,7 +248,10 @@ paymentsRouter.get(
  *
  * Returns payment history for a given address with optional date range filtering.
  * from/to are UNIX timestamps converted to ledger numbers.
- * limit is capped at 200 per page.
+ * limit is capped at 100 per page (Issue #747 — a caller requesting a huge
+ * page size on an account with thousands of transactions was forcing the
+ * full result set to be serialized to JSON in one response, causing
+ * multi-second responses and, at large enough volumes, OOM crashes).
  * address must be a valid 56-char Stellar public key.
  */
 paymentsRouter.get(
@@ -184,7 +273,7 @@ paymentsRouter.get(
 
     const from = req.query.from ? Number(req.query.from) : undefined;
     const to = req.query.to ? Number(req.query.to) : undefined;
-    const limit = Math.min(200, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
+    const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
     const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
 
     // Validate timestamps
@@ -398,15 +487,19 @@ function parsePaymentEvent(
     ? new Date(event.ledgerClosedAt).toISOString()
     : new Date().toISOString();
 
-  return {
-    txHash: event.txHash ?? event.id ?? "",
+  const txHash = event.txHash ?? event.id ?? "";
+  const record: PaymentRecord = {
+    txHash,
     date,
     meterId,
     amountXlm,
     plan,
+    status: "Completed",
     ...(memo ? { memo } : {}),
-    cursor: event.pagingToken ?? event.id ?? `${date}:${event.txHash ?? ""}`,
+    cursor: event.pagingToken ?? event.id ?? `${date}:${meterId}`,
   };
+  publishRealtime({ type: "paymentConfirmed", key: filterAddress, payload: { ...record, address: filterAddress, confirmedAt: date } });
+  return record;
 }
 
 // suppress unused import warning — horizonServer reserved for fallback

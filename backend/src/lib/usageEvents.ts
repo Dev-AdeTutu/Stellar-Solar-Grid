@@ -1,11 +1,12 @@
-import fs from "node:fs";
 import path from "node:path";
-import zlib from "node:zlib";
-import Database from "better-sqlite3";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { logger } from "./logger.js";
-import { deadLetterEvents, usageEvents, usageEventsCompacted, usageEventsArchived } from "./metrics.js";
+import { deadLetterEvents, usageEvents } from "./metrics.js";
+import { registerDatabase } from "./databaseLifecycle.js";
+import { getUTCTimestampDaysAgo } from "./dateUtils.js";
+import { SqlitePool, type SqlitePoolStatus } from "./sqlitePool.js";
+import type Database from "better-sqlite3";
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -57,18 +58,25 @@ type CreateUsageEventInput = {
   sourceTopic?: string | null;
 };
 
-// Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
-// such that the instance type loses its namespace-declared methods at this call site.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = openDatabase() as any;
-let retryTimer: NodeJS.Timeout | undefined;
-let retryInFlight = false;
-const activeSubmissionIds = new Set<number>();
+// ── #735: connection pooling ─────────────────────────────────────────────────
+// Previously every usage-event operation shared a single module-level handle,
+// and transient workflows (the IoT bridge submit loop) opened/closed fresh
+// connections per operation. We now route all access through a bounded pool:
+//   - reads use the long-lived primary handle (stable for prepared/ETag cache);
+//   - writes borrow a pooled connection via withConnection() so the bridge's
+//     submit loop reuses warm handles instead of re-opening per event;
+//   - min/max, idle eviction and acquire timeouts bound resource usage;
+//   - status is exposed for health checks / Prometheus (metrics endpoint).
+const pool = new SqlitePool({
+  filename: DB_PATH,
+  min: Number(process.env.USAGE_EVENTS_POOL_MIN ?? 2),
+  max: Number(process.env.USAGE_EVENTS_POOL_MAX ?? 10),
+  idleTimeout: Number(process.env.SQLITE_POOL_IDLE_TIMEOUT_MS ?? 30_000),
+  acquireTimeout: Number(process.env.SQLITE_POOL_ACQUIRE_TIMEOUT_MS ?? 10_000),
+  onOpen: applyUsageEventSchema,
+});
 
-function openDatabase() {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const database = new Database(DB_PATH);
-  database.pragma("journal_mode = WAL");
+function applyUsageEventSchema(database: Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS kv (
       key   TEXT PRIMARY KEY,
@@ -115,47 +123,80 @@ function openDatabase() {
     CREATE INDEX IF NOT EXISTS idx_usage_summary_meter_date
       ON usage_summary (meter_id, date DESC);
   `);
-  return database;
+}
+
+registerDatabase("usage-events", () => {
+  pool.drain();
+});
+let retryTimer: NodeJS.Timeout | undefined;
+let retryInFlight = false;
+const activeSubmissionIds = new Set<number>();
+
+/** Warm the primary connection so the schema bootstraps at startup. */
+pool.warm();
+
+/**
+ * Read-path accessor. Returns the stable primary handle used by the paginated
+ * and read-only APIs so ETag/prepared caching stays consistent.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function db(): any {
+  return pool.primaryDb();
 }
 
 export function initUsageEventStore() {
-  return db;
+  return pool.primaryDb();
+}
+
+/** Close the usage-event store during graceful application shutdown. */
+export function closeUsageEventStore(): void {
+  if (retryTimer) {
+    clearInterval(retryTimer);
+    retryTimer = undefined;
+  }
+  pool.drain();
+}
+
+/** Expose pool status for health checks / monitoring (#735). */
+export function getUsageEventPoolStatus(): SqlitePoolStatus {
+  return pool.status();
 }
 
 export function getKV(key: string): string | null {
-  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
+  const row = db().prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
   return row?.value ?? null;
 }
 
 export function setKV(key: string, value: string) {
-  db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
+  db().prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
   const receivedAt = new Date().toISOString();
-  const statement = db.prepare(`
-    INSERT INTO usage_events (
-      meter_id,
-      units,
-      cost,
-      received_at,
-      source_topic,
-      status,
-      attempt_count
-    ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
-  `);
-
-  const result = statement.run(
-    input.meterId,
-    input.units,
-    String(input.cost),
-    receivedAt,
-    input.sourceTopic ?? null
-  );
+  const id = pool.withConnection((database) => {
+    const statement = database.prepare(`
+      INSERT INTO usage_events (
+        meter_id,
+        units,
+        cost,
+        received_at,
+        source_topic,
+        status,
+        attempt_count
+      ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
+    `);
+    return statement.run(
+      input.meterId,
+      input.units,
+      String(input.cost),
+      receivedAt,
+      input.sourceTopic ?? null,
+    ).lastInsertRowid;
+  });
 
   usageEvents.inc({ status: "pending" });
 
-  return getUsageEventById(Number(result.lastInsertRowid))!;
+  return getUsageEventById(Number(id))!;
 }
 
 export function getUsageHistory(
@@ -171,14 +212,14 @@ export function getUsageHistory(
 } {
   const offset = (page - 1) * pageSize;
 
-  const events = db
+  const events = db()
     .prepare(
       "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
       "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
     )
     .all(meterId, pageSize, offset) as UsageEventRecord[];
 
-  const { count } = db
+  const { count } = db()
     .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
     .get(meterId) as { count: number };
 
@@ -192,7 +233,7 @@ export function getUsageHistory(
 }
 
 export function getTypicalWeeklyUsageStroops(meterId: string): number {
-  const row = db
+  const row = db()
     .prepare(
       `
         SELECT COALESCE(SUM(CAST(cost AS INTEGER)), 0) as weekly_cost
@@ -226,40 +267,42 @@ export function insertSubmittedUsageEvents(
   txHash: string,
 ) {
   const now = new Date().toISOString();
-  const stmt = db.prepare(
-    `
-      INSERT INTO usage_events (
-        meter_id,
-        units,
-        cost,
-        received_at,
-        source_topic,
-        status,
-        attempt_count,
-        last_attempt_at,
-        on_chain_tx_hash,
-        submitted_at
-      ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
-    `,
-  );
+  pool.withConnection((database) => {
+    const stmt = database.prepare(
+      `
+        INSERT INTO usage_events (
+          meter_id,
+          units,
+          cost,
+          received_at,
+          source_topic,
+          status,
+          attempt_count,
+          last_attempt_at,
+          on_chain_tx_hash,
+          submitted_at
+        ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
+      `,
+    );
 
-  const insert = db.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
-    for (const r of rows) {
-      stmt.run(
-        r.meterId,
-        r.units,
-        String(r.cost),
-        now,
-        r.sourceTopic ?? null,
-        now,
-        txHash,
-        now,
-      );
-      usageEvents.inc({ status: "submitted" });
-    }
+    const insert = database.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
+      for (const r of rows) {
+        stmt.run(
+          r.meterId,
+          r.units,
+          String(r.cost),
+          now,
+          r.sourceTopic ?? null,
+          now,
+          txHash,
+          now,
+        );
+        usageEvents.inc({ status: "submitted" });
+      }
+    });
+
+    insert(readings);
   });
-
-  insert(readings);
 }
 
 export function startUsageEventRetryWorker() {
@@ -289,7 +332,7 @@ export async function retryQueuedUsageEvents() {
 
   retryInFlight = true;
   try {
-    const queued = db
+    const queued = db()
       .prepare(
         `
           SELECT id
@@ -318,8 +361,11 @@ export type TopConsumer = {
 
 /** Top consumers by total units used over the last `days` days. */
 export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const rows = db
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const sinceTimestamp = getUTCTimestampDaysAgo(days);
+  const since = new Date(sinceTimestamp).toISOString();
+
+  const rows = db()
     .prepare(
       `
         SELECT meter_id AS meterId, SUM(units) AS totalUnits
@@ -340,9 +386,7 @@ export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
 }
 
 function getUsageEventById(id: number): UsageEventRecord | undefined {
-  return db
-    .prepare("SELECT * FROM usage_events WHERE id = ?")
-    .get(id) as UsageEventRecord | undefined;
+  return db().prepare("SELECT * FROM usage_events WHERE id = ?").get(id) as UsageEventRecord | undefined;
 }
 
 async function submitUsageEvent(id: number) {
@@ -365,18 +409,22 @@ async function submitUsageEvent(id: number) {
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = 'submitted',
-            attempt_count = attempt_count + 1,
-            last_attempt_at = ?,
-            last_error = NULL,
-            on_chain_tx_hash = ?,
-            submitted_at = ?
-        WHERE id = ?
-      `
-    ).run(attemptedAt, hash, attemptedAt, id);
+    pool.withConnection((database) => {
+      database
+        .prepare(
+          `
+            UPDATE usage_events
+            SET status = 'submitted',
+                attempt_count = attempt_count + 1,
+                last_attempt_at = ?,
+                last_error = NULL,
+                on_chain_tx_hash = ?,
+                submitted_at = ?
+            WHERE id = ?
+          `
+        )
+        .run(attemptedAt, hash, attemptedAt, id);
+    });
 
     usageEvents.inc({ status: "submitted" });
 
@@ -396,23 +444,27 @@ async function submitUsageEvent(id: number) {
       deadLetterEvents.inc({ meter_id: event.meter_id });
     }
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = ?,
-            attempt_count = ?,
-            last_attempt_at = ?,
-            last_error = ?,
-            on_chain_tx_hash = NULL
-        WHERE id = ?
-      `
-    ).run(
-      finalStatus,
-      nextAttemptCount,
-      attemptedAt,
-      error instanceof Error ? error.message : String(error),
-      id
-    );
+    pool.withConnection((database) => {
+      database
+        .prepare(
+          `
+            UPDATE usage_events
+            SET status = ?,
+                attempt_count = ?,
+                last_attempt_at = ?,
+                last_error = ?,
+                on_chain_tx_hash = NULL
+            WHERE id = ?
+          `
+        )
+        .run(
+          finalStatus,
+          nextAttemptCount,
+          attemptedAt,
+          error instanceof Error ? error.message : String(error),
+          id,
+        );
+    });
 
     usageEvents.inc({ status: finalStatus });
 
@@ -430,7 +482,7 @@ export function getDeadLetterEvents(
   limit = 50,
   offset = 0,
 ): { events: UsageEventRecord[]; total: number } {
-  const events = db
+  const events = db()
     .prepare(
       `SELECT * FROM usage_events
        WHERE status = 'failed'
@@ -439,7 +491,7 @@ export function getDeadLetterEvents(
     )
     .all(limit, offset) as UsageEventRecord[];
 
-  const { count } = db
+  const { count } = db()
     .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
     .get() as { count: number };
 
@@ -455,14 +507,18 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
   const event = getUsageEventById(id);
   if (!event || event.status !== 'failed') return undefined;
 
-  db.prepare(
-    `UPDATE usage_events
-     SET status = 'pending',
-         attempt_count = 0,
-         last_error = NULL,
-         last_attempt_at = NULL
-     WHERE id = ?`,
-  ).run(id);
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `UPDATE usage_events
+         SET status = 'pending',
+             attempt_count = 0,
+             last_error = NULL,
+             last_attempt_at = NULL
+         WHERE id = ?`,
+      )
+      .run(id);
+  });
 
   logger.info({ eventId: id, meterId: event.meter_id }, 'Dead-lettered event requeued for retry');
   return getUsageEventById(id);
@@ -470,11 +526,16 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
 
 /** Purge submitted events older than N days. Returns deleted row count. */
 export function purgeSubmittedUsageEvents(olderThanDays: number): number {
-  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
-  const result = db
-    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
-    .run(cutoff);
-  return result.changes;
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const cutoffTimestamp = getUTCTimestampDaysAgo(olderThanDays);
+  const cutoff = new Date(cutoffTimestamp).toISOString();
+
+  return pool.withConnection((database) => {
+    const result = database
+      .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+      .run(cutoff);
+    return result.changes;
+  });
 }
 
 export type UsageCompactionResult = {
@@ -672,7 +733,7 @@ export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined
 
 /** Count of events currently in dead-letter state (used by /health). */
 export function countDeadLetterEvents(): number {
-  const row = db
+  const row = db()
     .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
     .get() as { count: number };
   return row.count;

@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { logger } from "./logger.js";
 import { webhookDeliveries, webhookDeliveryFailures } from "./metrics.js";
 import { getReqId } from "./requestContext.js";
-import { SIGNATURE_HEADER, signWebhookPayload, generateWebhookSecret } from "./webhookSignature.js";
+import { registerDatabase } from "./databaseLifecycle.js";
 
 const DB_PATH =
   process.env.WEBHOOKS_DB_PATH ??
@@ -152,7 +152,16 @@ function openDatabase() {
     database.exec("ALTER TABLE webhooks ADD COLUMN secret TEXT");
   }
 
+  registerDatabase("webhooks", () => {
+    const closableDatabase = database as any;
+    if (closableDatabase.open) closableDatabase.close();
+  });
   return database;
+}
+
+export function closeWebhookStore(): void {
+  if (db?.open) db.close();
+  db = undefined;
 }
 
 function initDatabase() {

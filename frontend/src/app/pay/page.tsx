@@ -11,18 +11,20 @@ import { makePayment } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { env } from "@/lib/env";
 
-type Plan = "Daily" | "Weekly" | "Usage";
+type Plan = "Daily" | "Weekly" | "Monthly" | "Usage";
 type Status = "idle" | "loading";
 
 const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Daily", label: "Daily", desc: "Billed every 24 hours" },
   { value: "Weekly", label: "Weekly", desc: "Billed every 7 days" },
+  { value: "Monthly", label: "Monthly", desc: "Billed every 30 days" },
   { value: "Usage", label: "Usage-Based", desc: "Pay per kWh consumed" },
 ];
 
 const PLAN_AMOUNT_HINTS: Record<Plan, string> = {
   Daily: "Suggested: 10 XLM/day",
   Weekly: "Suggested: 50 XLM/week",
+  Monthly: "Suggested: 150 XLM/month",
   Usage: "Amount (billed per kWh consumed)",
 };
 

@@ -46,6 +46,7 @@ function PlanBadge({ plan }: { plan: string }) {
   const styles: Record<string, string> = {
     Daily: "bg-blue-900/40 text-blue-300 border-blue-700/40",
     Weekly: "bg-purple-900/40 text-purple-300 border-purple-700/40",
+    Monthly: "bg-amber-900/40 text-amber-300 border-amber-700/40",
     UsageBased: "bg-green-900/40 text-green-300 border-green-700/40",
     Usage: "bg-green-900/40 text-green-300 border-green-700/40",
   };
@@ -88,7 +89,7 @@ function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
 }
 
 function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }) {
-  const isTimedPlan = plan === "Daily" || plan === "Weekly";
+  const isTimedPlan = plan === "Daily" || plan === "Weekly" || plan === "Monthly";
   const expSec = Number(expiresAt);
   const hasExpiry = expSec > 0 && expSec !== Number.MAX_SAFE_INTEGER;
 
@@ -166,14 +167,14 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
 
   useEffect(() => {
     setLoadingHistory(true);
-    fetch('/api/meters/' + meterId + '/history?limit=7')
+    fetch(`${API}/api/meters/${meterId}/history?page=1&pageSize=100`)
       .then(r => r.json())
       .then(d => {
         // Pass the raw ISO 8601 timestamp through — UsageChart formats it in
         // the viewer's local timezone (with a timezone indicator) itself, so
         // pre-formatting here would throw away the time-of-day and tz info.
-        const events: UsageDataPoint[] = (d.events || []).map((e: { recorded_at: string; units: number; cost?: number }) => ({
-          date: e.recorded_at,
+        const events: UsageDataPoint[] = (d.events || []).map((e: { received_at?: string; recorded_at?: string; units: number; cost?: number }) => ({
+          date: e.received_at ?? e.recorded_at ?? "",
           units: e.units,
           cost: e.cost,
         }));
