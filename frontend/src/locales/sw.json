@@ -143,5 +143,32 @@
     "save": "Hifadhi",
     "back": "Rudi",
     "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Maarifa ya Nishati",
+    "refresh": "Onyesha upya",
+    "expand": "Panua",
+    "collapse": "Punguza",
+    "thisWeek": "Wiki Hii",
+    "vsLastWeek": "vs Wiki Iliyopita",
+    "peersAvg": "Wastani wa Wenzako",
+    "weeklyAvg": "wastani wa wiki",
+    "hourlyProfile": "Wasifu wa Matumizi kwa Saa 24 (siku 30 zilizopita, UTC)",
+    "peak": "Kilele",
+    "achievements": "Mafanikio",
+    "lastComputed": "Ilihesabiwa mara ya mwisho",
+    "noData": "Hakuna data ya matumizi bado. Maarifa yataonekana mita ikianza kurekodi.",
+    "earned": "imepatikana",
+    "notEarned": "bado haijapatikana",
+    "increase": "ongezeko",
+    "decrease": "kupungua",
+    "noPriorData": "Hakuna data ya awali",
+    "badges": {
+      "low_consumer": "🌱 Mtumia Kidogo",
+      "off_peak_hero": "🌙 Shujaa wa Nje ya Kilele",
+      "improver": "📉 Mboreshaji",
+      "below_average": "⚡ Chini ya Wastani",
+      "consistent": "📊 Thabiti"
+    }
   }
 }

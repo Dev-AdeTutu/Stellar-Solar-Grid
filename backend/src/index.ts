@@ -33,6 +33,7 @@ import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { analyticsRouter } from "./routes/analytics.js";
+import { insightsRouter } from "./routes/insights.js";
 import { graphqlRouter } from "./routes/graphql.js";
 import { delegatesRouter } from "./routes/delegates.js";
 import { startIoTBridge } from "./iot/bridge.js";
@@ -289,6 +290,7 @@ app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 
