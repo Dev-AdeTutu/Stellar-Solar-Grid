@@ -29,6 +29,103 @@ function stroopsToXlm(stroops: bigint): string {
   return formatXLM(stroops);
 }
 
+interface PaymentRecord {
+  transaction_hash?: string;
+  transactionHash?: string;
+  hash?: string;
+  created_at?: string;
+  date?: string;
+  timestamp?: string;
+  meter_id?: string;
+  meterId?: string;
+  amount_stroops?: string | number;
+  amountStroops?: string | number;
+  amount?: string | number;
+  payment_plan?: string;
+  plan?: string;
+  status?: string;
+  payment_status?: string;
+}
+
+function getPaymentHash(record: PaymentRecord): string {
+  return record.transaction_hash ?? record.transactionHash ?? record.hash ?? "";
+}
+
+function getPaymentDate(record: PaymentRecord): string {
+  const raw = record.created_at ?? record.date ?? record.timestamp;
+  if (!raw) return "";
+  const date = new Date(raw);
+  return isNaN(date.getTime()) ? String(raw) : date.toISOString();
+}
+
+function getPaymentAmountXlm(record: PaymentRecord): string {
+  const value = record.amount_stroops ?? record.amountStroops ?? record.amount;
+  if (value === undefined || value === null) return "";
+  try {
+    return formatXLM(BigInt(value));
+  } catch {
+    return Number(value).toString();
+  }
+}
+
+function getPaymentPlan(record: PaymentRecord): string {
+  return record.payment_plan ?? record.plan ?? "";
+}
+
+function getPaymentStatus(record: PaymentRecord): string {
+  return record.status ?? record.payment_status ?? "";
+}
+
+function csvEscape(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+function paymentsToCsv(payments: PaymentRecord[]): string {
+  const header = ["Transaction Hash", "Date", "Meter ID", "Amount (XLM)", "Payment Plan", "Status"];
+  const rows = payments.map((payment) =>
+    [
+      getPaymentHash(payment),
+      getPaymentDate(payment),
+      payment.meter_id ?? payment.meterId ?? "",
+      getPaymentAmountXlm(payment),
+      getPaymentPlan(payment),
+      getPaymentStatus(payment),
+    ]
+      .map(csvEscape)
+      .join(",")
+  );
+  return [header.join(","), ...rows].join("\n");
+}
+
+function downloadCsv(filename: string, csv: string) {
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+async function downloadPaymentsCsv(meterIds: string[]) {
+  try {
+    const query = new URLSearchParams(window.location.search).toString();
+    const allPayments: PaymentRecord[] = [];
+    for (const meterId of meterIds) {
+      const res = await fetch(`${API}/api/meters/${encodeURIComponent(meterId)}/payments${query ? `?${query}` : ""}`);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const payments: PaymentRecord[] = Array.isArray(data) ? data : data?.payments ?? [];
+      allPayments.push(...payments);
+    }
+    downloadCsv(`payment-history.csv`, paymentsToCsv(allPayments));
+  } catch (err) {
+    console.error("Failed to export payment history:", err);
+  }
+}
+
 function StatusBadge({ active }: { active: boolean }) {
   return (
     <span
@@ -876,6 +973,14 @@ export default function UserDashboardPage() {
               className="self-start sm:self-auto rounded-lg border border-white/10 px-4 py-2 text-sm text-gray-300 hover:border-solar-yellow hover:text-solar-yellow disabled:opacity-40 disabled:cursor-not-allowed transition"
             >
               {loading ? "Refreshing…" : "↻ Refresh"}
+            </button>
+          )}
+          {address && meterIds.length > 0 && (
+            <button
+              onClick={() => downloadPaymentsCsv(meterIds)}
+              className="self-start sm:self-auto rounded-lg border border-white/10 px-4 py-2 text-sm text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+            >
+              Download CSV
             </button>
           )}
         </div>
