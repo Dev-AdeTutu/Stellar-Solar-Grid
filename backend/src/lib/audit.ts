@@ -15,10 +15,15 @@
  *   - In all environments: the entry is also emitted at INFO level through
  *     the standard winston logger (tagged with `audit: true`) so it appears
  *     in any log shipper already pointed at stdout.
+ *
+ * Export:
+ *   - GET /api/admin/audit-logs              — paginated JSON query (closes #744)
+ *   - GET /api/admin/audit-logs/export?format=csv|json — bulk download (closes #744)
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { logger } from "./logger.js";
 
 export type AuditEntry = {
@@ -120,4 +125,88 @@ export function buildAuditEntry(
     ip,
     keyHint,
   };
+}
+
+// ── Query / export helpers (closes #744) ─────────────────────────────────────
+
+export interface AuditQueryOptions {
+  /** Inclusive lower bound (ISO-8601). */
+  start?: string;
+  /** Inclusive upper bound (ISO-8601). */
+  end?: string;
+  /** Filter by event path substring (e.g. "/api/meters"). */
+  eventType?: string;
+  /** Max entries to return. Defaults to 500. */
+  limit?: number;
+  /** Number of entries to skip (for pagination). Defaults to 0. */
+  offset?: number;
+}
+
+/**
+ * Read the JSONL audit log file line-by-line and return matching entries.
+ *
+ * Parsing is streaming (readline) so large log files do not load entirely
+ * into memory. The function resolves once the end of file is reached.
+ *
+ * Closes #744.
+ */
+export async function queryAuditLog(
+  opts: AuditQueryOptions = {},
+): Promise<{ entries: (AuditEntry & { audit?: true })[]; total: number }> {
+  const { start, end, eventType, limit = 500, offset = 0 } = opts;
+  const startMs = start ? new Date(start).getTime() : -Infinity;
+  const endMs = end ? new Date(end).getTime() : Infinity;
+
+  if (!fs.existsSync(AUDIT_LOG_PATH)) {
+    return { entries: [], total: 0 };
+  }
+
+  const matching: (AuditEntry & { audit?: true })[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    const fileStream = fs.createReadStream(AUDIT_LOG_PATH, { encoding: "utf8" });
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    fileStream.on("error", reject);
+    rl.on("error", reject);
+    rl.on("close", resolve);
+
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      try {
+        const record = JSON.parse(trimmed) as AuditEntry & { audit?: true };
+        if (!record.timestamp) return;
+
+        const ts = new Date(record.timestamp).getTime();
+        if (ts < startMs || ts > endMs) return;
+        if (eventType && !record.path.includes(eventType)) return;
+
+        matching.push(record);
+      } catch {
+        // Skip malformed lines
+      }
+    });
+  });
+
+  const total = matching.length;
+  const entries = matching.slice(offset, offset + limit);
+  return { entries, total };
+}
+
+/**
+ * Serialise audit entries as a CSV string.
+ * Columns: timestamp, method, path, ip, keyHint, params
+ *
+ * Closes #744.
+ */
+export function auditEntriesToCsv(
+  entries: (AuditEntry & { audit?: true })[],
+): string {
+  const header = "timestamp,method,path,ip,keyHint,params";
+  const rows = entries.map((e) => {
+    const params = JSON.stringify(e.params ?? null).replace(/"/g, '""');
+    return `${e.timestamp},${e.method},${e.path},${e.ip},${e.keyHint},"${params}"`;
+  });
+  return [header, ...rows].join("\n");
 }

@@ -1,6 +1,8 @@
 node_modules/
 dist/
 target/
+.next/
+.issue-worktrees/
 .env
 .env.local
 .env.*.local
@@ -12,6 +14,7 @@ certs/
 logs/
 data/*.db
 data/*.sqlite
+data/archive/
 
 # Test snapshots
 __snapshots__/
