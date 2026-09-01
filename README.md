@@ -204,6 +204,7 @@ The `SolarGrid` contract manages:
 | `get_usage(meter_id)` | Retrieve usage data |
 | `update_usage(meter_id, units)` | Called by IoT oracle to update consumption |
 | `deactivate_meter(meter_id)` | Admin-only: immediately deactivate a meter |
+| `batch_deactivate_meters(meter_ids)` | Admin-only: deactivate multiple meters in a single transaction |
 
 ## Backend API
 

@@ -58,6 +58,8 @@ Emitted when a meter ID in `batch_update_usage` is not found and skipped.
 Also emitted (with the same shape) by `batch_register_meters` for each entry
 skipped because the meter ID already exists, is duplicated within the batch,
 or the owner is not on the allowlist.
+Also emitted by `batch_deactivate_meters` for each meter that is not found
+or already inactive.
 
 #### revenue_withdrawn
 - **Topic 0:** `rev_wdrl` (symbol_short)
@@ -115,6 +117,15 @@ All event emissions are covered by unit tests:
 - `test_admin_create_and_get_discount`, `test_make_payment_with_discount_applies_percent_off`, `test_make_payment_with_discount_respects_max_uses`, `test_make_payment_with_discount_respects_expiry`, `test_admin_revoke_discount` (issue #687)
 
 **Note:** the crate's test module currently fails to compile on `main` for reasons unrelated to these two features (many pre-existing tests pass a `Symbol` where the `meter_id: String` parameters now expect a `String`, plus a `ContractEvents::iter` API drift) — `cargo test` cannot run for this crate until that's fixed. The new code above was verified with `cargo check` (library) and `cargo build --target wasm32v1-none --release` (both clean), and its own test functions were confirmed to produce zero compiler errors by cross-referencing `cargo check --tests` output against their line ranges.
+
+### Batch Deactivate Tests (Issue #664)
+- `test_batch_deactivate_all_active` — deactivates 3 active meters in one call
+- `test_batch_deactivate_skips_inactive` — skips already-inactive meters
+- `test_batch_deactivate_skips_nonexistent` — skips meters that don't exist
+- `test_batch_deactivate_mixed` — mix of active, inactive, and nonexistent
+- `test_batch_deactivate_empty` — empty vector returns zero counts
+- `test_batch_deactivate_too_large` — rejects batches over 50 entries
+- `test_batch_deactivate_emits_events` — verifies mtr_deact events
 
 ## Contract Upgrades & Storage Migration
 

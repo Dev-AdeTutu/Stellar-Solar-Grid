@@ -415,6 +415,23 @@ pub struct MeterView {
     pub balance: i128,
 }
 
+/// Per-meter result returned by `batch_deactivate_meters`.
+#[contracttype]
+pub struct BatchDeactivateResult {
+    pub meter_id: String,
+    pub success: bool,
+    pub reason: String,
+}
+
+/// Summary returned by `batch_deactivate_meters`.
+#[contracttype]
+pub struct BatchDeactivateSummary {
+    pub total: u32,
+    pub deactivated: u32,
+    pub skipped: u32,
+    pub results: Vec<BatchDeactivateResult>,
+}
+
 // ── Event topics (contract namespace) ────────────────────────────────────────
 
 const EVT_NS: Symbol = symbol_short!("solargrid");
@@ -2116,6 +2133,93 @@ impl SolarGridContract {
         env.events()
             .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id), ());
         Ok(())
+    }
+
+
+    /// Admin-only: deactivate multiple meters in a single transaction.
+    ///
+    /// Accepts a vector of meter IDs, deactivates every meter that is
+    /// currently active, skips meters that are already inactive or do not
+    /// exist, and emits a `meter_deactivated` event for each successful
+    /// deactivation.
+    ///
+    /// Returns a [BatchDeactivateSummary] with per-meter results and
+    /// aggregate counts so the caller can distinguish successes from skips.
+    ///
+    /// Mirrors the existing `batch_update_usage` pattern (Issue #664).
+    ///
+    /// # Guards
+    /// - Caller must be the contract admin.
+    /// - Maximum batch size: 50 (matches `batch_update_usage`).
+    ///
+    /// # Emits
+    /// - `mtr_deact` for each meter successfully deactivated.
+    /// - `btch_skip` for each meter skipped (not found or already inactive).
+    pub fn batch_deactivate_meters(
+        env: Env,
+        meter_ids: Vec<String>,
+    ) -> Result<BatchDeactivateSummary, ContractError> {
+        Self::require_admin(&env)?;
+
+        let len = meter_ids.len() as u32;
+        if len > 50 {
+            return Err(ContractError::BatchTooLarge);
+        }
+
+        let mut results: Vec<BatchDeactivateResult> = vec![&env];
+        let mut deactivated: u32 = 0;
+        let mut skipped: u32 = 0;
+
+        for meter_id in meter_ids.iter() {
+            let key = DataKey::Meter(meter_id.clone());
+            match env.storage().persistent().get::<DataKey, Meter>(&key) {
+                None => {
+                    // Meter does not exist - skip
+                    skipped += 1;
+                    results.push_back(BatchDeactivateResult {
+                        meter_id: meter_id.clone(),
+                        success: false,
+                        reason: String::from_str(&env, "not_found"),
+                    });
+                    env.events()
+                        .publish((EVT_NS, symbol_short!("btch_skip"), meter_id.clone()), ());
+                }
+                Some(mut meter) => {
+                    if !meter.active {
+                        // Already inactive - skip
+                        skipped += 1;
+                        results.push_back(BatchDeactivateResult {
+                            meter_id: meter_id.clone(),
+                            success: false,
+                            reason: String::from_str(&env, "inactive"),
+                        });
+                        env.events()
+                            .publish((EVT_NS, symbol_short!("btch_skip"), meter_id.clone()), ());
+                    } else {
+                        // Deactivate
+                        meter.active = false;
+                        env.storage().persistent().set(&key, &meter);
+                        deactivated += 1;
+
+                        results.push_back(BatchDeactivateResult {
+                            meter_id: meter_id.clone(),
+                            success: true,
+                            reason: String::from_str(&env, "ok"),
+                        });
+
+                        env.events()
+                            .publish((EVT_NS, symbol_short!("mtr_deact"), meter_id.clone()), ());
+                    }
+                }
+            }
+        }
+
+        Ok(BatchDeactivateSummary {
+            total: len,
+            deactivated,
+            skipped,
+            results,
+        })
     }
 
     // ── Collaborator management ───────────────────────────────────────────────
