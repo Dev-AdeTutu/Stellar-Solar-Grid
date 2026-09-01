@@ -44,6 +44,7 @@ import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
+import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import { tracingMiddleware } from "./middleware/tracing.js";
 import { shutdownTracing } from "./lib/tracing.js";
