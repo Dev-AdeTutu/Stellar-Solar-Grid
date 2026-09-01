@@ -4,7 +4,6 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
 import UsageForecast from "@/components/UsageForecast";
@@ -21,6 +20,7 @@ import {
 } from "@/services/pushService";
 import { env } from "@/lib/env";
 import { formatXLM } from "@/lib/format";
+import PaymentSchedule from "@/components/PaymentSchedule";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
@@ -48,14 +48,13 @@ function PlanBadge({ plan }: { plan: string }) {
   const styles: Record<string, string> = {
     Daily: "bg-blue-900/40 text-blue-300 border-blue-700/40",
     Weekly: "bg-purple-900/40 text-purple-300 border-purple-700/40",
+    Monthly: "bg-amber-900/40 text-amber-300 border-amber-700/40",
     UsageBased: "bg-green-900/40 text-green-300 border-green-700/40",
     Usage: "bg-green-900/40 text-green-300 border-green-700/40",
   };
   const cls = styles[plan] ?? "bg-gray-800 text-gray-400 border-gray-700/40";
   return (
-    <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${cls}`}>
-      {plan}
-    </span>
+    <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${cls}`}>{plan}</span>
   );
 }
 
@@ -90,12 +89,12 @@ function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
 }
 
 function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }) {
-  const isTimedPlan = plan === "Daily" || plan === "Weekly";
+  const isTimedPlan = plan === "Daily" || plan === "Weekly" || plan === "Monthly";
   const expSec = Number(expiresAt);
   const hasExpiry = expSec > 0 && expSec !== Number.MAX_SAFE_INTEGER;
 
   const [remaining, setRemaining] = useState(() =>
-    isTimedPlan && hasExpiry ? Math.max(0, expSec - Math.floor(Date.now() / 1000)) : -1
+    isTimedPlan && hasExpiry ? Math.max(0, expSec - Math.floor(Date.now() / 1000)) : -1,
   );
 
   useEffect(() => {
@@ -112,19 +111,107 @@ function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }
     return <span className="text-xs font-semibold text-red-400">Expired</span>;
   }
 
-  const h = Math.floor(remaining / 3600).toString().padStart(2, "0");
-  const m = Math.floor((remaining % 3600) / 60).toString().padStart(2, "0");
+  const h = Math.floor(remaining / 3600)
+    .toString()
+    .padStart(2, "0");
+  const m = Math.floor((remaining % 3600) / 60)
+    .toString()
+    .padStart(2, "0");
   const s = (remaining % 60).toString().padStart(2, "0");
 
-  return <span className="text-xs font-mono text-solar-yellow">{h}:{m}:{s}</span>;
+  return (
+    <span className="text-xs font-mono text-solar-yellow">
+      {h}:{m}:{s}
+    </span>
+  );
 }
 
 const COMMON_EMOJIS = ["☀️", "🏠", "🏬", "⚡", "🔋", "🏭"];
 
-function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
+// ---- Meter grouping & tagging (Issue #732) ----
+const GROUPS_STORAGE_KEY = "meter_groups_v1";
+const TAGS_STORAGE_KEY = "meter_tags_v1";
+const MAX_GROUPS = 20;
+const MAX_TAGS_PER_METER = 20;
+
+interface MeterGroup {
+  id: string;
+  name: string;
+  color: string;
+  meterIds: string[];
+}
+
+type TagMap = Record<string, string[]>;
+
+const GROUP_COLORS = [
+  "#f59e0b",
+  "#10b981",
+  "#3b82f6",
+  "#8b5cf6",
+  "#ef4444",
+  "#06b6d4",
+  "#ec4899",
+  "#84cc16",
+];
+
+function uid(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function loadGroups(): Record<string, MeterGroup> {
+  try {
+    const raw = localStorage.getItem(GROUPS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, MeterGroup>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveGroups(groups: Record<string, MeterGroup>) {
+  try {
+    localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(groups));
+  } catch {
+    // LocalStorage might be unavailable
+  }
+}
+
+function loadTags(): TagMap {
+  try {
+    const raw = localStorage.getItem(TAGS_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as TagMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveTags(tags: TagMap) {
+  try {
+    localStorage.setItem(TAGS_STORAGE_KEY, JSON.stringify(tags));
+  } catch {
+    // LocalStorage might be unavailable
+  }
+}
+
+function MeterCard({
+  meterId,
+  meter,
+  tags,
+  onAddTag,
+  onRemoveTag,
+}: {
+  meterId: string;
+  meter: MeterData;
+  tags?: string[];
+  onAddTag?: (meterId: string, tag: string) => void;
+  onRemoveTag?: (meterId: string, tag: string) => void;
+}) {
   const [nickname, setNickname] = useState<string>("");
   const [isEditing, setIsEditing] = useState(false);
   const [tempNickname, setTempNickname] = useState("");
+  const [tempTag, setTempTag] = useState("");
 
   useEffect(() => {
     try {
@@ -169,16 +256,18 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
   useEffect(() => {
     setLoadingHistory(true);
     fetch(`${API}/api/meters/${meterId}/history?page=1&pageSize=100`)
-      .then(r => r.json())
-      .then(d => {
+      .then((r) => r.json())
+      .then((d) => {
         // Pass the raw ISO 8601 timestamp through — UsageChart formats it in
         // the viewer's local timezone (with a timezone indicator) itself, so
         // pre-formatting here would throw away the time-of-day and tz info.
-        const events: UsageDataPoint[] = (d.events || []).map((e: { received_at?: string; recorded_at?: string; units: number; cost?: number }) => ({
-          date: e.received_at ?? e.recorded_at ?? "",
-          units: e.units,
-          cost: e.cost,
-        }));
+        const events: UsageDataPoint[] = (d.events || []).map(
+          (e: { received_at?: string; recorded_at?: string; units: number; cost?: number }) => ({
+            date: e.received_at ?? e.recorded_at ?? "",
+            units: e.units,
+            cost: e.cost,
+          }),
+        );
         setHistory(events);
         setLoadingHistory(false);
       })
@@ -222,7 +311,9 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
                   </button>
                 )}
               </div>
-              <span className="font-mono text-xs text-gray-400 truncate block mt-0.5">{meterId}</span>
+              <span className="font-mono text-xs text-gray-400 truncate block mt-0.5">
+                {meterId}
+              </span>
             </div>
           ) : (
             <div className="flex items-center gap-2">
@@ -304,12 +395,20 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         {[
           { label: "Balance", value: `${stroopsToXlm(meter.balance)} XLM` },
           { label: "Units Used", value: `${Number(meter.units_used) / 1000} kWh` },
-          { label: "Last Payment", value: meter.last_payment > 0n ? new Date(Number(meter.last_payment) * 1000).toLocaleDateString() : "—" },
+          {
+            label: "Last Payment",
+            value:
+              meter.last_payment > 0n
+                ? new Date(Number(meter.last_payment) * 1000).toLocaleDateString()
+                : "—",
+          },
           { label: "Expires", value: formatExpiry() },
         ].map(({ label, value }) => (
           <div key={label} className="flex flex-col gap-0.5">
             <span className="text-xs uppercase tracking-wider text-gray-500">{label}</span>
-            <span className={`text-sm font-semibold truncate ${label === "Expires" && isExpired ? "text-red-400" : "text-white"}`}>
+            <span
+              className={`text-sm font-semibold truncate ${label === "Expires" && isExpired ? "text-red-400" : "text-white"}`}
+            >
               {value}
             </span>
           </div>
@@ -330,10 +429,11 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
           <span className="mt-0.5">⚠️</span>
           <p>
             Meter is in <strong>grace period</strong> until{" "}
-            {new Date(Number(meter.grace_expires_at) * 1000).toLocaleTimeString()}. Top up your balance to avoid disconnection!
+            {new Date(Number(meter.grace_expires_at) * 1000).toLocaleTimeString()}. Top up your
+            balance to avoid disconnection!
           </p>
         </div>
-      ) : (isExpired || meter.balance === 0n) ? (
+      ) : isExpired || meter.balance === 0n ? (
         <div className="rounded-lg border border-yellow-600/40 bg-yellow-900/20 p-3 text-yellow-300 text-xs flex items-start gap-2">
           <span className="mt-0.5">⚠</span>
           <p>
@@ -357,6 +457,11 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
         <UsageChart data={history} loading={loadingHistory} meterId={meterId} />
       </div>
 
+      {/* Payment Schedule — closes #746 */}
+      <div className="pt-4 border-t border-white/10">
+        <PaymentSchedule meterId={meterId} />
+      </div>
+
       {/* Actions */}
       <div className="flex gap-2 pt-1">
         <Link
@@ -376,6 +481,126 @@ function MeterCard({ meterId, meter }: { meterId: string; meter: MeterData }) {
   );
 }
 
+function GroupStats({ members }: { members: MeterData[] }) {
+  const total = members.length;
+  if (total === 0) return null;
+  const activeCount = members.filter((m) => m.active).length;
+  const balanceSum = members.reduce((acc, m) => acc + (m.balance > 0n ? m.balance : 0n), 0n);
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400">
+      <span>
+        <span className="text-white font-semibold">{activeCount}</span>/{total} active
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="text-white font-semibold">{stroopsToXlm(balanceSum)}</span> XLM total
+      </span>
+    </div>
+  );
+}
+
+function GroupCard({
+  title,
+  color,
+  members,
+  meters,
+  failedMeters,
+  tags,
+  onAddTag,
+  onRemoveTag,
+  onRemoveMeter,
+  collapsed,
+  onToggle,
+}: {
+  title: string;
+  color?: string;
+  members: string[];
+  meters: Record<string, MeterData>;
+  failedMeters: Record<string, string>;
+  tags: TagMap;
+  onAddTag: (meterId: string, tag: string) => void;
+  onRemoveTag: (meterId: string, tag: string) => void;
+  onRemoveMeter: (meterId: string) => void;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const meterData = members
+    .map((id) => ({ id, data: meters[id] }))
+    .filter((x) => x.data || failedMeters[x.id]);
+  const activeData = meterData.map((x) => x.data).filter((d): d is MeterData => Boolean(d));
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-solar-accent/60 overflow-hidden">
+      {/* Collapsible header */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left hover:bg-white/5 transition"
+        aria-expanded={!collapsed}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          {color && (
+            <span
+              className="inline-block h-3 w-3 shrink-0 rounded-full"
+              style={{ backgroundColor: color }}
+            />
+          )}
+          <span className="font-semibold text-white truncate">{title}</span>
+          <span className="text-xs text-gray-500">({members.length})</span>
+        </div>
+        <span
+          className="text-gray-400 text-xs transition-transform"
+          style={{ transform: collapsed ? "rotate(-90deg)" : "none" }}
+        >
+          ▾
+        </span>
+      </button>
+
+      {!collapsed && (
+        <div className="px-4 pb-4 space-y-4">
+          <GroupStats members={activeData} />
+          {meterData.length === 0 ? (
+            <p className="text-xs text-gray-500">No meters in this group.</p>
+          ) : (
+            meterData.map(({ id, data }) =>
+              data ? (
+                <MeterCard
+                  key={id}
+                  meterId={id}
+                  meter={data}
+                  tags={tags[id] ?? []}
+                  onAddTag={onAddTag}
+                  onRemoveTag={onRemoveTag}
+                />
+              ) : (
+                <div key={id} className="relative">
+                  <ErrorCard meterId={id} error={failedMeters[id] ?? "Unknown error"} />
+                  <button
+                    type="button"
+                    onClick={() => onRemoveMeter(id)}
+                    className="absolute top-2 right-2 rounded-full border border-white/10 px-2 py-0.5 text-xs text-gray-400 hover:text-red-400 hover:border-red-500/40 transition"
+                    title="Remove from group (not from your account)"
+                  >
+                    Ungroup
+                  </button>
+                </div>
+              ),
+            )
+          )}
+          {members.length > 1 && (
+            <button
+              type="button"
+              onClick={() => members.forEach(onRemoveMeter)}
+              className="text-xs text-gray-500 underline underline-offset-2 hover:text-red-400 transition"
+            >
+              Remove all meters from this group
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function UserDashboardPage() {
   const { address, connect } = useWalletStore();
   const { showToast } = useToast();
@@ -386,6 +611,14 @@ export default function UserDashboardPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  // Meter grouping & tagging (Issue #732).
+  const [groups, setGroups] = useState<Record<string, MeterGroup>>({});
+  const [tags, setTags] = useState<TagMap>({});
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [groupFilter, setGroupFilter] = useState<string | null>(null);
+  const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [showGroupManager, setShowGroupManager] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
 
   const fetchAll = useCallback(async () => {
     if (!address) return;
@@ -449,11 +682,98 @@ export default function UserDashboardPage() {
     });
   }, [address]);
 
+  // Load persisted groups/tags once on mount.
+  useEffect(() => {
+    setGroups(loadGroups());
+    setTags(loadTags());
+  }, []);
+
+  const persistGroups = (next: Record<string, MeterGroup>) => {
+    setGroups(next);
+    saveGroups(next);
+  };
+
+  const persistTags = (next: TagMap) => {
+    setTags(next);
+    saveTags(next);
+  };
+
+  const createGroup = () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    if (Object.keys(groups).length >= MAX_GROUPS) return;
+    const id = uid();
+    const color = GROUP_COLORS[Object.keys(groups).length % GROUP_COLORS.length];
+    persistGroups({ ...groups, [id]: { id, name, color, meterIds: [] } });
+    setNewGroupName("");
+  };
+
+  const deleteGroup = (id: string) => {
+    const next = { ...groups };
+    delete next[id];
+    persistGroups(next);
+    if (groupFilter === id) setGroupFilter(null);
+  };
+
+  const addMeterToGroup = (groupId: string, meterId: string) => {
+    const g = groups[groupId];
+    if (!g || g.meterIds.includes(meterId)) return;
+    // A meter belongs to at most one group; remove it from any others.
+    const next: Record<string, MeterGroup> = {};
+    for (const [id, grp] of Object.entries(groups)) {
+      next[id] = { ...grp, meterIds: grp.meterIds.filter((m) => m !== meterId) };
+    }
+    next[groupId] = { ...next[groupId], meterIds: [...next[groupId].meterIds, meterId] };
+    persistGroups(next);
+  };
+
+  const removeMeterFromGroup = (meterId: string) => {
+    const next: Record<string, MeterGroup> = {};
+    for (const [id, grp] of Object.entries(groups)) {
+      next[id] = { ...grp, meterIds: grp.meterIds.filter((m) => m !== meterId) };
+    }
+    persistGroups(next);
+  };
+
+  const addTag = (meterId: string, tag: string) => {
+    const current = tags[meterId] ?? [];
+    if (current.includes(tag) || current.length >= MAX_TAGS_PER_METER) return;
+    persistTags({ ...tags, [meterId]: [...current, tag] });
+  };
+
+  const removeTag = (meterId: string, tag: string) => {
+    persistTags({ ...tags, [meterId]: (tags[meterId] ?? []).filter((t) => t !== tag) });
+  };
+
+  const toggleCollapse = (id: string) => {
+    setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Which meters are visible under the active group/tag filters.
+  const visibleMeterIds = meterIds.filter((id) => {
+    if (groupFilter) {
+      const g = groups[groupFilter];
+      if (!g || !g.meterIds.includes(id)) return false;
+    }
+    if (tagFilter && !(tags[id] ?? []).includes(tagFilter)) return false;
+    return true;
+  });
+
+  const allTags = [...new Set(Object.values(tags).flatMap((arr) => arr))].sort();
+
+  // Grouped presentation for the meter list (Issue #732).
+  const inAnyGroup = new Set(Object.values(groups).flatMap((g) => g.meterIds));
+  const visibleGroups = Object.values(groups)
+    .map((g) => ({ group: g, members: g.meterIds.filter((id) => visibleMeterIds.includes(id)) }))
+    .filter((x) => x.members.length > 0);
+  const ungroupedIds = visibleMeterIds.filter((id) => !inAnyGroup.has(id));
+
   // Poll individual meter balances for live updates.
   // useInterval does NOT fire on mount, so fetchAll() above handles the
   // first load — no double-fetch on first render.
   const pollBalances = useCallback(async () => {
     if (!address || meterIds.length === 0) return;
+    let anyChanged = false;
     for (const id of meterIds) {
       try {
         const res = await fetch(`${API}/api/meters/${id}/balance`);
@@ -462,13 +782,26 @@ export default function UserDashboardPage() {
         setMeters((prev) => {
           const existing = prev[id];
           if (!existing) return prev;
+          const nextBal = BigInt(data.balance ?? existing.balance);
+          const nextUnits = data.units_used ?? existing.units_used;
+          const nextActive = data.active ?? existing.active;
+
+          if (
+            existing.balance === nextBal &&
+            existing.units_used === nextUnits &&
+            existing.active === nextActive
+          ) {
+            return prev;
+          }
+
+          anyChanged = true;
           return {
             ...prev,
             [id]: {
               ...existing,
-              balance: BigInt(data.balance ?? existing.balance),
-              units_used: data.units_used ?? existing.units_used,
-              active: data.active ?? existing.active,
+              balance: nextBal,
+              units_used: nextUnits,
+              active: nextActive,
             },
           };
         });
@@ -484,7 +817,9 @@ export default function UserDashboardPage() {
         // Silently skip — full refresh will recover on next interval
       }
     }
-    setLastRefresh(new Date());
+    if (anyChanged) {
+      setLastRefresh(new Date());
+    }
   }, [address, meterIds]);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -543,6 +878,142 @@ export default function UserDashboardPage() {
           )}
         </div>
 
+        {/* Grouping / tagging controls (Issue #732) */}
+        {address && meterIds.length > 0 && (
+          <div className="mb-6 space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowGroupManager((v) => !v)}
+                className="rounded-lg bg-solar-yellow px-3 py-1.5 text-xs font-semibold text-solar-dark hover:opacity-90 transition"
+              >
+                {showGroupManager ? "Done" : "+ Groups"}
+              </button>
+
+              <select
+                value={groupFilter ?? ""}
+                onChange={(e) => setGroupFilter(e.target.value || null)}
+                className="rounded-lg border border-white/15 bg-solar-dark px-2.5 py-1.5 text-xs text-white focus:border-solar-yellow focus:outline-none"
+                aria-label="Filter by group"
+              >
+                <option value="">All groups</option>
+                {Object.values(groups).map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name} ({g.meterIds.length})
+                  </option>
+                ))}
+              </select>
+
+              <select
+                value={tagFilter ?? ""}
+                onChange={(e) => setTagFilter(e.target.value || null)}
+                className="rounded-lg border border-white/15 bg-solar-dark px-2.5 py-1.5 text-xs text-white focus:border-solar-yellow focus:outline-none"
+                aria-label="Filter by tag"
+              >
+                <option value="">All tags</option>
+                {allTags.map((t) => (
+                  <option key={t} value={t}>
+                    #{t}
+                  </option>
+                ))}
+              </select>
+
+              {(groupFilter || tagFilter) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGroupFilter(null);
+                    setTagFilter(null);
+                  }}
+                  className="text-xs text-gray-400 underline underline-offset-2 hover:text-solar-yellow transition"
+                >
+                  Clear filters
+                </button>
+              )}
+            </div>
+
+            {/* Group manager panel */}
+            {showGroupManager && (
+              <div className="rounded-xl border border-white/10 bg-solar-accent p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newGroupName}
+                    maxLength={30}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") createGroup();
+                    }}
+                    placeholder="New group name (e.g. Shop)"
+                    className="flex-1 rounded border border-white/20 bg-solar-dark px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:border-solar-yellow focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={createGroup}
+                    disabled={!newGroupName.trim() || Object.keys(groups).length >= MAX_GROUPS}
+                    className="rounded bg-solar-yellow px-3 py-1.5 text-xs font-semibold text-solar-dark hover:opacity-90 disabled:opacity-40 transition"
+                  >
+                    Create
+                  </button>
+                </div>
+
+                {Object.keys(groups).length === 0 ? (
+                  <p className="text-xs text-gray-500">
+                    No groups yet. Create a group, then assign meters to it below.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {Object.values(groups).map((g) => (
+                      <div
+                        key={g.id}
+                        className="rounded-lg border border-white/10 bg-solar-dark/50 p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="inline-block h-3 w-3 shrink-0 rounded-full"
+                              style={{ backgroundColor: g.color }}
+                            />
+                            <span className="text-sm font-semibold text-white truncate">
+                              {g.name}
+                            </span>
+                            <span className="text-xs text-gray-500">({g.meterIds.length})</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => deleteGroup(g.id)}
+                            className="text-xs text-gray-400 hover:text-red-400 transition"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                            Add meter:
+                          </span>
+                          {meterIds
+                            .filter((id) => !g.meterIds.includes(id))
+                            .slice(0, 20)
+                            .map((id) => (
+                              <button
+                                key={id}
+                                type="button"
+                                onClick={() => addMeterToGroup(g.id, id)}
+                                className="rounded-full border border-white/15 px-2 py-0.5 text-[10px] font-mono text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+                              >
+                                + {id}
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Not connected */}
         {!address && (
           <div className="rounded-xl border border-white/10 bg-solar-accent p-10 text-center">
@@ -563,7 +1034,10 @@ export default function UserDashboardPage() {
             <div>
               <p className="font-semibold mb-1">Failed to load meters</p>
               <p>{error}</p>
-              <button onClick={fetchAll} className="mt-3 text-xs underline underline-offset-2 hover:text-red-300 transition">
+              <button
+                onClick={fetchAll}
+                className="mt-3 text-xs underline underline-offset-2 hover:text-red-300 transition"
+              >
                 Try again
               </button>
             </div>
@@ -574,7 +1048,10 @@ export default function UserDashboardPage() {
         {address && loading && meterIds.length === 0 && (
           <div className="space-y-4">
             {[0, 1].map((i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-solar-accent p-4 sm:p-5 space-y-4">
+              <div
+                key={i}
+                className="rounded-xl border border-white/10 bg-solar-accent p-4 sm:p-5 space-y-4"
+              >
                 <div className="flex items-center justify-between gap-2">
                   <Skeleton width="30%" height={16} />
                   <Skeleton width="20%" height={24} />
@@ -636,14 +1113,44 @@ export default function UserDashboardPage() {
         {/* Meter list */}
         {address && filteredMeterIds.length > 0 && (
           <div className="space-y-4">
-            {filteredMeterIds.map((id) =>
-              meters[id] ? (
-                <MeterCard key={id} meterId={id} meter={meters[id]} />
-              ) : failedMeters[id] ? (
-                <ErrorCard key={id} meterId={id} error={failedMeters[id]} />
-              ) : (
-                <SkeletonCard key={id} height={160} />
-              )
+            {visibleGroups.map(({ group, members }) => (
+              <GroupCard
+                key={group.id}
+                title={group.name}
+                color={group.color}
+                members={members}
+                meters={meters}
+                failedMeters={failedMeters}
+                tags={tags}
+                onAddTag={addTag}
+                onRemoveTag={removeTag}
+                onRemoveMeter={removeMeterFromGroup}
+                collapsed={!!collapsedGroups[group.id]}
+                onToggle={() => toggleCollapse(group.id)}
+              />
+            ))}
+
+            {ungroupedIds.length > 0 && (
+              <GroupCard
+                title="Ungrouped"
+                members={ungroupedIds}
+                meters={meters}
+                failedMeters={failedMeters}
+                tags={tags}
+                onAddTag={addTag}
+                onRemoveTag={removeTag}
+                onRemoveMeter={removeMeterFromGroup}
+                collapsed={!!collapsedGroups.__ungrouped__}
+                onToggle={() => toggleCollapse("__ungrouped__")}
+              />
+            )}
+
+            {visibleGroups.length === 0 && ungroupedIds.length === 0 && (
+              <p className="text-xs text-gray-500">
+                {meterIds.length === 0
+                  ? "No meters registered to this address."
+                  : "No meters match the current filters."}
+              </p>
             )}
           </div>
         )}

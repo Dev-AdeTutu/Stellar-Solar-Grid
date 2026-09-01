@@ -16,8 +16,8 @@
     "@stellar/stellar-sdk": "^12.0.0",
     "jspdf": "^4.2.1",
     "next": "^14.2.3",
-    "qrcode": "^1.5.4",
     "next-intl": "^3.26.5",
+    "qrcode": "^1.5.4",
     "qrcode.react": "^3.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -26,6 +26,7 @@
     "zustand": "^4.5.2"
   },
   "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.4.2",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.2",
