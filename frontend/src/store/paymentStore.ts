@@ -17,3 +17,11 @@ export const usePaymentStore = create<PaymentFormState>((set) => ({
   setPlan: (plan: "Daily" | "Weekly" | "Monthly" | "Usage") => set({ plan }),
   reset: () => set({ meterId: "", plan: "Daily" }),
 }));
+
+export const downloadCsv = (rows: any[][]) => {
+  const csv = rows.map(r => r.join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = "payments.csv";
+  a.click();
+};

@@ -90,7 +90,7 @@ interface WalletConnectButtonProps {
  * Closes #398
  */
 export function WalletConnectButton({ compact = false }: WalletConnectButtonProps) {
-  const { address, connect, disconnect, isConnecting, connectError, clearConnectError, networkError } =
+  const { address, connect, disconnect, isConnecting, connectError, clearConnectError, networkError, cancelConnect } =
     useWalletStore();
 
   const [copied, setCopied] = useState(false);
@@ -184,27 +184,46 @@ export function WalletConnectButton({ compact = false }: WalletConnectButtonProp
   // ── Disconnected / connecting state ──────────────────────────────────────
   return (
     <div className="relative flex flex-col items-center gap-1">
-      <button
-        type="button"
-        onClick={handleConnectClick}
-        disabled={isConnecting}
-        onMouseEnter={() => isNotInstalled && setTooltipVisible(true)}
-        onMouseLeave={() => setTooltipVisible(false)}
-        onFocus={() => isNotInstalled && setTooltipVisible(true)}
-        onBlur={() => setTooltipVisible(false)}
-        aria-busy={isConnecting}
-        aria-describedby={isNotInstalled ? "freighter-tooltip" : undefined}
-        className={[
-          "rounded-lg bg-solar-yellow font-semibold text-solar-dark",
-          "hover:brightness-110 transition",
-          "disabled:opacity-60 disabled:cursor-not-allowed",
-          "flex items-center gap-1.5",
-          compact ? "px-3 py-1.5 text-xs" : "px-4 py-1.5 text-sm",
-        ].join(" ")}
-      >
-        {isConnecting && <Spinner />}
-        {isConnecting ? "Connecting…" : compact ? "Connect" : "Connect Wallet"}
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          onClick={handleConnectClick}
+          disabled={isConnecting}
+          onMouseEnter={() => isNotInstalled && setTooltipVisible(true)}
+          onMouseLeave={() => setTooltipVisible(false)}
+          onFocus={() => isNotInstalled && setTooltipVisible(true)}
+          onBlur={() => setTooltipVisible(false)}
+          aria-busy={isConnecting}
+          aria-describedby={isNotInstalled ? "freighter-tooltip" : undefined}
+          className={[
+            "rounded-lg bg-solar-yellow font-semibold text-solar-dark",
+            "hover:brightness-110 transition",
+            "disabled:opacity-60 disabled:cursor-not-allowed",
+            "flex items-center gap-1.5",
+            compact ? "px-3 py-1.5 text-xs" : "px-4 py-1.5 text-sm",
+          ].join(" ")}
+        >
+          {isConnecting && <Spinner />}
+          {isConnecting ? "Connecting…" : compact ? "Connect" : "Connect Wallet"}
+        </button>
+
+        {/* Closes #743: Cancel button — abort a stuck/hung connection attempt */}
+        {isConnecting && (
+          <button
+            type="button"
+            onClick={cancelConnect}
+            aria-label="Cancel wallet connection"
+            title="Cancel connection"
+            className={[
+              "rounded-lg border border-white/20 text-gray-400",
+              "hover:border-red-500/50 hover:text-red-400 transition",
+              compact ? "px-2 py-1 text-xs" : "px-2.5 py-1.5 text-xs",
+            ].join(" ")}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
 
       {/* Freighter not-installed tooltip */}
       <FreighterTooltip visible={tooltipVisible} />

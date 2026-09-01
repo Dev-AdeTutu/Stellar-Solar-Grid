@@ -23,11 +23,13 @@ export const adminFailureLimiter = rateLimit({
   max: ADMIN_FAIL_MAX,
   skipSuccessfulRequests: false, // we gate it manually below — see requireAdminKey
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders: true,
   // Key by IP so each client gets its own bucket
   keyGenerator: (req) => req.ip ?? 'unknown',
   handler: (_req, res) => {
     res.setHeader('Retry-After', String(Math.ceil(ADMIN_FAIL_WINDOW_MS / 1000)));
+    // Issue #734: standard policy descriptor header.
+    res.setHeader('X-RateLimit-Policy', `${ADMIN_FAIL_MAX};w=${Math.ceil(ADMIN_FAIL_WINDOW_MS / 1000)}`);
     logger.warn('Admin auth failure rate limit exceeded — possible brute-force attempt');
     res.status(429).json({
       error: 'Too many failed admin auth attempts. Try again later.',

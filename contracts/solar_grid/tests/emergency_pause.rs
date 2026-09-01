@@ -29,13 +29,13 @@ fn pause_blocks_payment_and_registration_but_allows_usage_updates() {
     client.allowlist_add(&owner);
     client.register_meter(&meter_id, &owner);
     token_admin.mint(&owner, &2_000_i128);
-    client.make_payment(&meter_id, &owner, &1_000_i128, &PaymentPlan::Daily);
+    client.make_payment(&meter_id, &owner, &1_000_i128, &PaymentPlan::Daily, &None);
 
     client.pause();
     assert!(client.is_paused());
 
     assert_eq!(
-        client.try_make_payment(&meter_id, &owner, &100_i128, &PaymentPlan::Daily),
+        client.try_make_payment(&meter_id, &owner, &100_i128, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::ContractPaused))
     );
 
@@ -67,5 +67,5 @@ fn pause_expires_at_48_hours_and_allows_payments_again() {
     assert!(!client.is_paused());
 
     // The automatic expiry is equivalent to an explicit unpause.
-    client.make_payment(&meter_id, &owner, &1_000_i128, &PaymentPlan::Daily);
+    client.make_payment(&meter_id, &owner, &1_000_i128, &PaymentPlan::Daily, &None);
 }

@@ -143,5 +143,32 @@
     "save": "Save",
     "back": "Back",
     "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Energy Insights",
+    "refresh": "Refresh",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "thisWeek": "This Week",
+    "vsLastWeek": "vs Last Week",
+    "peersAvg": "Peers (avg)",
+    "weeklyAvg": "weekly avg",
+    "hourlyProfile": "24-Hour Usage Profile (last 30 days, UTC)",
+    "peak": "Peak",
+    "achievements": "Achievements",
+    "lastComputed": "Last computed",
+    "noData": "No usage data yet. Insights will appear once your meter starts recording.",
+    "earned": "earned",
+    "notEarned": "not yet earned",
+    "increase": "increase",
+    "decrease": "decrease",
+    "noPriorData": "No prior data",
+    "badges": {
+      "low_consumer": "🌱 Low Consumer",
+      "off_peak_hero": "🌙 Off-Peak Hero",
+      "improver": "📉 Improver",
+      "below_average": "⚡ Below Average",
+      "consistent": "📊 Consistent"
+    }
   }
 }

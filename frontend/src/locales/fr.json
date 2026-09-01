@@ -143,5 +143,32 @@
     "save": "Enregistrer",
     "back": "Retour",
     "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Analyses Énergétiques",
+    "refresh": "Actualiser",
+    "expand": "Développer",
+    "collapse": "Réduire",
+    "thisWeek": "Cette Semaine",
+    "vsLastWeek": "vs Semaine Dernière",
+    "peersAvg": "Moyenne des Pairs",
+    "weeklyAvg": "moy. hebdomadaire",
+    "hourlyProfile": "Profil d'utilisation sur 24h (30 derniers jours, UTC)",
+    "peak": "Pic",
+    "achievements": "Accomplissements",
+    "lastComputed": "Dernière mise à jour",
+    "noData": "Pas encore de données. Les analyses apparaîtront dès que votre compteur commence à enregistrer.",
+    "earned": "obtenu",
+    "notEarned": "pas encore obtenu",
+    "increase": "augmentation",
+    "decrease": "diminution",
+    "noPriorData": "Aucune donnée antérieure",
+    "badges": {
+      "low_consumer": "🌱 Faible Consommateur",
+      "off_peak_hero": "🌙 Héros Hors-Pic",
+      "improver": "📉 En Progrès",
+      "below_average": "⚡ Sous la Moyenne",
+      "consistent": "📊 Régulier"
+    }
   }
 }

@@ -33,6 +33,7 @@ import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { analyticsRouter } from "./routes/analytics.js";
+import { insightsRouter } from "./routes/insights.js";
 import { graphqlRouter } from "./routes/graphql.js";
 import { delegatesRouter } from "./routes/delegates.js";
 import { startIoTBridge } from "./iot/bridge.js";
@@ -44,6 +45,7 @@ import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
+import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
 import { tracingMiddleware } from "./middleware/tracing.js";
 import { shutdownTracing } from "./lib/tracing.js";
@@ -208,16 +210,23 @@ app.use(requestLogger());
 // â”€â”€ Rate limiters â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Env-var parsing is centralised in config/rateLimits.ts (closes #539).
 
+// Global read limiter — scoped to /api, one counter per IP (#504).
+// Issue #734: emits both `RateLimit-*` and standard `X-RateLimit-*` headers so
+// every /api response advertises the current budget.
 // Global read limiter â€” scoped to /api, one counter per IP (#504).
 const globalReadLimiter = rateLimit({
   windowMs: RATE_LIMIT_WINDOW_MS,
   max: RATE_LIMIT_MAX,
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders: true,
   handler: (_req, res) => {
     res.setHeader(
       "Retry-After",
       String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)),
+    );
+    res.setHeader(
+      "X-RateLimit-Policy",
+      `${RATE_LIMIT_MAX};w=${Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)}`,
     );
     res.status(429).json({ error: RATE_LIMIT_MESSAGE, code: "RATE_LIMITED" });
   },
@@ -281,6 +290,7 @@ app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/analytics", analyticsRouter);
+app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 
@@ -415,6 +425,7 @@ const httpServer = app.listen(PORT, () => {
   initUsageEventStore();
   initMeterNotesStore();
   startUsageEventRetryWorker();
+  startUsageCompactionWorker();
   startLimitWatcher(stellarService);
   try {
     startIoTBridge();
