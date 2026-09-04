@@ -27,18 +27,8 @@ const winstonLogger = winston.createLogger({
 
 type Meta = Record<string, unknown>;
 
-/**
- * Merge the current request's correlation ID (if any) into log meta, and
- * strip anything sensitive out of it first.
- *
- * Closes #748: callers across the codebase routinely pass a raw Error (or
- * an object containing one, a request payload, an MQTT message, etc.) as
- * `meta`. Sanitizing centrally here — rather than at each of the ~50
- * call sites — means every logger.* call is protected, including ones
- * added in the future.
- */
-function withRequestId(meta: Meta): Meta {
-  const requestId = getReqId();
+function withRequestIdMeta(meta: Meta): Meta {
+  const requestId = getReqId() ?? getRequestId();
   const safeMeta = sanitizeForLogging(meta) as Meta;
   if (requestId) {
     return { requestId, ...safeMeta };
@@ -46,20 +36,16 @@ function withRequestId(meta: Meta): Meta {
   return safeMeta;
 }
 
-// Pino-style: logger.info({ meta }, "msg") or logger.info("msg")
-// Winston-style: logger.info("msg", { meta }) or logger.info("msg")
-// This wrapper accepts both call signatures.
 function makeLogFn(level: "fatal" | "error" | "warn" | "info" | "debug") {
   return (msgOrMeta: string | Meta, msgOrMeta2?: string | Meta, ...rest: unknown[]) => {
     if (typeof msgOrMeta === "string") {
-      // Called as: logger.info("msg", { meta }) — winston style
-      const meta = typeof msgOrMeta2 === "object" ? msgOrMeta2 : {};
-      winstonLogger.log(level === "fatal" ? "error" : level, msgOrMeta, withRequestId(meta));
-    } else {
-      // Called as: logger.info({ meta }, "msg") — pino style
-      const msg = typeof msgOrMeta2 === "string" ? msgOrMeta2 : String(rest[0] ?? "");
-      winstonLogger.log(level === "fatal" ? "error" : level, msg, withRequestId(msgOrMeta as Meta));
+      const meta = typeof msgOrMeta2 === "object" && msgOrMeta2 !== null ? msgOrMeta2 : {};
+      winstonLogger.log(level === "fatal" ? "error" : level, msgOrMeta, withRequestIdMeta(meta as Meta));
+      return;
     }
+
+    const msg = typeof msgOrMeta2 === "string" ? msgOrMeta2 : String(rest[0] ?? "");
+    winstonLogger.log(level === "fatal" ? "error" : level, msg, withRequestIdMeta(msgOrMeta as Meta));
   };
 }
 

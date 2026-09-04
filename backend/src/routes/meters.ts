@@ -26,9 +26,8 @@ import { adminAuth } from "../lib/adminAuth.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import { cacheFor, invalidateCache, etagFor } from "../middleware/cache.js";
 import { getMqttClient } from "../iot/mqttClient.js";
+import { RedisCache, CACHE_TTL } from "../lib/redisCache.js";
 
-const balanceCache = new Map<string, { data: any; ts: number }>();
-const BALANCE_CACHE_TTL_MS = 5_000; // 5-second cache to reduce RPC load
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
 export function createMeterRouter(stellar: StellarService) {
@@ -480,32 +479,33 @@ export function createMeterRouter(stellar: StellarService) {
     asyncHandler(async (req, res) => {
       const meterId = req.params.id;
 
-      // Check cache first
-      const cached = balanceCache.get(meterId);
-      if (cached && Date.now() - cached.ts < BALANCE_CACHE_TTL_MS) {
-        return res.json(cached.data);
-      }
-
       try {
-        const result = await stellar.query("get_meter", [
-          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
-        ]);
-        const meter = StellarSdk.scValToNative(result) as any;
-        const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
-        const lowBalanceThresholdStroops =
-          weeklyTypicalStroops > 0
-            ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
-            : FALLBACK_LOW_BALANCE_THRESHOLD;
-        const payload = {
-          meter_id: meterId,
-          balance: meter.balance,
-          units_used: meter.units_used,
-          active: meter.active,
-          weekly_typical_stroops: weeklyTypicalStroops,
-          low_balance_threshold_stroops: lowBalanceThresholdStroops,
-          is_low_balance: Number(meter.balance) <= lowBalanceThresholdStroops,
-        };
-        balanceCache.set(meterId, { data: payload, ts: Date.now() });
+        const payload = await RedisCache.getOrSet(
+          RedisCache.meterBalanceKey(meterId),
+          CACHE_TTL.METER_BALANCE,
+          async () => {
+            const result = await stellar.query("get_meter", [
+              StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+            ]);
+            const meter = StellarSdk.scValToNative(result) as any;
+            const weeklyTypicalStroops = getTypicalWeeklyUsageStroops(meterId);
+            const lowBalanceThresholdStroops =
+              weeklyTypicalStroops > 0
+                ? Math.max(1, Math.floor(weeklyTypicalStroops * 0.1))
+                : FALLBACK_LOW_BALANCE_THRESHOLD;
+
+            return {
+              meter_id: meterId,
+              balance: meter.balance,
+              units_used: meter.units_used,
+              active: meter.active,
+              weekly_typical_stroops: weeklyTypicalStroops,
+              low_balance_threshold_stroops: lowBalanceThresholdStroops,
+              is_low_balance: Number(meter.balance) <= lowBalanceThresholdStroops,
+            };
+          }
+        );
+
         res.json(payload);
       } catch (err: any) {
         res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });

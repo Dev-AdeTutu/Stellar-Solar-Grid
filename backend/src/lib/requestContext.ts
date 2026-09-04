@@ -16,10 +16,7 @@ export function getReqId(): string | undefined {
   return requestContext.getStore()?.reqId;
 }
 
-/**
- * Returns the request ID for the currently executing async context, or undefined.
- * Alias of getReqId() — use this for clarity in new code.
- */
+/** Alias retained for callers that use the expanded name. */
 export function getRequestId(): string | undefined {
   return getReqId();
 }

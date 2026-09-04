@@ -148,6 +148,50 @@ location /metrics {
 
 Or allow only the Prometheus container's IP via a firewall rule. A `METRICS_ALLOWED_CIDRS` env-var-driven IP-allowlist middleware can also be added to `backend/src/index.ts` in a future hardening pass.
 
+#### Distributed tracing (closes #763)
+
+The backend can export OpenTelemetry traces — one span per HTTP request plus child spans for each Stellar RPC call (`stellar.invoke`/`stellar.query`) — via OTLP/HTTP. It's off by default; enable it with `OTEL_ENABLED=true` (or simply set `OTEL_EXPORTER_OTLP_ENDPOINT`) in `backend/.env`, then bring up Jaeger alongside the stack:
+
+```bash
+docker compose --profile observability up --build
+```
+
+- **Jaeger** accepts OTLP/HTTP directly on `:4318` and serves its UI at `http://localhost:16686` — search by service name `solargrid-backend` to see a request's full path, including which Stellar RPC calls it made and how long they took.
+- Every response also carries an `X-Trace-Id` header (correlates with the `X-Request-ID` already in logs) so a slow/failed request reported in the UI can be looked up directly in Jaeger.
+- The frontend generates and propagates a W3C `traceparent` header on its backend API calls (`frontend/src/lib/tracing.ts`), so a trace started by a button click continues into the backend span for that request instead of starting a new, disconnected one.
+
+#### Stellar RPC circuit breaker (closes #761)
+
+All Stellar RPC traffic goes through a shared [opossum](https://github.com/nodeshift/opossum) circuit breaker (`backend/src/lib/circuitBreaker.ts`). If the RPC network is down or slow enough that requests keep failing, the breaker opens after `RPC_CIRCUIT_FAILURE_THRESHOLD` consecutive failures (default 5) and stops sending new requests for `RPC_CIRCUIT_RESET_MS` (default 30s), instead of every request separately waiting out its own timeout against a struggling endpoint:
+
+- **Read-only queries** (`stellarService.query`) fall back to the last successful cached result for that query while the breaker is open.
+- **Writes and uncached queries** fail fast with `503 { code: "CIRCUIT_OPEN" }` instead of blocking.
+- Breaker state is visible at `GET /health` (`rpcCircuitBreaker: "closed" | "half-open" | "open"`) and in Prometheus (`solargrid_rpc_circuit_breaker_state`, `solargrid_rpc_circuit_breaker_trips_total`).
+
+This sits above, and is complementary to, the per-endpoint failover already in `RpcPool` (`backend/src/lib/rpcPool.ts`): `RpcPool` decides which of several configured RPC URLs to try next; this breaker decides whether to attempt a Stellar RPC call at all once the pool's failover options are exhausted and calls are still failing.
+
+#### Fee safety margin for large batches (closes #762)
+
+`simulateTransaction`'s resource-fee estimate is a point-in-time snapshot; actual execution cost can drift by submission time (e.g. rent bumps on entries touched by the operation), and that drift scales with how many ledger entries the operation touches — which is why large batch calls like `batch_update_usage` over 80+ meters used to fail with "insufficient fee" even with a fresh estimate.
+
+Both the admin-signed backend path (`backend/src/lib/stellar.ts`) and the wallet-signed frontend path (`frontend/src/lib/contract.ts`) now pad the assembled fee by a percentage margin before signing/submitting, so the cushion scales with the operation instead of needing a manual 2x multiplier:
+
+- Backend: `RPC_FEE_SAFETY_MARGIN_PCT` (default 20, see `backend/.env.example`).
+- Frontend: `NEXT_PUBLIC_FEE_SAFETY_MARGIN_PCT` (default 20, see `frontend/.env.example`).
+
+#### White-label branding (closes #764)
+
+Energy providers running their own deployment of the dashboard can customize branding without forking the UI, via `NEXT_PUBLIC_BRAND_*` env vars (see `frontend/.env.example` and `frontend/src/lib/branding.ts`):
+
+| Variable | Effect |
+|---|---|
+| `NEXT_PUBLIC_BRAND_NAME` | Shown in the navbar and page title. |
+| `NEXT_PUBLIC_BRAND_LOGO_URL` | Logo image shown in the navbar in place of the default emoji. |
+| `NEXT_PUBLIC_BRAND_PRIMARY_COLOR` / `NEXT_PUBLIC_BRAND_SECONDARY_COLOR` | Hex colors applied as the `--color-brand-primary`/`--color-brand-secondary` CSS custom properties (see `globals.css`) that drive the `solar.yellow`/`solar.secondary` Tailwind colors app-wide. |
+| `NEXT_PUBLIC_BRAND_FOOTER_TEXT` | Custom footer text; defaults to a copyright line using the configured brand name. |
+
+All are optional with sensible defaults matching the built-in SolarGrid look. This is deployment-time configuration rather than a database-backed settings UI — there's no multi-tenant provider model in this app, just one deployment per provider, so a logo *URL* (rather than an upload-and-store pipeline) and env vars (rather than new storage/auth surface) match how the rest of the app is already configured (fee margins, rate limits, circuit breaker thresholds, etc.).
+
 ## Smart Contract Overview
 
 The `SolarGrid` contract manages:
@@ -160,6 +204,7 @@ The `SolarGrid` contract manages:
 | `get_usage(meter_id)` | Retrieve usage data |
 | `update_usage(meter_id, units)` | Called by IoT oracle to update consumption |
 | `deactivate_meter(meter_id)` | Admin-only: immediately deactivate a meter |
+| `batch_deactivate_meters(meter_ids)` | Admin-only: deactivate multiple meters in a single transaction |
 
 ## Backend API
 
