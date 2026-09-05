@@ -154,6 +154,64 @@ function PlanBadge({ plan }: { plan: string }) {
   );
 }
 
+/**
+ * Daily usage cap status (closes #758): shows plain progress under 80%,
+ * an amber alert at 80-99%, and a red alert once the cap is reached — with
+ * different copy depending on whether the meter auto-deactivates or only
+ * warns when the cap is hit.
+ */
+function DailyCapAlert({
+  daySpent,
+  dailyLimit,
+  autoDeactivate,
+}: {
+  daySpent: bigint;
+  dailyLimit: bigint;
+  autoDeactivate: boolean;
+}) {
+  if (dailyLimit <= 0n) return null;
+  const ratio = Number(daySpent) / Number(dailyLimit);
+  const percent = Math.min(999, Math.round(ratio * 100));
+  const reached = ratio >= 1;
+  const approaching = !reached && ratio >= 0.8;
+
+  if (!reached && !approaching) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-gray-500">
+        <span className="uppercase tracking-wider">Daily cap</span>
+        <span>
+          {stroopsToXlm(daySpent)} / {stroopsToXlm(dailyLimit)} XLM ({percent}%)
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role="status"
+      className={`rounded-lg border p-3 text-xs flex items-start gap-2 ${
+        reached
+          ? "border-red-600/40 bg-red-950/40 text-red-300"
+          : "border-amber-500/40 bg-amber-950/40 text-amber-300"
+      }`}
+    >
+      <span className="mt-0.5" aria-hidden="true">{reached ? "🛑" : "⚠️"}</span>
+      {reached ? (
+        <p>
+          <strong>Daily cap reached</strong> ({percent}% of {stroopsToXlm(dailyLimit)} XLM/day).{" "}
+          {autoDeactivate
+            ? "Usage is paused until the cap resets at midnight UTC."
+            : "Meter keeps running (warn-only mode)."}
+        </p>
+      ) : (
+        <p>
+          Approaching daily cap — <strong>{percent}%</strong> of {stroopsToXlm(dailyLimit)} XLM used today.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ErrorCard({ meterId, error }: { meterId: string; error: string }) {
   return (
     <div className="rounded-xl border border-red-500/40 bg-red-900/20 p-4 sm:p-5 space-y-4">
@@ -539,6 +597,15 @@ function MeterCard({
           </p>
         </div>
       ) : null}
+
+      {/* Daily usage cap status */}
+      {typeof meter.daily_limit === "bigint" && meter.daily_limit > 0n && (
+        <DailyCapAlert
+          daySpent={meter.day_spent ?? 0n}
+          dailyLimit={meter.daily_limit}
+          autoDeactivate={meter.auto_deactivate ?? true}
+        />
+      )}
 
       {/* Usage Forecasting */}
       <UsageForecast

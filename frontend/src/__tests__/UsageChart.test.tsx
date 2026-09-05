@@ -4,6 +4,9 @@ import UsageChart, {
   formatTickLocal,
   formatTooltipLocal,
   hasTimeComponent,
+  isMobileWidth,
+  computeXAxisTickInterval,
+  MOBILE_BREAKPOINT_PX,
 } from "@/components/UsageChart";
 
 // recharts uses ResizeObserver internally — polyfill for jsdom
@@ -140,6 +143,68 @@ describe("UsageChart", () => {
 
     it("falls back to the raw value for an unparseable string", () => {
       expect(formatTooltipLocal("not-a-date")).toBe("not-a-date");
+    });
+  });
+
+  // ── Mobile responsiveness (issue #760: chart overflow / unreadable axis) ──
+
+  describe("isMobileWidth", () => {
+    it("is true just below the 768px breakpoint", () => {
+      expect(isMobileWidth(MOBILE_BREAKPOINT_PX - 1)).toBe(true);
+      expect(isMobileWidth(390)).toBe(true); // iPhone 13 width from the bug report
+    });
+
+    it("is false at or above the 768px breakpoint", () => {
+      expect(isMobileWidth(MOBILE_BREAKPOINT_PX)).toBe(false);
+      expect(isMobileWidth(1024)).toBe(false);
+    });
+  });
+
+  describe("computeXAxisTickInterval", () => {
+    it("shows every tick on desktop regardless of dataset size", () => {
+      expect(computeXAxisTickInterval(30, false)).toBe(0);
+    });
+
+    it("thins ticks down to ~5 labels on mobile for a large dataset", () => {
+      // interval=5 means "show every 6th tick" -> ceil(30/5) labels ~= 5
+      expect(computeXAxisTickInterval(30, true)).toBe(5);
+    });
+
+    it("shows every tick on mobile when the dataset already has few points", () => {
+      expect(computeXAxisTickInterval(3, true)).toBe(0);
+    });
+  });
+
+  describe("mobile viewport rendering", () => {
+    const ORIGINAL_WIDTH = window.innerWidth;
+
+    afterEach(() => {
+      Object.defineProperty(window, "innerWidth", {
+        writable: true,
+        configurable: true,
+        value: ORIGINAL_WIDTH,
+      });
+    });
+
+    it("renders without throwing at a narrow (390px) mobile viewport", () => {
+      Object.defineProperty(window, "innerWidth", {
+        writable: true,
+        configurable: true,
+        value: 390,
+      });
+      expect(() => render(<UsageChart data={SAMPLE_DATA} meterId="METER_001" />)).not.toThrow();
+      expect(screen.getByText("METER_001")).toBeInTheDocument();
+    });
+
+    it("stays within its container on mobile (chartContainer clips horizontal overflow)", () => {
+      Object.defineProperty(window, "innerWidth", {
+        writable: true,
+        configurable: true,
+        value: 390,
+      });
+      const { container } = render(<UsageChart data={SAMPLE_DATA} />);
+      const chartContainer = container.querySelector('[class*="chartContainer"]');
+      expect(chartContainer).not.toBeNull();
     });
   });
 });

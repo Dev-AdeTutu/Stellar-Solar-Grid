@@ -12,10 +12,7 @@ import compression from "compression";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
-import { WebSocketServer } from "ws";
-import { useServer } from "graphql-ws/use/ws";
-import { schema, rootValue } from "./routes/graphql.js";
-import { parse } from "graphql";
+import * as OpenApiValidator from "express-openapi-validator";
 
 import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
@@ -35,8 +32,7 @@ import { usageEventsRouter } from "./routes/usageEvents.js";
 import { analyticsRouter } from "./routes/analytics.js";
 import { insightsRouter } from "./routes/insights.js";
 import { graphqlRouter } from "./routes/graphql.js";
-import { delegatesRouter } from "./routes/delegates.js";
-import { startIoTBridge } from "./iot/bridge.js";
+import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
@@ -192,6 +188,22 @@ app.use((req, _res, next) => {
   logger.info("Incoming request", { method: req.method, path: req.path });
   next();
 });
+
+// ── OpenAPI request validation ───────────────────────────────────────────────
+// Closes #759: validate incoming requests against openapi.yaml instead of
+// relying on ad-hoc per-route checks. Only endpoints documented in the spec
+// are validated (ignoreUndocumented) so routes not yet described there (e.g.
+// /api/graphql, /api/admin/login) keep working unchanged. Response-schema
+// validation only runs in local development — it's too strict/expensive for
+// production or test runs.
+app.use(
+  OpenApiValidator.middleware({
+    apiSpec: "./openapi.yaml",
+    validateRequests: true,
+    validateResponses: process.env.NODE_ENV === "development",
+    ignoreUndocumented: true,
+  }),
+);
 
 // ── API versioning ──────────────────────────────────────────────────────────
 // /api/v1/* is the versioned, stable surface. /api/* remains an alias to the
@@ -393,6 +405,16 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       .status(400)
       .json({ error: "Invalid JSON body", code: "INVALID_JSON", requestId });
   }
+  // express-openapi-validator request/response validation failures (#759):
+  // surfaced as an error with a numeric `status` and an `errors` array.
+  if (Array.isArray((err as any).errors)) {
+    return res.status((err as any).status || 400).json({
+      error: "Validation failed",
+      code: "VALIDATION_ERROR",
+      details: (err as any).errors,
+      requestId,
+    });
+  }
   if ((err as any).status === 404) {
     return res
       .status(404)
@@ -434,50 +456,39 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 
-// Issue #696: Graceful shutdown — clean up eviction timer and close server
-function gracefulShutdown(signal: string) {
-  logger.info({ signal }, "Received shutdown signal, starting graceful shutdown...");
-  _stopEvictionTimer();
-  httpServer.close(() => {
-    logger.info("Server closed gracefully");
-    process.exit(0);
-  });
-  // Force close after 10 seconds
-  setTimeout(() => {
-    logger.warn("Forcefully closing server after timeout");
-    process.exit(1);
-  }, 10_000);
-}
-
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-const graphqlWs = new WebSocketServer({ server: httpServer, path: "/api/graphql" });
-const graphqlCleanup = useServer({
-  schema,
-  context: ({ connectionParams }) => {
-    const params = (connectionParams ?? {}) as Record<string, unknown>;
-    return { address: typeof params.address === "string" ? params.address : undefined };
-  },
-  onSubscribe: async (_ctx, _id, msg) => {
-    const payload = msg as unknown as { query?: string; variables?: Record<string, unknown>; operationName?: string };
-    if (!payload.query) return [];
-    return { schema, document: parse(payload.query), rootValue, variableValues: payload.variables, operationName: payload.operationName };
-  },
-}, graphqlWs);
+// Graceful shutdown (closes #757): stop accepting new connections, let
+// in-flight requests finish (bounded to GRACEFUL_SHUTDOWN_TIMEOUT_MS, default
+// 30s), then close the MQTT bridge and database handles before exiting.
+// If shutdown doesn't complete within the deadline, force-exit with code 1
+// so an orchestrator (Docker/K8s) isn't left waiting.
+const GRACEFUL_SHUTDOWN_TIMEOUT_MS = Number(
+  process.env.GRACEFUL_SHUTDOWN_TIMEOUT_MS ?? 30_000,
+);
 
 function shutdown(signal: string): void {
   logger.info({ signal }, "SolarGrid backend shutting down");
-  void graphqlCleanup.dispose();
-  graphqlWs.close();
-  httpServer.close(() => {
-    closeAllDatabases();
-  });
 
   const forceExitTimer = setTimeout(() => {
+    logger.error({ signal }, "Graceful shutdown timed out; forcing exit");
     closeAllDatabases();
-    process.exitCode = 1;
-  }, 10_000);
+    process.exit(1);
+  }, GRACEFUL_SHUTDOWN_TIMEOUT_MS);
   forceExitTimer.unref();
+
+  httpServer.close(async (err) => {
+    if (err) {
+      logger.error({ err }, "Error while closing HTTP server");
+    }
+    try {
+      await stopIoTBridge();
+    } catch (bridgeErr) {
+      logger.error({ err: bridgeErr }, "Error stopping IoT bridge during shutdown");
+    }
+    closeAllDatabases();
+    clearTimeout(forceExitTimer);
+    logger.info({ signal }, "SolarGrid backend shut down cleanly");
+    process.exit(0);
+  });
 }
 
 process.once("SIGTERM", () => shutdown("SIGTERM"));

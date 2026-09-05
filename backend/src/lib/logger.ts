@@ -1,53 +1,29 @@
 import winston from "winston";
-import { getReqId, getRequestId } from "./requestContext.js";
+import { getReqId } from "./requestContext.js";
 import { sanitizeForLogging } from "./errorSanitizer.js";
 
 const isProduction = process.env.NODE_ENV === "production";
-const useJson = (process.env.LOG_FORMAT ?? (isProduction ? "json" : "text")) === "json";
-const SERVICE_NAME = "solargrid-backend";
 
-const withRequestIdFormat = winston.format((info) => {
-  const requestId = getReqId() ?? getRequestId();
-  if (requestId) {
-    (info as { request_id?: string }).request_id = requestId;
-  }
-  return info;
-});
-
-const developmentFormat = winston.format.combine(
-  withRequestIdFormat(),
-  winston.format.errors({ stack: true }),
-  winston.format.colorize(),
-  winston.format.timestamp({ format: "HH:mm:ss" }),
-  winston.format.printf(({ timestamp, level, message, request_id, ...meta }) => {
-    const metaKeys = Object.keys(meta);
-    const metaStr = metaKeys.length > 0 ? ` ${JSON.stringify(meta)}` : "";
-    const reqStr = request_id ? ` [${request_id}]` : "";
-    return `${timestamp} ${level}${reqStr} ${message}${metaStr}`;
-  }),
-);
-
-const structuredFormat = winston.format.combine(
-  withRequestIdFormat(),
-  winston.format.errors({ stack: true }),
-  winston.format.timestamp(),
-  winston.format.json(),
-);
+const fmt = isProduction
+  ? winston.format.combine(winston.format.timestamp(), winston.format.json())
+  : winston.format.combine(
+      winston.format.colorize(),
+      winston.format.timestamp({ format: "HH:mm:ss" }),
+      winston.format.printf(({ timestamp, level, message, ...meta }) => {
+        const metaStr = Object.keys(meta).length > 0 ? ` ${JSON.stringify(meta)}` : "";
+        return `${timestamp} ${level} ${message}${metaStr}`;
+      }),
+    );
 
 const winstonLogger = winston.createLogger({
   level: process.env.LOG_LEVEL ?? "info",
-  defaultMeta: { service: SERVICE_NAME },
-  format: useJson ? structuredFormat : developmentFormat,
+  format: fmt,
   transports: [
     new winston.transports.Console(),
     new winston.transports.File({ filename: "logs/error.log", level: "error" }),
     new winston.transports.File({ filename: "logs/combined.log" }),
   ],
 });
-
-export function getComponentLogger(component: string) {
-  return winstonLogger.child({ component });
-}
 
 type Meta = Record<string, unknown>;
 

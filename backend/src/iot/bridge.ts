@@ -100,12 +100,10 @@ export async function stopIoTBridge(): Promise<void> {
   mqttClient?.end(true);
 }
 
-process.on("SIGTERM", () => {
-  stopIoTBridge().catch((err) => logger.error("Shutdown error on SIGTERM", { err }));
-});
-process.on("SIGINT", () => {
-  stopIoTBridge().catch((err) => logger.error("Shutdown error on SIGINT", { err }));
-});
+// Note: shutdown is coordinated centrally in index.ts's SIGTERM/SIGINT
+// handler, which awaits stopIoTBridge() before closing databases (closes
+// #757) — registering separate signal listeners here would race the
+// database close against this module's flush().
 
 const LOW_BALANCE_THRESHOLD = parseInt(
   process.env.LOW_BALANCE_THRESHOLD ?? "1000000",
@@ -697,7 +695,7 @@ export async function handleContractEvent(
         const meterId = subject;
         logger.info("limit_hit contract event received", { meterId });
         contractEventsProcessed.inc({ topic: eventKey });
-        await onMeterDeactivated(meterId);
+        await onDailyLimitHit(meterId);
         break;
       }
 
@@ -846,4 +844,56 @@ async function onMeterDeactivated(meterId: string) {
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, 'Failed to publish OFF command'); },
   );
+}
+
+/**
+ * Handles the contract's limit_hit event — fired once day_spent reaches
+ * daily_limit (100% of the cap). Distinct from limitWatcher's 80%-of-cap
+ * warning (closes #758): always alerts (MQTT + registered webhooks), and
+ * only turns the meter relay off when the meter's auto_deactivate flag is
+ * true — a meter in "warn only" mode (auto_deactivate: false) keeps running.
+ */
+async function onDailyLimitHit(meterId: string) {
+  let autoDeactivate = true;
+  try {
+    const result = await contractQuery("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    const meter = StellarSdk.scValToNative(result) as {
+      auto_deactivate?: boolean;
+      [key: string]: unknown;
+    };
+    if (typeof meter.auto_deactivate === "boolean") {
+      autoDeactivate = meter.auto_deactivate;
+    }
+  } catch (err) {
+    logger.error("Failed to read meter while handling daily-limit alert", { meterId, err });
+  }
+
+  logger.warn(
+    { event: "daily_limit_hit", meterId, autoDeactivate },
+    "Daily usage cap reached (100%)",
+  );
+
+  mqttClient?.publish(
+    `meters/${meterId}/warnings`,
+    JSON.stringify({ type: "DAILY_LIMIT_REACHED", ratio: 1, meterId, autoDeactivate }),
+    { qos: 1 },
+    (err) => { if (err) logger.error({ meterId, err }, "Failed to publish DAILY_LIMIT_REACHED warning"); },
+  );
+
+  const urls = getWebhookUrls();
+  if (urls.size > 0) {
+    const body = JSON.stringify({
+      event: "daily_limit_reached",
+      meter_id: meterId,
+      auto_deactivate: autoDeactivate,
+      timestamp: new Date().toISOString(),
+    });
+    await Promise.all([...urls].map((url) => fireWebhook(url, body)));
+  }
+
+  if (autoDeactivate) {
+    await onMeterDeactivated(meterId);
+  }
 }

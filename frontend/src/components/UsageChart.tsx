@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   LineChart,
@@ -28,6 +28,47 @@ type ComparisonDataPoint = UsageDataPoint & {
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Matches the "< 768px" mobile viewport described in issue #760. */
+export const MOBILE_BREAKPOINT_PX = 768;
+
+/** True when `width` is narrower than the mobile breakpoint. */
+export function isMobileWidth(width: number): boolean {
+  return width < MOBILE_BREAKPOINT_PX;
+}
+
+/**
+ * How many x-axis ticks recharts should skip between labels. On mobile this
+ * thins a dataset down to ~5 visible labels so rotated text doesn't overlap;
+ * on desktop every tick is shown. The underlying data series is unaffected —
+ * only which x-axis labels are drawn (closes #760).
+ */
+export function computeXAxisTickInterval(dataLength: number, isMobile: boolean): number {
+  if (!isMobile) return 0;
+  return Math.max(0, Math.ceil(dataLength / 5) - 1);
+}
+
+/**
+ * True when the viewport is narrower than MOBILE_BREAKPOINT_PX. Uses
+ * window.innerWidth + a resize listener rather than matchMedia so it works
+ * without extra polyfills in the jsdom test environment (closes #760).
+ */
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== "undefined" && isMobileWidth(window.innerWidth),
+  );
+
+  useEffect(() => {
+    function handleResize() {
+      setIsMobile(isMobileWidth(window.innerWidth));
+    }
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  return isMobile;
+}
 
 /** True if `value` carries a time-of-day component. */
 export function hasTimeComponent(value: string): boolean {
@@ -224,30 +265,16 @@ export function UsageChart({ data: rawData, loading = false, meterId }: UsageCha
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const isEmpty = !loading && data.length === 0;
+  const isMobile = useIsMobile();
 
   const comparisonData = useMemo(
     () => buildComparisonData(data, period, customStart, customEnd),
     [data, period, customStart, customEnd],
   );
-  // Memoized so an unchanged dataset does not rebuild the Recharts tree on
-  // parent re-render (dashboards poll balances and re-render MeterCard/UsageChart
-  // on every tick — #736). Without this, Recharts tears down and rebuilds its
-  // SVG/DOM (and its ResizeObserver listeners) each poll, leaking detached trees.
-  const chartData = useMemo(
-    () => (compareEnabled ? comparisonData : data),
-    [compareEnabled, comparisonData, data],
-  );
-  const currentTotal = useMemo(
-    () =>
-      compareEnabled
-        ? comparisonData.reduce((sum, point) => sum + point.units, 0)
-        : data.reduce((sum, point) => sum + point.units, 0),
-    [compareEnabled, comparisonData, data],
-  );
-  const previousTotal = useMemo(
-    () => (compareEnabled ? comparisonData.reduce((sum, point) => sum + (point.previousUnits ?? 0), 0) : 0),
-    [compareEnabled, comparisonData],
-  );
+  const chartData = compareEnabled ? comparisonData : data;
+  const xAxisTickInterval = computeXAxisTickInterval(chartData.length, isMobile);
+  const currentTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + point.units, 0) : data.reduce((sum, point) => sum + point.units, 0);
+  const previousTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + (point.previousUnits ?? 0), 0) : 0;
   const differencePercent = previousTotal > 0 ? ((currentTotal - previousTotal) / previousTotal) * 100 : null;
 
   // Derived flags + a memoized chart subtree (#736).
@@ -342,8 +369,35 @@ export function UsageChart({ data: rawData, loading = false, meterId }: UsageCha
             <p className="max-w-xs text-xs text-gray-600">Data will appear here after your first recorded unit.</p>
           </div>
         ) : (
-          <ResponsiveContainer width="100%" height={192}>
-            {chart}
+          <ResponsiveContainer width="100%" height={isMobile ? 220 : 192}>
+            <LineChart
+              data={chartData}
+              margin={{ top: 4, right: 8, left: -20, bottom: isMobile ? 24 : 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis
+                dataKey="date"
+                tickFormatter={formatTickLocal}
+                tick={{ fill: "#6b7280", fontSize: 11 }}
+                axisLine={false}
+                tickLine={false}
+                interval={xAxisTickInterval}
+                angle={isMobile ? -45 : 0}
+                textAnchor={isMobile ? "end" : "middle"}
+                height={isMobile ? 44 : 30}
+              />
+              <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
+              <Tooltip
+                content={<CustomTooltip />}
+                labelFormatter={formatTooltipLocal}
+                trigger={isMobile ? "click" : "hover"}
+              />
+              <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
+              <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: isMobile ? 7 : 5, fill: "#F5C518" }} connectNulls={false} />
+              {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: isMobile ? 6 : 4, fill: "#38bdf8" }} connectNulls={false} />}
+              {!compareEnabled && data.some((point) => point.cost !== undefined) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: isMobile ? 7 : 5, fill: "#818cf8" }} />}
+              {compareEnabled && comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}
+            </LineChart>
           </ResponsiveContainer>
         )}
       </div>

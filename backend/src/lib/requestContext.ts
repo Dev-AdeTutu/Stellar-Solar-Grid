@@ -1,4 +1,4 @@
-import { AsyncLocalStorage } from "async_hooks";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface RequestContext {
   reqId: string;
@@ -6,9 +6,9 @@ export interface RequestContext {
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
-/** Run a function with a request id bound to the current async context. */
-export function runWithRequestId<T>(reqId: string, fn: () => T): T {
-  return requestContext.run({ reqId }, fn);
+/** Run `fn` with a request id bound to async-local storage for the duration of the request. */
+export function runWithRequestId<T>(requestId: string, fn: () => T): T {
+  return requestContext.run({ reqId: requestId }, fn);
 }
 
 /** Returns the request ID for the currently executing async context, or undefined. */
