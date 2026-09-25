@@ -62,6 +62,7 @@ import { initMeterNotesStore, getMeterNotesPoolStatus } from "./lib/meterNotes.j
 import { getUsageHistoryPoolStatus } from "./lib/usageHistory.js";
 import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { getReqId } from "./lib/requestContext.js";
+import { exportRouter } from "./routes/export.js";
 // Issue #696: Import idempotency cleanup for graceful shutdown
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
@@ -132,6 +133,7 @@ app.use("/api/meters/map", meterMapRouter);
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
+app.use("/api/export", exportRouter);
 app.use("/api/delegates", writeLimiter, delegatesRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);

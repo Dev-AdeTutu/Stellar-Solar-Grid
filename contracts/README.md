@@ -190,3 +190,23 @@ The `batch_register_meters(meters: Vec<(String, Address)>)` function enables ene
 - **Input Validation:** Pre-validates empty meter IDs, duplicate IDs in batch, existing meters, and owner allowlist membership.
 - **Event Emission:** Emits standard `meter_registered` (`mtr_reg`) event for each successfully registered meter and `batch_skip` (`btch_skip`) for failed/skipped entries.
 - **Detailed Error Reporting:** Returns `Vec<BatchRegisterResult>` with `meter_id`, `success: bool`, and `error: Option<String>` detailing reasons for any partial failures (`empty_meter_id`, `duplicate_in_batch`, `meter_already_exists`, `owner_not_allowlisted`).
+
+## Meter Groups, Referrals, and Installation Dates (Issues #829, #831, #832)
+
+### Meter groups (#829)
+
+- `create_meter_group(group_id, name, owner)` creates an owner-controlled group.
+- `add_meter_to_group(group_id, meter_id)` and `remove_meter_from_group(group_id, meter_id)` manage membership; a meter must belong to the group owner.
+- `batch_pay_group(group_id, payer, amount, plan, memo)` splits the payment across all group meters.
+- `get_group_stats(group_id)` returns meter count, active count, aggregate units used, and aggregate balance.
+
+### Referrals (#831)
+
+- `set_referrer(referred, referrer)` can be called once by the referred address and rejects self-referrals.
+- The admin configures `set_referral_bonus_percent(percent)` from 0–100.
+- Each direct payment by a referred address credits the referrer’s tracked balance and updates `ReferralStats`.
+- The `ref_crdt` event contains the referrer and `(payer, credit)`.
+
+### Installation dates (#832)
+
+`Meter` is now schema version 6 and includes `installed_at`, initialized to the ledger timestamp at registration. `migrate_meter_v5(meter_id)` upgrades legacy entries using their last-payment/registration timestamp. Admins can correct historical dates with `set_installation_date`; future timestamps are rejected. `get_installed_at` exposes the value.

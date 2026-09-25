@@ -55,6 +55,10 @@ pub enum ContractError {
     AutoTopupNotConfigured = 32,
     /// Auto top-up threshold and amount must both be positive.
     InvalidAutoTopup = 33,
+    MeterGroupNotFound = 34,
+    MeterGroupAlreadyExists = 35,
+    InvalidReferral = 36,
+    InvalidInstallationDate = 37,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -213,6 +217,27 @@ pub struct Meter {
     /// is rejected. When false, the limit_hit event still fires but the usage
     /// is allowed through ("warn only" mode).
     pub auto_deactivate: bool,
+    /// Unix ledger timestamp when the meter was physically installed.
+    pub installed_at: u64,
+}
+
+/// v5 layout — kept for the v5-to-v6 installation-date migration.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeterV5 {
+    pub version: u32,
+    pub owner: Address,
+    pub active: bool,
+    pub units_used: u64,
+    pub plan: PaymentPlan,
+    pub last_payment: u64,
+    pub expires_at: u64,
+    pub daily_limit: i128,
+    pub day_spent: i128,
+    pub day_start: u64,
+    pub grace_expires_at: Option<u64>,
+    pub emergency_contact: Option<Address>,
+    pub auto_deactivate: bool,
 }
 
 /// v2 layout — kept for migration from the pre-emergency-contact schema.
@@ -231,6 +256,16 @@ pub struct LegacyMeterV2 {
     pub day_start: u64,
     pub grace_expires_at: Option<u64>,
 }
+/// v3 layout — includes the emergency contact added before v4.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeterV3 {
+    pub version: u32, pub owner: Address, pub active: bool, pub units_used: u64,
+    pub plan: PaymentPlan, pub last_payment: u64, pub expires_at: u64,
+    pub daily_limit: i128, pub day_spent: i128, pub day_start: u64,
+    pub grace_expires_at: Option<u64>, pub emergency_contact: Option<Address>,
+    pub auto_deactivate: bool,
+}
 
 /// v0 layout — kept for migration purposes only.
 /// Remove once all persistent entries have been migrated to v1.
@@ -246,10 +281,10 @@ pub struct LegacyMeter {
     pub expires_at: u64,
 }
 
-/// Migrate a v0 (legacy) meter entry to the current v4 schema.
+/// Migrate a v0 (legacy) meter entry to the current v6 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: 4,
+        version: 6,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -262,13 +297,14 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         grace_expires_at: None,
         emergency_contact: None,
         auto_deactivate: true,
+        installed_at: old.last_payment,
     }
 }
 
-/// Migrate a v1 meter entry to the current v4 schema.
+/// Migrate a v1 meter entry to the current v6 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 4,
+        version: 6,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -281,12 +317,13 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         grace_expires_at: None,
         emergency_contact: None,
         auto_deactivate: true,
+        installed_at: old.last_payment,
     }
 }
 
 fn migrate_meter_v2(env: &Env, old: LegacyMeterV2) -> Meter {
     Meter {
-        version: 4,
+        version: 6,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -299,7 +336,16 @@ fn migrate_meter_v2(env: &Env, old: LegacyMeterV2) -> Meter {
         grace_expires_at: old.grace_expires_at,
         emergency_contact: None,
         auto_deactivate: true,
+        installed_at: old.last_payment,
     }
+}
+
+fn migrate_meter_v3(old: LegacyMeterV3) -> Meter {
+    Meter { version: 6, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment }
+}
+
+fn migrate_meter_v5(old: LegacyMeterV5) -> Meter {
+    Meter { version: 6, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment }
 }
 
 /// Returns the number of seconds a payment plan is valid for.
@@ -351,6 +397,12 @@ pub enum DataKey {
     AdminProposal(u32),
     /// Owner-authorized automatic top-up settings for a meter.
     AutoTopup(String),
+    MeterGroup(String),
+    OwnerGroups(Address),
+    Referrer(Address),
+    ReferralStats(Address),
+    ReferralCredit(Address),
+    ReferralBonusPercent,
 }
 
 #[contracttype]
@@ -361,6 +413,15 @@ pub struct AutoTopupConfig {
     pub amount: i128,
     pub enabled: bool,
 }
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeterGroup { pub id: String, pub name: String, pub owner: Address, pub meter_ids: Vec<String> }
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupStats { pub meter_count: u32, pub active_count: u32, pub total_units_used: u64, pub total_balance: i128 }
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferralStats { pub referred_count: u32, pub total_credits: i128 }
 
 /// Tracks admin-issued refunds within the current rolling window, used to cap
 /// total refunds per period and prevent contract balance drainage.
@@ -529,7 +590,7 @@ impl SolarGridContract {
         // ── EFFECTS — all state writes before any external observation ──────
         let now = env.ledger().timestamp();
         let meter = Meter {
-            version: 4,
+            version: 6,
             owner: owner.clone(),
             active: false,
             units_used: 0,
@@ -542,6 +603,7 @@ impl SolarGridContract {
             grace_expires_at: None,
             emergency_contact: None,
             auto_deactivate: true,
+            installed_at: now,
         };
         env.storage().persistent().set(&key, &meter);
 
@@ -669,7 +731,7 @@ impl SolarGridContract {
             seen.push_back(meter_id.clone());
 
             let meter = Meter {
-                version: 4,
+                version: 6,
                 owner: owner.clone(),
                 active: false,
                 units_used: 0,
@@ -682,6 +744,7 @@ impl SolarGridContract {
                 grace_expires_at: None,
                 emergency_contact: None,
                 auto_deactivate: true,
+            installed_at: now,
             };
             env.storage().persistent().set(&key, &meter);
 
@@ -1385,6 +1448,8 @@ impl SolarGridContract {
         meter.last_payment = now;
         meter.expires_at = expires_at;
         meter.grace_expires_at = None;
+        meter.version = 6;
+        if meter.installed_at == 0 { meter.installed_at = now; }
         env.storage().persistent().set(&key, &meter);
 
         // Track provider (admin) accrued revenue
@@ -1394,6 +1459,19 @@ impl SolarGridContract {
         env.storage()
             .persistent()
             .set(&provider_key, &provider_revenue.saturating_add(amount));
+
+        if let Some(referrer) = env.storage().persistent().get::<DataKey, Address>(&DataKey::Referrer(payer.clone())) {
+            let percent: u32 = env.storage().instance().get(&DataKey::ReferralBonusPercent).unwrap_or(0);
+            let credit = amount.saturating_mul(i128::from(percent)) / 100;
+            let credit_key = DataKey::ReferralCredit(referrer.clone());
+            let old_credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
+            env.storage().persistent().set(&credit_key, &old_credit.saturating_add(credit));
+            let stats_key = DataKey::ReferralStats(referrer.clone());
+            let mut stats: ReferralStats = env.storage().persistent().get(&stats_key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 });
+            stats.total_credits = stats.total_credits.saturating_add(credit);
+            env.storage().persistent().set(&stats_key, &stats);
+            env.events().publish((EVT_NS, symbol_short!("ref_crdt"), referrer), (payer.clone(), credit));
+        }
 
         // ── INTERACTION ─────────────────────────────────────────────────────
         // External call happens last, after all state above is finalized.
@@ -2753,9 +2831,14 @@ impl SolarGridContract {
         if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(key) {
             return Ok(meter);
         }
+        if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeterV5>(key) {
+            let migrated = migrate_meter_v5(legacy);
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
+        }
         if let Some(legacy) = env.storage().persistent().get::<DataKey, LegacyMeterV3>(key) {
             // Read-through migration from v3 to v4 (adds metadata).
-            let migrated = migrate_meter_v3(env, legacy);
+            let migrated = migrate_meter_v3(legacy);
             env.storage().persistent().set(key, &migrated);
             return Ok(migrated);
         }
@@ -2780,6 +2863,25 @@ impl SolarGridContract {
         Err(ContractError::MeterNotFound)
     }
 
+    /// Migrate a v5 meter to v6, defaulting installed_at to registration/last-payment time.
+    pub fn migrate_meter_v5(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let key = DataKey::Meter(meter_id);
+        if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(&key) {
+            if meter.version >= 6 { return Ok(()); }
+        }
+        let legacy: LegacyMeterV5 = env.storage().persistent().get(&key).ok_or(ContractError::MeterNotFound)?;
+        env.storage().persistent().set(&key, &migrate_meter_v5(legacy));
+        Ok(())
+    }
+    pub fn set_installation_date(env: Env, meter_id: String, installed_at: u64) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if installed_at > env.ledger().timestamp() { return Err(ContractError::InvalidInstallationDate); }
+        let key = DataKey::Meter(meter_id.clone()); let mut meter = Self::get_meter_or_error(&env, &key)?;
+        meter.installed_at = installed_at; meter.version = 6; env.storage().persistent().set(&key, &meter);
+        env.events().publish((EVT_NS, symbol_short!("inst_date"), meter_id), installed_at); Ok(())
+    }
+    pub fn get_installed_at(env: Env, meter_id: String) -> Result<u64, ContractError> { Ok(Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?.installed_at) }
     fn require_admin(env: &Env) -> Result<(), ContractError> {
         let admin = Self::get_admin(env)?;
         admin.require_auth();
@@ -2988,6 +3090,40 @@ impl SolarGridContract {
         Ok(())
     }
 
+    pub fn create_meter_group(env: Env, group_id: String, name: String, owner: Address) -> Result<(), ContractError> {
+        owner.require_auth();
+        let key = DataKey::MeterGroup(group_id.clone());
+        if env.storage().persistent().has(&key) { return Err(ContractError::MeterGroupAlreadyExists); }
+        env.storage().persistent().set(&key, &MeterGroup { id: group_id.clone(), name, owner: owner.clone(), meter_ids: Vec::new(&env) });
+        let owner_key = DataKey::OwnerGroups(owner);
+        let mut groups: Vec<String> = env.storage().persistent().get(&owner_key).unwrap_or(Vec::new(&env));
+        groups.push_back(group_id); env.storage().persistent().set(&owner_key, &groups); Ok(())
+    }
+    pub fn add_meter_to_group(env: Env, group_id: String, meter_id: String) -> Result<(), ContractError> {
+        let key = DataKey::MeterGroup(group_id); let mut group: MeterGroup = env.storage().persistent().get(&key).ok_or(ContractError::MeterGroupNotFound)?;
+        group.owner.require_auth(); let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        if meter.owner != group.owner { return Err(ContractError::Unauthorized); }
+        if !group.meter_ids.contains(&meter_id) { group.meter_ids.push_back(meter_id); env.storage().persistent().set(&key, &group); } Ok(())
+    }
+    pub fn remove_meter_from_group(env: Env, group_id: String, meter_id: String) -> Result<(), ContractError> {
+        let key = DataKey::MeterGroup(group_id); let mut group: MeterGroup = env.storage().persistent().get(&key).ok_or(ContractError::MeterGroupNotFound)?; group.owner.require_auth();
+        let mut kept = Vec::new(&env); for id in group.meter_ids.iter() { if id != meter_id { kept.push_back(id); } } group.meter_ids = kept; env.storage().persistent().set(&key, &group); Ok(())
+    }
+    pub fn get_group_stats(env: Env, group_id: String) -> Result<GroupStats, ContractError> {
+        let group: MeterGroup = env.storage().persistent().get(&DataKey::MeterGroup(group_id)).ok_or(ContractError::MeterGroupNotFound)?;
+        let mut stats = GroupStats { meter_count: 0, active_count: 0, total_units_used: 0, total_balance: 0 };
+        for id in group.meter_ids.iter() { if let Ok(meter) = Self::get_meter_or_error(&env, &DataKey::Meter(id.clone())) { stats.meter_count += 1; if meter.active { stats.active_count += 1; } stats.total_units_used = stats.total_units_used.saturating_add(meter.units_used); stats.total_balance = stats.total_balance.saturating_add(env.storage().persistent().get(&DataKey::MeterBalance(id)).unwrap_or(0)); } } Ok(stats)
+    }
+    pub fn batch_pay_group(env: Env, group_id: String, payer: Address, amount: i128, plan: PaymentPlan, memo: Option<String>) -> Result<Vec<String>, ContractError> {
+        let group: MeterGroup = env.storage().persistent().get(&DataKey::MeterGroup(group_id)).ok_or(ContractError::MeterGroupNotFound)?;
+        if group.meter_ids.len() == 0 || amount <= 0 { return Err(ContractError::InvalidAmount); }
+        payer.require_auth(); let count = i128::from(group.meter_ids.len()); let share = amount / count; let mut remainder = amount % count; let mut paid = Vec::new(&env);
+        for id in group.meter_ids.iter() { let part = share + if remainder > 0 { remainder -= 1; 1 } else { 0 }; Self::make_payment(env.clone(), id.clone(), payer.clone(), part, plan.clone(), memo.clone())?; paid.push_back(id); } Ok(paid)
+    }
+    pub fn set_referral_bonus_percent(env: Env, percent: u32) -> Result<(), ContractError> { Self::require_admin(&env)?; if percent > 100 { return Err(ContractError::InvalidReferral); } env.storage().instance().set(&DataKey::ReferralBonusPercent, &percent); Ok(()) }
+    pub fn set_referrer(env: Env, referred: Address, referrer: Address) -> Result<(), ContractError> { referred.require_auth(); if referred == referrer || env.storage().persistent().has(&DataKey::Referrer(referred.clone())) { return Err(ContractError::InvalidReferral); } env.storage().persistent().set(&DataKey::Referrer(referred), &referrer); let key = DataKey::ReferralStats(referrer); let mut stats: ReferralStats = env.storage().persistent().get(&key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }); stats.referred_count = stats.referred_count.saturating_add(1); env.storage().persistent().set(&key, &stats); Ok(()) }
+    pub fn get_referral_stats(env: Env, user: Address) -> ReferralStats { env.storage().persistent().get(&DataKey::ReferralStats(user)).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }) }
+    pub fn get_referral_credit(env: Env, user: Address) -> i128 { env.storage().persistent().get(&DataKey::ReferralCredit(user)).unwrap_or(0) }
     /// Migrate a meter from v0 (LegacyMeter) to v2 (Meter) schema.
     /// Admin-only. Use migrate_meter_to_v2 for v1 → v2 migrations.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
@@ -3029,7 +3165,7 @@ impl SolarGridContract {
         Ok(())
     }
 
-    /// Migrate a pre-emergency-contact v2 meter to the current v3 schema.
+    /// Migrate a pre-emergency-contact v2 meter to the current v6 schema.
     /// Admin-only and idempotent.
     pub fn migrate_meter_to_v3(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin(&env)?;

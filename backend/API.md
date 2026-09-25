@@ -824,3 +824,16 @@ query GetPayments($meterId: String!) {
 }
 ```
 
+
+## GDPR User Data Export (Issue #830)
+
+`GET /api/export/user/:address` returns a machine-readable JSON export of the authenticated wallet’s meter records, payment events, and local usage events. The response includes `schema`, `exportedAt`, `subject`, and count metadata.
+
+The caller must provide a Stellar Ed25519 signature over the exact UTF-8 message `Stellar SolarGrid GDPR export:<address>` using these headers:
+
+| Header | Required | Description |
+|---|---:|---|
+| `X-Wallet-Message` | Yes | Exact export message described above |
+| `X-Wallet-Signature` | Yes | Base64 or hexadecimal Stellar signature |
+
+The endpoint is limited to one request per wallet address per hour. Invalid signatures return `401`, malformed addresses return `400`, and rate-limit violations return `429`.
