@@ -14,6 +14,25 @@ export type MeterLocationRecord = {
   updated_at: string;
 };
 
+export type ContractEventRecord = {
+  id: number;
+  event_type: string;
+  meter_id: string | null;
+  details: string | null;
+  transaction_hash: string;
+  ledger: number | null;
+  timestamp: string;
+};
+
+export type ContractEventFilter = {
+  eventType?: string;
+  meterId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
 const pool = new SqlitePool({
   filename: DB_PATH,
   min: 1,
@@ -32,6 +51,25 @@ function applySchema(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_meter_metadata_location
       ON meter_metadata_index (location COLLATE NOCASE);
+
+    CREATE TABLE IF NOT EXISTS contract_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_type TEXT NOT NULL,
+      meter_id TEXT,
+      details TEXT,
+      transaction_hash TEXT NOT NULL,
+      ledger INTEGER,
+      timestamp TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_contract_events_type
+      ON contract_events (event_type);
+
+    CREATE INDEX IF NOT EXISTS idx_contract_events_meter
+      ON contract_events (meter_id);
+
+    CREATE INDEX IF NOT EXISTS idx_contract_events_timestamp
+      ON contract_events (timestamp);
   `);
 }
 
@@ -97,6 +135,89 @@ export function searchMetersByLocationIndex(
       LIMIT ? OFFSET ?
     `)
     .all(searchPattern, limit, offset) as MeterLocationRecord[];
+
+  return { results: rows, total: countRow.count };
+}
+
+/**
+ * Index a smart contract event for the events dashboard.
+ */
+export function indexContractEvent(event: {
+  eventType: string;
+  meterId?: string | null;
+  details?: Record<string, any> | string | null;
+  transactionHash: string;
+  ledger?: number | null;
+  timestamp?: string;
+}): void {
+  const details =
+    event.details == null
+      ? null
+      : typeof event.details === "string"
+        ? event.details
+        : JSON.stringify(event.details);
+
+  pool.write((db) => {
+    db.prepare(`
+      INSERT INTO contract_events
+        (event_type, meter_id, details, transaction_hash, ledger, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      event.eventType,
+      event.meterId ?? null,
+      details,
+      event.transactionHash,
+      event.ledger ?? null,
+      event.timestamp ?? new Date().toISOString()
+    );
+  });
+}
+
+/**
+ * Query indexed contract events with optional filtering and pagination.
+ */
+export function queryContractEvents(filter: ContractEventFilter = {}): {
+  results: ContractEventRecord[];
+  total: number;
+} {
+  const db = pool.primaryDb();
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (filter.eventType) {
+    conditions.push("event_type = ?");
+    params.push(filter.eventType);
+  }
+  if (filter.meterId) {
+    conditions.push("meter_id = ?");
+    params.push(filter.meterId);
+  }
+  if (filter.from) {
+    conditions.push("timestamp >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to) {
+    conditions.push("timestamp <= ?");
+    params.push(filter.to);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const limit = filter.limit ?? 20;
+  const offset = filter.offset ?? 0;
+
+  const countRow = db
+    .prepare(`SELECT COUNT(*) as count FROM contract_events ${where}`)
+    .get(...params) as { count: number };
+
+  const rows = db
+    .prepare(`
+      SELECT id, event_type, meter_id, details, transaction_hash, ledger, timestamp
+      FROM contract_events
+      ${where}
+      ORDER BY timestamp DESC, id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...params, limit, offset) as ContractEventRecord[];
 
   return { results: rows, total: countRow.count };
 }
