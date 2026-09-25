@@ -319,7 +319,7 @@ paymentsRouter.get(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function fetchPaymentEventsWithDateRange(
+export async function fetchPaymentEventsWithDateRange(
   address: string,
   startLedger?: number,
   endLedger?: number,
