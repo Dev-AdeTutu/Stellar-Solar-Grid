@@ -5,6 +5,23 @@ import styles from './ErrorBoundary.module.css';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:3001";
 
+const ISSUE_URL = "https://github.com/Dev-AdeTutu/Stellar-Solar-Grid/issues/new";
+
+/** Builds a prefilled GitHub issue URL containing the error details. */
+export function buildIssueUrl(error: Error | null): string {
+  const body = [
+    "**Error:** " + (error?.message ?? "unknown"),
+    "",
+    "```",
+    error?.stack ?? "",
+    "```",
+    "",
+    "URL: " + (typeof window !== "undefined" ? window.location.href : ""),
+  ].join("\n");
+  const params = new URLSearchParams({ title: `Frontend error: ${error?.message ?? "unknown"}`, body });
+  return `${ISSUE_URL}?${params.toString()}`;
+}
+
 interface State {
   hasError: boolean;
   error: Error | null;
@@ -52,13 +69,27 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
       return (
         <div className={styles.container}>
           <h2 className={styles.title}>Something went wrong</h2>
-          <p className={styles.message}>{this.state.error?.message}</p>
-          <button 
+          <p className={styles.message}>
+            An unexpected error occurred. You can try again or report the issue.
+          </p>
+          <details>
+            <summary>Error details</summary>
+            <pre>{this.state.error?.message}</pre>
+          </details>
+          <button
             className={styles.retryButton}
             onClick={() => this.setState({ hasError: false, error: null })}
           >
             Try Again
           </button>
+          <a
+            className={styles.retryButton}
+            href={buildIssueUrl(this.state.error)}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Report Issue
+          </a>
         </div>
       );
     }

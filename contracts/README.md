@@ -190,3 +190,33 @@ The `batch_register_meters(meters: Vec<(String, Address)>)` function enables ene
 - **Input Validation:** Pre-validates empty meter IDs, duplicate IDs in batch, existing meters, and owner allowlist membership.
 - **Event Emission:** Emits standard `meter_registered` (`mtr_reg`) event for each successfully registered meter and `batch_skip` (`btch_skip`) for failed/skipped entries.
 - **Detailed Error Reporting:** Returns `Vec<BatchRegisterResult>` with `meter_id`, `success: bool`, and `error: Option<String>` detailing reasons for any partial failures (`empty_meter_id`, `duplicate_in_batch`, `meter_already_exists`, `owner_not_allowlisted`).
+
+## Multi-currency payments (#837)
+
+Admins whitelist Stellar assets (USDC, EURC, …) with a conversion rate into the canonical payment token. Rates are fixed-point: `rate = canonical units per asset unit × RATE_SCALE` (`RATE_SCALE = 10_000_000`).
+
+| Function | Description |
+|---|---|
+| `add_supported_asset(asset, rate)` | Admin. Whitelist an asset or update its rate (`rate > 0`). |
+| `set_asset_rate(asset, rate)` | Admin. Update the rate of a supported asset. |
+| `remove_supported_asset(asset)` | Admin. Remove an asset from the whitelist. |
+| `supported_assets()` | List `SupportedAsset { asset, rate }`. |
+| `make_asset_payment(meter_id, payer, asset, amount)` | Transfer `amount` of `asset`, credit the meter `amount × rate / RATE_SCALE` canonical units. Returns the credited amount. |
+| `get_asset_payment_balance(meter_id)` | Canonical-unit balance credited via asset payments. |
+
+All balances are stored in canonical units. Unsupported assets are rejected with `InvalidConfiguration`.
+
+## Meter warranty tracking (#838)
+
+Warranty data is stored in meter metadata under standard keys:
+
+| Key | Format |
+|---|---|
+| `warranty_expires_at` | Unix timestamp in seconds, decimal digits only (validated; otherwise `InvalidMetadata`) |
+| `warranty_provider` | Free text (≤ 100 chars) |
+| `warranty_terms` | Free text (≤ 100 chars) |
+
+Helpers:
+
+- `get_warranty_expiry(meter_id) -> Option<u64>`
+- `get_meters_with_expiring_warranty(within_secs) -> Vec<String>` — meters whose warranty expires within `within_secs` of the current ledger time (including already expired).
