@@ -14,6 +14,12 @@ export type MeterLocationRecord = {
   updated_at: string;
 };
 
+export type MeterFirmwareRecord = {
+  meter_id: string;
+  firmware_version: string;
+  updated_at: string;
+};
+
 const pool = new SqlitePool({
   filename: DB_PATH,
   min: 1,
@@ -32,6 +38,12 @@ function applySchema(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_meter_metadata_location
       ON meter_metadata_index (location COLLATE NOCASE);
+
+    CREATE TABLE IF NOT EXISTS meter_firmware_index (
+      meter_id TEXT PRIMARY KEY,
+      firmware_version TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 }
 
@@ -99,6 +111,43 @@ export function searchMetersByLocationIndex(
     .all(searchPattern, limit, offset) as MeterLocationRecord[];
 
   return { results: rows, total: countRow.count };
+}
+
+/**
+ * Store or update the reported firmware version for a meter.
+ */
+export function indexMeterFirmware(meterId: string, firmwareVersion: string): void {
+  pool.write((db) => {
+    db.prepare(`
+      INSERT OR REPLACE INTO meter_firmware_index (meter_id, firmware_version, updated_at)
+      VALUES (?, ?, ?)
+    `).run(meterId, firmwareVersion, new Date().toISOString());
+  });
+}
+
+/**
+ * Look up the stored firmware version for a meter.
+ */
+export function getMeterFirmwareVersion(meterId: string): string | null {
+  const db = pool.primaryDb();
+  const row = db
+    .prepare("SELECT firmware_version FROM meter_firmware_index WHERE meter_id = ?")
+    .get(meterId) as { firmware_version: string } | undefined;
+  return row ? row.firmware_version : null;
+}
+
+/**
+ * List all meters with their stored firmware versions.
+ */
+export function listMeterFirmwareVersions(): MeterFirmwareRecord[] {
+  const db = pool.primaryDb();
+  return db
+    .prepare(`
+      SELECT meter_id, firmware_version, updated_at
+      FROM meter_firmware_index
+      ORDER BY meter_id ASC
+    `)
+    .all() as MeterFirmwareRecord[];
 }
 
 /**
