@@ -70,6 +70,9 @@ const SHARES: Symbol = symbol_short!("SHARES");
 const FROZEN: Symbol = symbol_short!("FROZEN");
 const REENTRANCY: Symbol = symbol_short!("REENTR");
 const CONTRACT_VERSION: Symbol = symbol_short!("CTR_VER");
+const AUDIT_COUNT: Symbol = symbol_short!("AUD_CNT");
+/// Maximum page size for `get_audit_logs`.
+const MAX_AUDIT_PAGE: u32 = 100;
 const DEFAULT_GRACE_PERIOD: u64 = 7200; // 2 hours (in seconds)
 const GRACE_PERIOD: Symbol = symbol_short!("GRACE_P");
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -351,6 +354,29 @@ pub enum DataKey {
     AdminProposal(u32),
     /// Owner-authorized automatic top-up settings for a meter.
     AutoTopup(String),
+    /// Immutable admin audit log entry by sequential id (#836).
+    AuditLog(u64),
+}
+
+/// Immutable record of an admin action (#836).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminAuditEntry {
+    pub id: u64,
+    pub action_type: String,
+    pub admin_address: Address,
+    pub affected_entity: String,
+    pub timestamp: u64,
+}
+
+/// Optional filters for `get_audit_logs` (#836).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuditLogFilter {
+    pub action_type: Option<String>,
+    pub admin: Option<Address>,
+    pub from_ts: Option<u64>,
+    pub to_ts: Option<u64>,
 }
 
 #[contracttype]
@@ -471,6 +497,50 @@ impl SolarGridContract {
         Self::write_initial_config(&env, admin, token_address)
     }
 
+    /// Total number of admin audit log entries recorded (#836).
+    pub fn get_audit_log_count(env: Env) -> u64 {
+        env.storage().instance().get(&AUDIT_COUNT).unwrap_or(0)
+    }
+
+    /// Paginated, filterable admin audit log (#836).
+    ///
+    /// `offset` skips that many *matching* entries (oldest first); `limit` is
+    /// capped at 100. Filters are optional: action type, admin address and an
+    /// inclusive ledger-timestamp range.
+    pub fn get_audit_logs(
+        env: Env,
+        filter: AuditLogFilter,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<AdminAuditEntry> {
+        let limit = limit.min(MAX_AUDIT_PAGE);
+        let total: u64 = env.storage().instance().get(&AUDIT_COUNT).unwrap_or(0);
+        let mut out = Vec::new(&env);
+        let mut skipped: u32 = 0;
+        let mut id: u64 = 0;
+        while id < total && out.len() < limit {
+            if let Some(e) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AdminAuditEntry>(&DataKey::AuditLog(id))
+            {
+                let matches = filter.action_type.as_ref().map_or(true, |a| *a == e.action_type)
+                    && filter.admin.as_ref().map_or(true, |a| *a == e.admin_address)
+                    && filter.from_ts.map_or(true, |t| e.timestamp >= t)
+                    && filter.to_ts.map_or(true, |t| e.timestamp <= t);
+                if matches {
+                    if skipped < offset {
+                        skipped += 1;
+                    } else {
+                        out.push_back(e);
+                    }
+                }
+            }
+            id += 1;
+        }
+        out
+    }
+
     pub fn get_contract_version(env: Env) -> String {
         env.storage()
             .instance()
@@ -504,7 +574,7 @@ impl SolarGridContract {
         if Self::pause_is_active(&env) {
             return Err(ContractError::ContractPaused);
         }
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "register_meter_with_metadata", "contract")?;
 
         // Acquire reentrancy lock before the allowlist read so the
         // contains→write window cannot be raced by a cross-contract callback.
@@ -604,7 +674,7 @@ impl SolarGridContract {
         if Self::pause_is_active(&env) {
             return Err(ContractError::ContractPaused);
         }
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "batch_register_meters", "contract")?;
         if meters.len() > 50 {
             return Err(ContractError::BatchTooLarge);
         }
@@ -755,7 +825,7 @@ impl SolarGridContract {
 
     /// Deregister an existing meter. Admin-only.
     pub fn deregister_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "deregister_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
         env.storage().persistent().remove(&key);
@@ -1067,7 +1137,7 @@ impl SolarGridContract {
     /// let it observe the "already added" check as false and register meters
     /// or trigger other protected paths before the transaction is complete.
     pub fn allowlist_add(env: Env, owner: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "allowlist_add", "contract")?;
         // Acquire the reentrancy lock before reading allowlist state so a
         // cross-contract callback from `owner` cannot race the contains→write
         // window and bypass access control (checks-effects-interactions).
@@ -1096,7 +1166,7 @@ impl SolarGridContract {
     /// cross-contract callback, preventing a removed address from still
     /// appearing on the list during any re-entrant allowlist check.
     pub fn allowlist_remove(env: Env, owner: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "allowlist_remove", "contract")?;
         let _guard = ReentrancyGuard::enter(&env)?;
         let list: Vec<Address> = env
             .storage()
@@ -1145,7 +1215,7 @@ impl SolarGridContract {
     /// Register the IoT oracle address. Only admin may call this.
     /// Emits `ora_set` event with (old_oracle, new_oracle) for audit trail.
     pub fn set_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_oracle", "contract")?;
         let old_oracle: Option<Address> = env.storage().instance().get(&ORACLE);
         env.storage().instance().set(&ORACLE, &oracle);
         env.events()
@@ -1162,7 +1232,7 @@ impl SolarGridContract {
     /// Explicitly clear the oracle address. Only admin may call this.
     /// Emits `ora_clr` event.
     pub fn remove_oracle(env: Env) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "remove_oracle", "contract")?;
         env.storage().instance().remove(&ORACLE);
         env.events().publish((EVT_NS, symbol_short!("ora_clr")), ());
         Ok(())
@@ -1173,7 +1243,7 @@ impl SolarGridContract {
     ///
     /// Emits: `contract_frozen { }`
     pub fn freeze_contract(env: Env) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "freeze_contract", "contract")?;
         env.storage().instance().set(&FROZEN, &true);
         env.events().publish((EVT_NS, symbol_short!("frz_on")), ());
         Ok(())
@@ -1184,7 +1254,7 @@ impl SolarGridContract {
     ///
     /// Emits: `contract_unfrozen { }`
     pub fn unfreeze_contract(env: Env) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "unfreeze_contract", "contract")?;
         if !env
             .storage()
             .instance()
@@ -1223,7 +1293,7 @@ impl SolarGridContract {
     /// incident. The pause is admin-only and emits the compact on-chain event
     /// topic `paused` (logical event name: `contract_paused`).
     pub fn pause(env: Env) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "pause", "contract")?;
 
         // A stale pause is cleared before evaluating whether a new pause is
         // already active. This makes the expiry deterministic even if no
@@ -1246,7 +1316,7 @@ impl SolarGridContract {
     /// Admin-only; emits the compact topic `unpaused` (logical event name:
     /// `contract_unpaused`).
     pub fn unpause(env: Env) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "unpause", "contract")?;
         if !Self::pause_is_active(&env) {
             return Err(ContractError::NotPaused);
         }
@@ -1525,7 +1595,7 @@ impl SolarGridContract {
         recipient: Address,
         reason: String,
     ) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "refund_payment", "contract")?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -1621,7 +1691,7 @@ impl SolarGridContract {
     /// Guards against a compromised admin key or a scripting bug issuing a
     /// burst of refunds that drains the contract's token balance.
     pub fn set_refund_limit(env: Env, limit: i128) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_refund_limit", "contract")?;
         if limit < 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -1949,7 +2019,7 @@ impl SolarGridContract {
 
     /// Configure the M-of-N admin policy. The current admin must authorize this once.
     pub fn configure_multisig(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "configure_multisig", "contract")?;
         if admins.len() < 3 || admins.len() > 5 || threshold == 0 || threshold > admins.len() {
             return Err(ContractError::InvalidMultisigConfiguration);
         }
@@ -2048,7 +2118,7 @@ impl SolarGridContract {
 
     /// Set the configurable grace period before meter deactivation (in seconds). Admin-only.
     pub fn set_grace_period(env: Env, period: u64) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_grace_period", "contract")?;
         env.storage().instance().set(&GRACE_PERIOD, &period);
         Ok(())
     }
@@ -2070,7 +2140,7 @@ impl SolarGridContract {
     ///
     /// Emits: `prc_set { old, new }`.
     pub fn set_unit_price(env: Env, price: i128) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_unit_price", "contract")?;
         if price <= 0 {
             return Err(ContractError::InvalidConfiguration);
         }
@@ -2092,7 +2162,7 @@ impl SolarGridContract {
 
     /// Store validated weekday/weekend windows. All timestamps are interpreted as UTC.
     pub fn set_pricing_schedule(env: Env, schedule: PricingSchedule) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_pricing_schedule", "contract")?;
         Self::validate_pricing_windows(&schedule.weekday)?;
         Self::validate_pricing_windows(&schedule.weekend)?;
         env.storage().instance().set(&PRICING_SCHEDULE, &schedule);
@@ -2307,7 +2377,7 @@ impl SolarGridContract {
     /// - `meter_activated   { meter_id }` when toggled on
     /// - `meter_deactivated { meter_id }` when toggled off
     pub fn set_active(env: Env, meter_id: String, active: bool) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_active", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         if active {
@@ -2349,7 +2419,7 @@ impl SolarGridContract {
     /// Emits:
     /// - `meter_deactivated { meter_id, reason, timestamp }`
     pub fn deactivate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "deactivate_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         meter.active = false;
@@ -2391,7 +2461,7 @@ impl SolarGridContract {
         env: Env,
         meter_ids: Vec<String>,
     ) -> Result<BatchDeactivateSummary, ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "batch_deactivate_meters", "contract")?;
 
         let len = meter_ids.len() as u32;
         if len > 50 {
@@ -2478,7 +2548,7 @@ impl SolarGridContract {
         collaborator: Address,
         basis_points: u32,
     ) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "add_collaborator", "contract")?;
         if basis_points == 0 || basis_points > 10_000 {
             return Err(ContractError::InvalidAmount);
         }
@@ -2517,7 +2587,7 @@ impl SolarGridContract {
     /// Returns `Unauthorized` if the caller is not the admin.
     /// Returns `CollaboratorNotFound` if the address is not a registered collaborator.
     pub fn remove_collaborator(env: Env, collaborator: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "remove_collaborator", "contract")?;
 
         let collabs: Vec<Address> = env
             .storage()
@@ -2585,7 +2655,7 @@ impl SolarGridContract {
     /// Distribute `amount` stroops among collaborators proportionally.
     /// Iterates the ordered Vec and looks up shares from the Map.
     pub fn distribute(env: Env, amount: i128) -> Result<Map<Address, i128>, ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "distribute", "contract")?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -2627,7 +2697,7 @@ impl SolarGridContract {
         amount: i128,
     ) -> Result<Map<Address, i128>, ContractError> {
         // ── CHECKS ──────────────────────────────────────────────────────────
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "distribute_and_transfer", "contract")?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -2661,7 +2731,7 @@ impl SolarGridContract {
     /// SECURITY: Implements checks-effects-interactions pattern to prevent reentrancy.
     pub fn emergency_withdraw(env: Env, to: Address) -> Result<(), ContractError> {
         // ── CHECKS ──────────────────────────────────────────────────────────
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "emergency_withdraw", "contract")?;
         let frozen: bool = env.storage().instance().get(&FROZEN).unwrap_or(false);
         if !frozen {
             return Err(ContractError::ContractNotFrozen);
@@ -2701,7 +2771,7 @@ impl SolarGridContract {
     /// Useful for policy violations or testing expiry flows.
     /// Returns `MeterNotFound` for unknown meter IDs.
     pub fn expire_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "expire_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env
             .storage()
@@ -2784,6 +2854,41 @@ impl SolarGridContract {
         let admin = Self::get_admin(env)?;
         admin.require_auth();
         Ok(())
+    }
+
+    /// Authorize the admin and append an immutable audit entry (#836).
+    /// Emits `AdminAction` event with (action_type, admin, entity, timestamp).
+    fn require_admin_action(
+        env: &Env,
+        action_type: &str,
+        affected_entity: &str,
+    ) -> Result<(), ContractError> {
+        let admin = Self::get_admin(env)?;
+        admin.require_auth();
+        Self::record_admin_action(env, &admin, action_type, affected_entity);
+        Ok(())
+    }
+
+    fn record_admin_action(env: &Env, admin: &Address, action_type: &str, affected_entity: &str) {
+        let id: u64 = env.storage().instance().get(&AUDIT_COUNT).unwrap_or(0);
+        let entry = AdminAuditEntry {
+            id,
+            action_type: String::from_str(env, action_type),
+            admin_address: admin.clone(),
+            affected_entity: String::from_str(env, affected_entity),
+            timestamp: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&DataKey::AuditLog(id), &entry);
+        env.storage().instance().set(&AUDIT_COUNT, &(id + 1));
+        env.events().publish(
+            (EVT_NS, symbol_short!("AdminAct")),
+            (
+                entry.action_type.clone(),
+                entry.admin_address.clone(),
+                entry.affected_entity.clone(),
+                entry.timestamp,
+            ),
+        );
     }
 
     fn require_initialized(env: &Env) -> Result<(), ContractError> {
@@ -2952,7 +3057,7 @@ impl SolarGridContract {
     /// Set the daily spending limit for a meter. Admin-only.
     /// A limit of 0 means unlimited (the default for newly registered meters).
     pub fn set_daily_limit(env: Env, meter_id: String, limit: i128) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_daily_limit", "contract")?;
         if limit < 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -2976,7 +3081,7 @@ impl SolarGridContract {
         meter_id: String,
         auto_deactivate: bool,
     ) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "set_cap_mode", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         meter.auto_deactivate = auto_deactivate;
@@ -2991,7 +3096,7 @@ impl SolarGridContract {
     /// Migrate a meter from v0 (LegacyMeter) to v2 (Meter) schema.
     /// Admin-only. Use migrate_meter_to_v2 for v1 → v2 migrations.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "migrate_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         // Already at v2 — idempotent no-op.
         if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(&key) {
@@ -3011,7 +3116,7 @@ impl SolarGridContract {
 
     /// Migrate a meter from v1 (LegacyMeterV1) to v3 (Meter) schema. Admin-only.
     pub fn migrate_meter_to_v2(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "migrate_meter_to_v2", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         // Already at v2 — idempotent no-op.
         if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(&key) {
@@ -3032,7 +3137,7 @@ impl SolarGridContract {
     /// Migrate a pre-emergency-contact v2 meter to the current v3 schema.
     /// Admin-only and idempotent.
     pub fn migrate_meter_to_v3(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
+        Self::require_admin_action(&env, "migrate_meter_to_v3", "contract")?;
         let key = DataKey::Meter(meter_id);
         if let Some(meter) = env.storage().persistent().get::<DataKey, Meter>(&key) {
             if meter.version >= 3 {
@@ -6347,5 +6452,61 @@ mod tests {
             client.try_batch_register_meters(&batch),
             Err(Ok(ContractError::BatchTooLarge))
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_log_tests {
+    use super::*;
+    use soroban_sdk::testutils::{Address as _, Ledger};
+
+    // ── #836: admin audit log ────────────────────────────────────────────────
+    #[test]
+    fn test_admin_actions_are_audited_and_filterable() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        client.initialize(&admin, &token);
+        let owner = Address::generate(&env);
+        let none = AuditLogFilter { action_type: None, admin: None, from_ts: None, to_ts: None };
+
+        env.ledger().with_mut(|l| l.timestamp = 1_000);
+        client.allowlist_add(&owner);
+        env.ledger().with_mut(|l| l.timestamp = 2_000);
+        client.freeze_contract();
+        client.unfreeze_contract();
+
+        assert_eq!(client.get_audit_log_count(), 3);
+        let all = client.get_audit_logs(&none, &0, &10);
+        assert_eq!(all.len(), 3);
+        let first = all.get(0).unwrap();
+        assert_eq!(first.action_type, String::from_str(&env, "allowlist_add"));
+        assert_eq!(first.admin_address, admin);
+        assert_eq!(first.timestamp, 1_000);
+
+        // Pagination
+        let page = client.get_audit_logs(&none, &1, &1);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page.get(0).unwrap().action_type, String::from_str(&env, "freeze_contract"));
+
+        // Filter by action type
+        let f = AuditLogFilter {
+            action_type: Some(String::from_str(&env, "unfreeze_contract")),
+            admin: None, from_ts: None, to_ts: None,
+        };
+        assert_eq!(client.get_audit_logs(&f, &0, &10).len(), 1);
+
+        // Filter by date range
+        let f = AuditLogFilter { action_type: None, admin: None, from_ts: Some(1_500), to_ts: None };
+        assert_eq!(client.get_audit_logs(&f, &0, &10).len(), 2);
+
+        // Filter by admin
+        let f = AuditLogFilter { action_type: None, admin: Some(owner), from_ts: None, to_ts: None };
+        assert_eq!(client.get_audit_logs(&f, &0, &10).len(), 0);
     }
 }

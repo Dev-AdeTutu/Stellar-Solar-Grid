@@ -190,3 +190,25 @@ The `batch_register_meters(meters: Vec<(String, Address)>)` function enables ene
 - **Input Validation:** Pre-validates empty meter IDs, duplicate IDs in batch, existing meters, and owner allowlist membership.
 - **Event Emission:** Emits standard `meter_registered` (`mtr_reg`) event for each successfully registered meter and `batch_skip` (`btch_skip`) for failed/skipped entries.
 - **Detailed Error Reporting:** Returns `Vec<BatchRegisterResult>` with `meter_id`, `success: bool`, and `error: Option<String>` detailing reasons for any partial failures (`empty_meter_id`, `duplicate_in_batch`, `meter_already_exists`, `owner_not_allowlisted`).
+
+## Admin Audit Log (#836)
+
+Every state-changing admin function (allowlist, oracle, freeze/pause, pricing,
+refunds, meter lifecycle, collaborators, distributions, migrations, multisig
+configuration, emergency withdrawals) appends an immutable `AdminAuditEntry` to
+persistent storage and emits an `AdminAct` event:
+
+| Field             | Type      | Description                              |
+|-------------------|-----------|------------------------------------------|
+| `id`              | `u64`     | Sequential entry id (0-based)            |
+| `action_type`     | `String`  | Name of the admin function invoked       |
+| `admin_address`   | `Address` | Admin that authorized the call           |
+| `affected_entity` | `String`  | Entity affected by the action            |
+| `timestamp`       | `u64`     | Ledger timestamp of the action           |
+
+Query functions:
+
+- `get_audit_log_count() -> u64`
+- `get_audit_logs(filter: AuditLogFilter, offset: u32, limit: u32) -> Vec<AdminAuditEntry>`
+  - `filter.action_type`, `filter.admin`, `filter.from_ts`, `filter.to_ts` are all optional.
+  - `offset` skips matching entries; `limit` is capped at 100.

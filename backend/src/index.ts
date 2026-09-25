@@ -37,6 +37,10 @@ import { graphqlRouter } from "./routes/graphql.js";
 import { usageRouter } from "./routes/usage.js";
 import { meterMapRouter } from "./routes/meterMap.js";
 import { delegatesRouter } from "./routes/delegates.js";
+import { apiKeysRouter } from "./routes/apiKeys.js";
+import { meterHealthRouter } from "./routes/meterHealth.js";
+import { predictionRouter } from "./routes/prediction.js";
+import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -128,6 +132,10 @@ function isOutdated(version: string): boolean {
 
 app.use("/api/admin", writeLimiter, adminLoginRouter);
 app.use("/api/meters/map", meterMapRouter);
+app.use("/api/keys", writeLimiter, apiKeysRouter);
+app.use("/api/meters", meterHealthRouter);
+app.use("/api/meters", predictionRouter);
+startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));

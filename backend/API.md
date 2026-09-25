@@ -824,3 +824,56 @@ query GetPayments($meterId: String!) {
 }
 ```
 
+
+## API Key Management (#833)
+
+Providers can create API keys for programmatic access. Keys are stored as
+SHA-256 hashes (`api_keys` table: `id`, `provider_id`, `key_hash`,
+`permissions`, `expires_at`, `revoked_at`, …); the plaintext key is returned
+only once. Management routes require `X-Admin-Key` and `X-Provider-Id`.
+
+### `POST /api/keys/generate`
+
+Body: `{ "name"?: string, "permissions"?: ("read"|"write"|"admin")[], "expiresInDays"?: number }`
+
+`201` → `{ "key": "sg_…", "id": "…", "provider_id": "…", "permissions": ["read"], "expires_at": null, … }`
+
+### `GET /api/keys`
+
+Lists the provider's keys (no secrets): `{ "keys": [ … ] }`
+
+### `DELETE /api/keys/:keyId`
+
+Revokes a key. `204` on success, `404` if not found.
+
+### Authenticating with a key
+
+Send the key in the `X-API-Key` header. Routes protected with the
+`requireApiKey(permission?)` middleware respond `401` for missing, invalid,
+expired or revoked keys and `403` if the key lacks the required permission
+(`admin` implies all permissions).
+
+## Usage Prediction (#835)
+
+### `GET /api/meters/:meterId/prediction`
+
+Estimates when the meter balance will reach zero. A linear regression is fit
+to the meter's daily usage cost over the last 30 days and projected forward.
+Predictions are cached and refreshed daily (or when the balance changes).
+The balance is read from the contract unless `?balance=<stroops>` is given.
+
+```json
+{
+  "meterId": "METER1",
+  "balance": 3000,
+  "estimatedDaysRemaining": 30.0,
+  "confidenceInterval": { "low": 25.4, "high": 36.1, "level": 0.95 },
+  "avgDailyUsage": 100,
+  "trendPerDay": 0.1,
+  "trainingDays": 30,
+  "generatedAt": "2026-09-25T00:00:00.000Z"
+}
+```
+
+`estimatedDaysRemaining` is `null` when there is no usage history or usage is
+not trending toward depletion.
