@@ -7,6 +7,12 @@ use soroban_sdk::{
     Map, String, Symbol, Vec,
 };
 
+mod multi_asset;
+mod warranty;
+#[cfg(test)]
+mod test_assets_warranty;
+pub use multi_asset::{SupportedAsset, RATE_SCALE};
+
 // ── Error types ───────────────────────────────────────────────────────────────
 
 #[contracterror]
@@ -331,7 +337,7 @@ fn validate_metadata(metadata: &Map<String, String>) -> Result<(), ContractError
             return Err(ContractError::InvalidMetadata);
         }
     }
-    Ok(())
+    warranty::validate_warranty(metadata.env(), metadata)
 }
 
 #[contracttype]
