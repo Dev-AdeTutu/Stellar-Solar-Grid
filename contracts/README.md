@@ -51,6 +51,17 @@ Emitted when a meter is deactivated in any of the following scenarios:
 - Administrative deactivation (`admin_action`) via `set_active(false)`, `set_meter_active(false)`, `deactivate_meter()`, or `batch_deactivate_meters()`
 - Grace period expiry (`expiry`) in `apply_usage()`
 
+#### meter_decommissioned
+- **Topic 0:** `mtr_dcom` (symbol_short)
+- **Topic 1:** `solargrid` (EVT_NS)
+- **Topic 2:** `meter_id` (String)
+- **Data:** `MeterDecommissioned` (`meter_id: String`, `owner: Address`, `refunded: i128`, `timestamp: u64`)
+
+Emitted when an admin permanently decommissions a meter via `decommission_meter(meter_id)`.
+Decommissioning is terminal: the meter's `decommissioned` flag is set to `true`, any
+remaining balance is refunded to the meter owner, and all subsequent operations on the
+meter are rejected with `ContractError::MeterDecommissioned`.
+
 #### batch_skip
 - **Topic 0:** `btch_skip` (symbol_short)
 - **Topic 1:** `solargrid` (EVT_NS)
