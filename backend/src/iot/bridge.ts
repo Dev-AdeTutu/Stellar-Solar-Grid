@@ -8,6 +8,7 @@
  * Expected payload:     { "units": 100, "cost": 500000 }
  */
 
+import { handleHeartbeatMessage } from "../lib/meterHealth.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -31,6 +32,8 @@ import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, cont
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
+// Issue #834: meters publish periodic heartbeats here.
+const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
@@ -470,12 +473,19 @@ function startMqttBridge() {
     client.subscribe(TOPIC, { qos: 2 }, (err) => {
       if (err) logger.error("MQTT subscribe error", { err });
     });
+    client.subscribe(HEARTBEAT_TOPIC, { qos: 1 }, (err) => {
+      if (err) logger.error("MQTT heartbeat subscribe error", { err });
+    });
   });
 
   client.on("message", async (topic, payload) => {
     const segments = topic.split("/");
     const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
     mqttMessages.inc({ topic: labelTopic });
+    if (segments[3] === "heartbeat") {
+      handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.

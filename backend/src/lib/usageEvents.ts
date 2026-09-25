@@ -140,7 +140,7 @@ pool.warm();
  * and read-only APIs so ETag/prepared caching stays consistent.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function db(): any {
+export function db(): any {
   return pool.primaryDb();
 }
 
