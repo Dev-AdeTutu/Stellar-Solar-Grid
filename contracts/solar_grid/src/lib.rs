@@ -51,6 +51,10 @@ pub enum ContractError {
     ReentrantCall = 30,
     /// Meter metadata validation failed (too many pairs or value too long).
     InvalidMetadata = 31,
+    /// Auto top-up has not been configured for this meter.
+    AutoTopupNotConfigured = 32,
+    /// Auto top-up threshold and amount must both be positive.
+    InvalidAutoTopup = 33,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -345,6 +349,17 @@ pub enum DataKey {
     MeterDelegates(String),
     /// Storage key for a multisig admin proposal.
     AdminProposal(u32),
+    /// Owner-authorized automatic top-up settings for a meter.
+    AutoTopup(String),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutoTopupConfig {
+    pub owner: Address,
+    pub threshold: i128,
+    pub amount: i128,
+    pub enabled: bool,
 }
 
 /// Tracks admin-issued refunds within the current rolling window, used to cap
@@ -1404,6 +1419,70 @@ impl SolarGridContract {
         Ok(())
     }
 
+    /// Enable delegated auto top-up for a meter.
+    ///
+    /// The owner must first approve the contract as a token spender for the
+    /// configured amount. The oracle or backend can then call
+    /// [`trigger_auto_topup`] when the balance is below `threshold`.
+    pub fn enable_auto_topup(
+        env: Env,
+        meter_id: String,
+        threshold: i128,
+        amount: i128,
+    ) -> Result<(), ContractError> {
+        if threshold <= 0 || amount <= 0 {
+            return Err(ContractError::InvalidAutoTopup);
+        }
+        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        meter.owner.require_auth();
+        env.storage().persistent().set(&DataKey::AutoTopup(meter_id.clone()), &AutoTopupConfig {
+            owner: meter.owner,
+            threshold,
+            amount,
+            enabled: true,
+        });
+        env.events().publish((EVT_NS, Symbol::new(&env, "AutoTopupEnabled")), (meter_id, threshold, amount));
+        Ok(())
+    }
+
+    /// Disable auto top-up without changing the configured threshold or amount.
+    pub fn disable_auto_topup(env: Env, meter_id: String) -> Result<(), ContractError> {
+        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        meter.owner.require_auth();
+        if let Some(mut config) = env.storage().persistent().get::<DataKey, AutoTopupConfig>(&DataKey::AutoTopup(meter_id.clone())) {
+            config.enabled = false;
+            env.storage().persistent().set(&DataKey::AutoTopup(meter_id.clone()), &config);
+        }
+        env.events().publish((EVT_NS, Symbol::new(&env, "AutoTopupDisabled")), meter_id);
+        Ok(())
+    }
+
+    /// Return the current auto-top-up configuration, if configured.
+    pub fn get_auto_topup(env: Env, meter_id: String) -> Option<AutoTopupConfig> {
+        env.storage().persistent().get(&DataKey::AutoTopup(meter_id))
+    }
+
+    /// Trigger a configured top-up using the owner's token allowance.
+    ///
+    /// This method is intended for the trusted oracle/backend. It uses
+    /// `transfer_from`, so the owner never has to expose a signing key to the
+    /// automation service. A no-op is returned when the balance is above the
+    /// threshold, preventing duplicate payments from concurrent workers.
+    pub fn trigger_auto_topup(env: Env, meter_id: String) -> Result<bool, ContractError> {
+        let config: AutoTopupConfig = env.storage().persistent().get(&DataKey::AutoTopup(meter_id.clone())).ok_or(ContractError::AutoTopupNotConfigured)?;
+        if !config.enabled { return Ok(false); }
+        let balance: i128 = env.storage().persistent().get(&DataKey::MeterBalance(meter_id.clone())).unwrap_or(0);
+        if balance >= config.threshold { return Ok(false); }
+        let token_address = Self::get_token_address(&env)?;
+        let _guard = ReentrancyGuard::enter(&env)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer_from(&env.current_contract_address(), &config.owner, &env.current_contract_address(), &config.amount);
+        let new_balance = balance.saturating_add(config.amount);
+        env.storage().persistent().set(&DataKey::MeterBalance(meter_id.clone()), &new_balance);
+        env.events().publish((EVT_NS, Symbol::new(&env, "AutoTopupTriggered")), (meter_id, config.amount, new_balance));
+        Ok(true)
+    }
+
     /// Calculate service duration in seconds given payment amount and plan.
     /// Pro-rated calculation allowing partial/incremental payments (Issue #751).
     pub fn calculate_service_duration(_env: Env, amount: i128, plan: PaymentPlan) -> u64 {
@@ -2147,6 +2226,11 @@ impl SolarGridContract {
         let now = env.ledger().timestamp();
         let deactivated = Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now)?;
         env.storage().persistent().set(&key, &meter);
+
+        // Auto top-up is best-effort for meters that have not opted in. A
+        // configured meter uses its token allowance when its post-usage
+        // balance is below the owner's threshold.
+        let _ = Self::trigger_auto_topup(env.clone(), meter_id.clone());
 
         // usage_updated
         env.events().publish(
@@ -6265,4 +6349,3 @@ mod tests {
         );
     }
 }
-

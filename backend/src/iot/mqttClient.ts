@@ -27,6 +27,39 @@ function resetReconnectAttempts(): void {
   reconnectAttempts = 0;
 }
 
+// Issue #853: track the last time each meter reported so offline detection
+// can flag meters that have gone silent due to connectivity issues.
+const lastSeenByMeter = new Map<string, number>();
+
+/**
+ * Record that a meter has just reported. Called on every inbound MQTT
+ * message so `last_seen` stays current for offline detection.
+ */
+export function recordMeterLastSeen(meterId: string, timestamp: number = Date.now()): void {
+  lastSeenByMeter.set(meterId, timestamp);
+}
+
+/**
+ * Return the last-seen timestamp for a meter, or undefined if it has
+ * never reported.
+ */
+export function getMeterLastSeen(meterId: string): number | undefined {
+  return lastSeenByMeter.get(meterId);
+}
+
+/**
+ * List meters whose last-seen timestamp is older than the given threshold.
+ * Meters that have never reported are treated as offline.
+ */
+export function getOfflineMeters(thresholdMs: number = 60 * 60 * 1000): string[] {
+  const cutoff = Date.now() - thresholdMs;
+  const offline: string[] = [];
+  for (const [meterId, lastSeen] of lastSeenByMeter) {
+    if (lastSeen < cutoff) offline.push(meterId);
+  }
+  return offline;
+}
+
 export function getMqttClient(): MqttClient {
   if (!client) {
     client = mqtt.connect(BROKER, {
@@ -51,6 +84,20 @@ export function getMqttClient(): MqttClient {
         JSON.stringify({ status: 'online', timestamp: Date.now() }),
         { qos: 1, retain: true },
       );
+    });
+
+    // Issue #853: update last_seen on every inbound MQTT message so offline
+    // detection has an up-to-date view of meter connectivity.
+    client.on('message', (topic, payload) => {
+      try {
+        const data = JSON.parse(payload.toString());
+        const meterId = data?.meterId ?? data?.meter_id ?? topic.split('/').pop();
+        if (meterId) {
+          recordMeterLastSeen(String(meterId));
+        }
+      } catch (err) {
+        logger.warn('Failed to parse MQTT message for last_seen tracking', { topic, err });
+      }
     });
 
     client.on('disconnect', () => {

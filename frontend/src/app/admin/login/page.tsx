@@ -9,6 +9,8 @@ const API = env.NEXT_PUBLIC_BACKEND_URL;
 export default function AdminLoginPage() {
   const router = useRouter();
   const [secret, setSecret] = useState("");
+  const [code, setCode] = useState("");
+  const [requiresMfa, setRequiresMfa] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -26,10 +28,10 @@ export default function AdminLoginPage() {
       const res = await fetch(`${API}/api/admin/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret }),
+        body: JSON.stringify({ secret, ...(code ? { code } : {}) }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Invalid admin secret"); return; }
+      if (!res.ok) { if (data.mfaRequired) setRequiresMfa(true); setError(data.error ?? "Invalid admin secret"); return; }
       sessionStorage.setItem("admin_token", data.token);
       router.push("/admin/dashboard");
     } catch {
@@ -62,6 +64,11 @@ export default function AdminLoginPage() {
               className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
             />
           </div>
+          {requiresMfa && <div>
+            <label htmlFor="admin-code" className="block text-sm font-medium text-gray-300 mb-1.5">Authenticator or recovery code</label>
+            <input id="admin-code" inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(e.target.value)} required disabled={loading} className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white" />
+            <p className="mt-1 text-xs text-gray-500">Use a six-digit authenticator code or an unused recovery code.</p>
+          </div>}
           {error && <p className="text-xs text-red-400">{error}</p>}
           <button
             type="submit"

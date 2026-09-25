@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { logger } from '../lib/logger.js';
 import { auditLog, buildAuditEntry } from '../lib/audit.js';
+import { hasTwoFactor } from '../lib/twoFactor.js';
 
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 
@@ -56,7 +57,8 @@ function hasValidSessionToken(req: Request): boolean {
       algorithms: ['HS256'],
       ignoreExpiration: false,
     });
-    return typeof payload === 'object' && payload.role === 'admin';
+    return typeof payload === 'object' && payload.role === 'admin' &&
+      (!hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin') || payload.mfa === true);
   } catch {
     return false;
   }
@@ -85,12 +87,11 @@ export function requireAdminKey(req: Request, res: Response, next: NextFunction)
   }
 
   const provided = req.headers['x-admin-key'];
-  if (provided === ADMIN_API_KEY || hasValidSessionToken(req)) {
+  if (hasValidSessionToken(req) || (provided === ADMIN_API_KEY && !hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin'))) {
     // Successful auth — skip the failure limiter entirely
     return next();
   }
 
-  // Auth passed — emit structured audit entry before continuing
   auditLog(buildAuditEntry(req));
-  next();
+  return res.status(401).json({ error: 'Unauthorized', code: hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin') ? 'MFA_REQUIRED' : 'UNAUTHORIZED' });
 }
