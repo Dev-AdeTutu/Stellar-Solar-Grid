@@ -33,6 +33,28 @@ export type ContractEventFilter = {
   offset?: number;
 };
 
+export type ProviderMeterRecord = {
+  meter_id: string;
+  provider_id: string;
+  location: string;
+  status: string;
+  metadata: string | null;
+  updated_at: string;
+};
+
+export type ProviderFleetOverview = {
+  totalMeters: number;
+  activeMeters: number;
+  inactiveMeters: number;
+  totalUsage: number;
+};
+
+export type ProviderRevenuePoint = {
+  period: string;
+  revenue: number;
+  usage: number;
+};
+
 const pool = new SqlitePool({
   filename: DB_PATH,
   min: 1,
@@ -70,6 +92,21 @@ function applySchema(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_contract_events_timestamp
       ON contract_events (timestamp);
+
+    CREATE TABLE IF NOT EXISTS provider_meters (
+      meter_id TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL,
+      location TEXT NOT NULL COLLATE NOCASE,
+      status TEXT NOT NULL DEFAULT 'active',
+      metadata TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_provider_meters_provider
+      ON provider_meters (provider_id);
+
+    CREATE INDEX IF NOT EXISTS idx_provider_meters_status
+      ON provider_meters (provider_id, status);
   `);
 }
 
@@ -220,6 +257,188 @@ export function queryContractEvents(filter: ContractEventFilter = {}): {
     .all(...params, limit, offset) as ContractEventRecord[];
 
   return { results: rows, total: countRow.count };
+}
+
+/**
+ * Register or update a meter owned by a provider.
+ */
+export function upsertProviderMeter(input: {
+  meterId: string;
+  providerId: string;
+  location: string;
+  status?: string;
+  metadata?: Record<string, any> | null;
+}): void {
+  pool.write((db) => {
+    db.prepare(`
+      INSERT INTO provider_meters (meter_id, provider_id, location, status, metadata, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(meter_id) DO UPDATE SET
+        provider_id = excluded.provider_id,
+        location = excluded.location,
+        status = excluded.status,
+        metadata = excluded.metadata,
+        updated_at = excluded.updated_at
+    `).run(
+      input.meterId,
+      input.providerId,
+      input.location,
+      input.status ?? "active",
+      input.metadata ? JSON.stringify(input.metadata) : null,
+      new Date().toISOString()
+    );
+  });
+}
+
+/**
+ * List meters belonging to a provider with optional status filter and pagination.
+ */
+export function listProviderMeters(
+  providerId: string,
+  options: { status?: string; limit?: number; offset?: number } = {}
+): { results: ProviderMeterRecord[]; total: number } {
+  const db = pool.primaryDb();
+  const conditions: string[] = ["provider_id = ?"];
+  const params: any[] = [providerId];
+
+  if (options.status) {
+    conditions.push("status = ?");
+    params.push(options.status);
+  }
+
+  const where = `WHERE ${conditions.join(" AND ")}`;
+  const limit = options.limit ?? 50;
+  const offset = options.offset ?? 0;
+
+  const countRow = db
+    .prepare(`SELECT COUNT(*) as count FROM provider_meters ${where}`)
+    .get(...params) as { count: number };
+
+  const rows = db
+    .prepare(`
+      SELECT meter_id, provider_id, location, status, metadata, updated_at
+      FROM provider_meters
+      ${where}
+      ORDER BY meter_id ASC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...params, limit, offset) as ProviderMeterRecord[];
+
+  return { results: rows, total: countRow.count };
+}
+
+/**
+ * Compute fleet overview analytics for a provider.
+ */
+export function getProviderFleetOverview(providerId: string): ProviderFleetOverview {
+  const db = pool.primaryDb();
+  const row = db
+    .prepare(`
+      SELECT
+        COUNT(*) as total,
+        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
+        SUM(CASE WHEN status != 'active' THEN 1 ELSE 0 END) as inactive
+      FROM provider_meters
+      WHERE provider_id = ?
+    `)
+    .get(providerId) as { total: number; active: number | null; inactive: number | null };
+
+  const usageRow = db
+    .prepare(`
+      SELECT COALESCE(SUM(CAST(json_extract(details, '$.usage') AS REAL)), 0) as usage
+      FROM contract_events
+      WHERE event_type = 'usage'
+        AND meter_id IN (SELECT meter_id FROM provider_meters WHERE provider_id = ?)
+    `)
+    .get(providerId) as { usage: number | null };
+
+  return {
+    totalMeters: row.total ?? 0,
+    activeMeters: row.active ?? 0,
+    inactiveMeters: row.inactive ?? 0,
+    totalUsage: usageRow.usage ?? 0,
+  };
+}
+
+/**
+ * Bulk update the status of multiple provider meters.
+ */
+export function bulkUpdateProviderMeterStatus(
+  providerId: string,
+  meterIds: string[],
+  status: string
+): number {
+  if (meterIds.length === 0) return 0;
+  const db = pool.primaryDb();
+  const placeholders = meterIds.map(() => "?").join(", ");
+  const result = db
+    .prepare(`
+      UPDATE provider_meters
+      SET status = ?, updated_at = ?
+      WHERE provider_id = ? AND meter_id IN (${placeholders})
+    `)
+    .run(status, new Date().toISOString(), providerId, ...meterIds);
+  return result.changes;
+}
+
+/**
+ * Bulk merge metadata into multiple provider meters.
+ */
+export function bulkUpdateProviderMeterMetadata(
+  providerId: string,
+  meterIds: string[],
+  metadata: Record<string, any>
+): number {
+  if (meterIds.length === 0) return 0;
+  const db = pool.primaryDb();
+  const placeholders = meterIds.map(() => "?").join(", ");
+  const result = db
+    .prepare(`
+      UPDATE provider_meters
+      SET metadata = json_patch(COALESCE(metadata, '{}'), ?), updated_at = ?
+      WHERE provider_id = ? AND meter_id IN (${placeholders})
+    `)
+    .run(JSON.stringify(metadata), new Date().toISOString(), providerId, ...meterIds);
+  return result.changes;
+}
+
+/**
+ * Aggregate monthly revenue and usage analytics for a provider.
+ */
+export function getProviderRevenueAnalytics(
+  providerId: string,
+  options: { from?: string; to?: string } = {}
+): ProviderRevenuePoint[] {
+  const db = pool.primaryDb();
+  const conditions: string[] = [
+    "event_type = 'usage'",
+    "meter_id IN (SELECT meter_id FROM provider_meters WHERE provider_id = ?)",
+  ];
+  const params: any[] = [providerId];
+
+  if (options.from) {
+    conditions.push("timestamp >= ?");
+    params.push(options.from);
+  }
+  if (options.to) {
+    conditions.push("timestamp <= ?");
+    params.push(options.to);
+  }
+
+  const rows = db
+    .prepare(`
+      SELECT
+        substr(timestamp, 1, 7) as period,
+        COALESCE(SUM(CAST(json_extract(details, '$.revenue') AS REAL)), 0) as revenue,
+        COALESCE(SUM(CAST(json_extract(details, '$.usage') AS REAL)), 0) as usage
+      FROM contract_events
+      WHERE ${conditions.join(" AND ")}
+      GROUP BY period
+      ORDER BY period ASC
+    `)
+    .all(...params) as ProviderRevenuePoint[];
+
+  return rows;
 }
 
 /**
