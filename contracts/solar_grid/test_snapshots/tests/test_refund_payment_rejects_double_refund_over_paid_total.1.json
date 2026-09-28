@@ -334,6 +334,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -456,6 +464,33 @@
               "durability": "persistent",
               "val": {
                 "i128": "400"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "RFND4"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
               }
             }
           },

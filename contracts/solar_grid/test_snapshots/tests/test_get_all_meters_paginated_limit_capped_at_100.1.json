@@ -1029,6 +1029,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -1157,6 +1165,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -1293,6 +1309,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -1421,6 +1445,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -1557,6 +1589,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -1685,6 +1725,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -1821,6 +1869,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -1949,6 +2005,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -2085,6 +2149,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -2213,6 +2285,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -2349,6 +2429,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -2477,6 +2565,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -2613,6 +2709,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -2741,6 +2845,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -2877,6 +2989,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -3005,6 +3125,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -3141,6 +3269,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -3269,6 +3405,14 @@
                     },
                     "val": {
                       "bool": false
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
                     }
                   },
                   {
@@ -3405,6 +3549,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -3537,6 +3689,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -3632,6 +3792,546 @@
                     }
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_01"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_02"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_03"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_04"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_05"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_06"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_07"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_08"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_09"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_10"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_11"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_12"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_13"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_14"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_15"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_16"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_17"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_18"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_19"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "CAP_20"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
               }
             }
           },

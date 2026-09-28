@@ -327,6 +327,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -449,6 +457,33 @@
               "durability": "persistent",
               "val": {
                 "i128": "1000"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "EV_SET"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
               }
             }
           },
@@ -894,7 +929,34 @@
                 "string": "EV_SET"
               }
             ],
-            "data": "void"
+            "data": {
+              "map": [
+                {
+                  "key": {
+                    "symbol": "meter_id"
+                  },
+                  "val": {
+                    "string": "EV_SET"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "reason"
+                  },
+                  "val": {
+                    "symbol": "admin_action"
+                  }
+                },
+                {
+                  "key": {
+                    "symbol": "timestamp"
+                  },
+                  "val": {
+                    "u64": "0"
+                  }
+                }
+              ]
+            }
           }
         }
       },

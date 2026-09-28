@@ -408,6 +408,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -432,10 +440,16 @@
                   },
                   {
                     "key": {
+                      "symbol": "emergency_contact"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
                       "symbol": "expires_at"
                     },
                     "val": {
-                      "u64": "86"
+                      "u64": "86400"
                     }
                   },
                   {
@@ -450,6 +464,14 @@
                     },
                     "val": {
                       "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "metadata"
+                    },
+                    "val": {
+                      "map": []
                     }
                   },
                   {
@@ -485,7 +507,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 2
+                      "u32": 4
                     }
                   }
                 ]
@@ -516,6 +538,33 @@
               "durability": "persistent",
               "val": {
                 "i128": "990"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "PAUSE_MAIN"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
               }
             }
           },
@@ -696,6 +745,14 @@
                       },
                       "val": {
                         "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "REENTR"
+                      },
+                      "val": {
+                        "bool": false
                       }
                     },
                     {

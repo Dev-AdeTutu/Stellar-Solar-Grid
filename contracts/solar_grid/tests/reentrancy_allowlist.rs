@@ -107,7 +107,11 @@ fn test_batch_register_skips_unlisted_owner() {
         (id_unlisted.clone(), unlisted.clone()),
     ]);
 
-    assert_eq!(results.get(0).map(|r| r.success), Some(true), "listed owner must be registered");
+    assert_eq!(
+        results.get(0).map(|r| r.success),
+        Some(true),
+        "listed owner must be registered"
+    );
     assert_eq!(
         results.get(1).map(|r| r.success),
         Some(false),
