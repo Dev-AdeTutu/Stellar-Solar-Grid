@@ -129,74 +129,6 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "AuditLog"
-                  },
-                  {
-                    "u64": "0"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "action_type"
-                    },
-                    "val": {
-                      "string": "migrate_meter"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "admin_address"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "affected_entity"
-                    },
-                    "val": {
-                      "string": "contract"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "id"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "timestamp"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "key": {
-                "vec": [
-                  {
                     "symbol": "Meter"
                   },
                   {
@@ -269,7 +201,7 @@
                   },
                   {
                     "key": {
-                      "symbol": "installed_at"
+                      "symbol": "last_payment"
                     },
                     "val": {
                       "u64": "1000"
@@ -277,10 +209,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "last_payment"
+                      "symbol": "metadata"
                     },
                     "val": {
-                      "u64": "1000"
+                      "map": []
                     }
                   },
                   {
@@ -316,10 +248,37 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 4
                     }
                   }
                 ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterVersion"
+                  },
+                  {
+                    "string": "MIG_V0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 4
               }
             }
           },
@@ -348,14 +307,6 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "AUD_CNT"
-                      },
-                      "val": {
-                        "u64": "1"
                       }
                     },
                     {
