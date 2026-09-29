@@ -1548,3 +1548,394 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Demand Response ─────────────────────────────────────────────────────────
+  
+  /api/demand-response/stats:
+    get:
+      tags:
+        - Demand Response
+      summary: Get program statistics
+      description: Get demand response program statistics including ROI metrics
+      operationId: getDemandResponseStats
+      responses:
+        '200':
+          description: Program statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  stats:
+                    type: object
+                    properties:
+                      totalEvents:
+                        type: integer
+                      activeParticipants:
+                        type: integer
+                      totalReductionKwh:
+                        type: number
+                      totalRewardsDistributed:
+                        type: number
+                      averageParticipationRate:
+                        type: string
+                      roi:
+                        type: string
+                      programHealth:
+                        type: string
+                        enum: [positive, negative]
+  
+  /api/demand-response/events:
+    get:
+      tags:
+        - Demand Response
+      summary: Get all peak events
+      description: Get list of peak demand events
+      operationId: getPeakEvents
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [scheduled, active, completed, cancelled]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of peak events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  events:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        startTime:
+                          type: string
+                          format: date-time
+                        endTime:
+                          type: string
+                          format: date-time
+                        predictedDemand:
+                          type: number
+                        threshold:
+                          type: number
+                        status:
+                          type: string
+                        notificationsSent:
+                          type: boolean
+                        createdAt:
+                          type: string
+                          format: date-time
+                  count:
+                    type: integer
+  
+  /api/demand-response/events/{eventId}:
+    get:
+      tags:
+        - Demand Response
+      summary: Get peak event details
+      description: Get detailed information about a specific peak event
+      operationId: getPeakEvent
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Peak event details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  event:
+                    type: object
+                  participants:
+                    type: object
+                    properties:
+                      count:
+                        type: integer
+                      totalReduction:
+                        type: number
+                      totalRewards:
+                        type: number
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /api/demand-response/participation/{meterId}:
+    get:
+      tags:
+        - Demand Response
+      summary: Get participation history
+      description: Get demand response participation history for a meter
+      operationId: getParticipationHistory
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Participation history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  meterId:
+                    type: string
+                  history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        peakEventId:
+                          type: string
+                        baselineConsumption:
+                          type: number
+                        actualConsumption:
+                          type: number
+                        reduction:
+                          type: number
+                        rewardAmount:
+                          type: number
+                        participatedAt:
+                          type: string
+                          format: date-time
+                  summary:
+                    type: object
+                    properties:
+                      participationCount:
+                        type: integer
+                      totalReductionKwh:
+                        type: number
+                      totalRewardsEarned:
+                        type: number
+                      averageRewardPerEvent:
+                        type: string
+  
+  /api/demand-response/detect:
+    post:
+      tags:
+        - Demand Response
+      summary: Trigger peak detection
+      description: Manually trigger peak demand detection (admin only)
+      operationId: triggerPeakDetection
+      security:
+        - AdminKey: []
+      responses:
+        '200':
+          description: Detection result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  peakDetected:
+                    type: boolean
+                  event:
+                    type: object
+                  notificationsSent:
+                    type: integer
+  
+  /api/demand-response/events/{eventId}/process:
+    post:
+      tags:
+        - Demand Response
+      summary: Process event participation
+      description: Manually process participation for a completed event (admin only)
+      operationId: processEventParticipation
+      security:
+        - AdminKey: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Processing result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  results:
+                    type: object
+                    properties:
+                      participantCount:
+                        type: integer
+                      totalReductionKwh:
+                        type: number
+                      totalRewardsDistributed:
+                        type: number
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /api/demand-response/events/{eventId}/status:
+    put:
+      tags:
+        - Demand Response
+      summary: Update event status
+      description: Update the status of a peak event (admin only)
+      operationId: updateEventStatus
+      security:
+        - AdminKey: []
+      parameters:
+        - name: eventId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [scheduled, active, completed, cancelled]
+      responses:
+        '200':
+          description: Status updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  eventId:
+                    type: string
+                  newStatus:
+                    type: string
+        '400':
+          description: Invalid status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /api/demand-response/leaderboard:
+    get:
+      tags:
+        - Demand Response
+      summary: Get leaderboard
+      description: Get top participants by rewards earned
+      operationId: getDemandResponseLeaderboard
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Leaderboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  leaderboard:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rank:
+                          type: integer
+                        meterId:
+                          type: string
+                        owner:
+                          type: string
+                        participationCount:
+                          type: integer
+                        totalReductionKwh:
+                          type: number
+                        totalRewards:
+                          type: number
+  
+  /api/demand-response/analytics:
+    get:
+      tags:
+        - Demand Response
+      summary: Get program analytics
+      description: Get detailed analytics for the demand response program
+      operationId: getDemandResponseAnalytics
+      parameters:
+        - name: period
+          in: query
+          schema:
+            type: string
+            enum: [7d, 30d, 90d]
+            default: 30d
+      responses:
+        '200':
+          description: Program analytics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  period:
+                    type: string
+                  analytics:
+                    type: object
+                    properties:
+                      eventsByStatus:
+                        type: array
+                      participationTrend:
+                        type: array
+                      hourlyDistribution:
+                        type: array
+
+tags:
+  - name: Demand Response
+    description: Demand response program - reward users for reducing consumption during peak periods

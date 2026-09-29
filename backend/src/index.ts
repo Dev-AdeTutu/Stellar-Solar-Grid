@@ -48,6 +48,7 @@ import { billingRouter } from "./routes/billing.js";
 import { competitionsRouter } from "./routes/competitions.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
+import demandResponseRouter from "./routes/demandResponse.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
@@ -250,3 +251,6 @@ app.listen(port, () => {
 });
 
 export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
+
+// #924: Demand Response Program
+app.use("/api/demand-response", demandResponseRouter);
