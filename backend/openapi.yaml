@@ -1548,3 +1548,410 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Arbitrage Bot ───────────────────────────────────────────────────────────
+  
+  /api/arbitrage/config:
+    get:
+      tags:
+        - Arbitrage Bot
+      summary: Get bot configuration
+      description: Get user's arbitrage bot configuration
+      operationId: getArbitrageBotConfig
+      parameters:
+        - name: userId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Bot configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  config:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      minSpreadPercent:
+                        type: number
+                      maxTradeAmount:
+                        type: number
+                      maxDailyLoss:
+                        type: number
+                      maxPositionSize:
+                        type: number
+                      autoExecute:
+                        type: boolean
+                      markets:
+                        type: array
+                        items:
+                          type: string
+                      updatedAt:
+                        type: string
+                        format: date-time
+    
+    put:
+      tags:
+        - Arbitrage Bot
+      summary: Update bot configuration
+      description: Update user's arbitrage bot settings
+      operationId: updateArbitrageBotConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                enabled:
+                  type: boolean
+                minSpreadPercent:
+                  type: number
+                maxTradeAmount:
+                  type: number
+                maxDailyLoss:
+                  type: number
+                maxPositionSize:
+                  type: number
+                autoExecute:
+                  type: boolean
+                markets:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  config:
+                    type: object
+  
+  /api/arbitrage/enable:
+    post:
+      tags:
+        - Arbitrage Bot
+      summary: Enable bot
+      description: Enable the arbitrage bot for a user
+      operationId: enableArbitrageBot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+      responses:
+        '200':
+          description: Bot enabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+  
+  /api/arbitrage/disable:
+    post:
+      tags:
+        - Arbitrage Bot
+      summary: Disable bot
+      description: Disable the arbitrage bot for a user
+      operationId: disableArbitrageBot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+      responses:
+        '200':
+          description: Bot disabled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+  
+  /api/arbitrage/metrics:
+    get:
+      tags:
+        - Arbitrage Bot
+      summary: Get bot metrics
+      description: Get performance metrics for the arbitrage bot
+      operationId: getArbitrageBotMetrics
+      parameters:
+        - name: userId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Bot metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  metrics:
+                    type: object
+                    properties:
+                      totalTrades:
+                        type: integer
+                      successfulTrades:
+                        type: integer
+                      failedTrades:
+                        type: integer
+                      totalProfit:
+                        type: string
+                      totalLoss:
+                        type: string
+                      netProfit:
+                        type: string
+                      winRate:
+                        type: string
+                      averageProfit:
+                        type: string
+                      largestProfit:
+                        type: string
+                      largestLoss:
+                        type: string
+                      dailyProfitLoss:
+                        type: string
+                      isActive:
+                        type: boolean
+  
+  /api/arbitrage/opportunities:
+    get:
+      tags:
+        - Arbitrage Bot
+      summary: Get opportunities
+      description: Get recent arbitrage opportunities
+      operationId: getArbitrageOpportunities
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of opportunities
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  opportunities:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        buyMarket:
+                          type: string
+                        sellMarket:
+                          type: string
+                        asset:
+                          type: string
+                        buyPrice:
+                          type: number
+                        sellPrice:
+                          type: number
+                        spreadPercent:
+                          type: string
+                        estimatedProfit:
+                          type: string
+                        volume:
+                          type: number
+                        detectedAt:
+                          type: string
+                          format: date-time
+                        expiresAt:
+                          type: string
+                          format: date-time
+                        isExpired:
+                          type: boolean
+                  count:
+                    type: integer
+  
+  /api/arbitrage/trades:
+    get:
+      tags:
+        - Arbitrage Bot
+      summary: Get trade history
+      description: Get user's arbitrage trade history
+      operationId: getArbitrageTrades
+      parameters:
+        - name: userId
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Trade history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  trades:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+  
+  /api/arbitrage/detect:
+    post:
+      tags:
+        - Arbitrage Bot
+      summary: Detect opportunities
+      description: Manually trigger opportunity detection
+      operationId: detectArbitrageOpportunities
+      responses:
+        '200':
+          description: Detection results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  opportunities:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+                  detectionTimeMs:
+                    type: number
+                  meetsRequirement:
+                    type: boolean
+                    description: Whether detection time < 5000ms
+  
+  /api/arbitrage/execute:
+    post:
+      tags:
+        - Arbitrage Bot
+      summary: Execute trade
+      description: Manually execute trade for an opportunity
+      operationId: executeArbitrageTrade
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - userId
+                - opportunityId
+              properties:
+                userId:
+                  type: string
+                opportunityId:
+                  type: string
+      responses:
+        '200':
+          description: Trade executed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  profit:
+                    type: string
+                  trades:
+                    type: array
+                    items:
+                      type: object
+        '400':
+          description: Trade failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  
+  /api/arbitrage/dashboard:
+    get:
+      tags:
+        - Arbitrage Bot
+      summary: Get dashboard
+      description: Get complete dashboard data for the bot
+      operationId: getArbitrageBotDashboard
+      parameters:
+        - name: userId
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  dashboard:
+                    type: object
+                    properties:
+                      config:
+                        type: object
+                      metrics:
+                        type: object
+                      recentOpportunities:
+                        type: array
+                      recentTrades:
+                        type: array
+
+tags:
+  - name: Arbitrage Bot
+    description: Automated arbitrage trading bot - detect and execute profitable trades
