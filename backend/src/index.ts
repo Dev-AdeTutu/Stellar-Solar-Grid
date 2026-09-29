@@ -48,6 +48,7 @@ import { billingRouter } from "./routes/billing.js";
 import { competitionsRouter } from "./routes/competitions.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
+import { backtestRouter } from "./routes/backtest.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
@@ -177,6 +178,7 @@ app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 // #901–#904: widgets, billing, competitions, smart home
 app.use("/api/widgets", widgetsRouter);
+app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/smart-home", smartHomeRouter);

@@ -1,6 +1,6 @@
 // SolarGrid home-screen widget (#901) — small, medium and large sizes.
 //
-// Refresh policy: one network request every 15 minutes (`.after(+15m)`),
+// Refresh policy: one network request every 5 minutes (`.after(+5m)`),
 // with ETag revalidation and Low-Data-Mode respect in SummaryFetcher. WidgetKit
 // may coalesce refreshes further to save battery; the app also triggers an
 // immediate reload when the user switches meters.
@@ -19,7 +19,7 @@ struct MeterEntry: TimelineEntry {
 }
 
 struct Provider: TimelineProvider {
-    static let refreshInterval: TimeInterval = 15 * 60
+    static let refreshInterval: TimeInterval = 5 * 60
 
     func placeholder(in context: Context) -> MeterEntry {
         MeterEntry(date: Date(), summary: .placeholder, configured: true)
@@ -160,19 +160,30 @@ struct LargeView: View {
                     Text(dayLabels[i]).font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity)
                 }
             }
+            if let price = s.priceXlmPerKwh {
+                let hit = (s.alerts ?? []).contains { $0.triggered }
+                Text(String(format: "Price: %.3f XLM/kWh", price) + (hit ? " 🔔" : ""))
+                    .font(.caption).foregroundStyle(hit ? brand : .secondary)
+            }
+            ForEach((s.recentTransactions ?? []).prefix(3), id: \.timestamp) { t in
+                Text("\(t.type == "topup" ? "+" : "−")\(xlm(t.amount)) XLM · \(t.type == "topup" ? "Top up" : "Usage")")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
             Spacer(minLength: 0)
             HStack {
                 if let updated = s.updatedDate {
                     Text("Updated \(updated, style: .relative) ago").font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Link(destination: URL(string: "solargrid://pay?meter=\(s.meterId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s.meterId)")!) {
-                    Text("Top up")
-                        .font(.caption.bold())
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(brand, in: Capsule())
-                        .foregroundStyle(.black)
+                ForEach(["buy", "sell"], id: \.self) { side in
+                    Link(destination: URL(string: "solargrid://trade?meter=\(s.meterId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s.meterId)&side=\(side)")!) {
+                        Text(side == "buy" ? "Buy" : "Sell")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(brand, in: Capsule())
+                            .foregroundStyle(.black)
+                    }
                 }
             }
         }

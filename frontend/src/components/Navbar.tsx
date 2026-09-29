@@ -24,6 +24,8 @@ export default function Navbar() {
     { href: "/bills", label: t("bills") },
     { href: "/competitions", label: t("competitions") },
     { href: "/smart-home", label: t("smartHome") },
+    { href: "/backtest", label: "Backtest" },
+    { href: "/widget", label: "Widget" },
   ];
 
   useEffect(() => {
