@@ -21,6 +21,7 @@ import {
 } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
 import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
+import { emailLowBalance } from "../lib/billing.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -209,10 +210,6 @@ async function checkAndNotifyLowBalance(meterId: string) {
   // after this module was first loaded.
   const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
   const urls = getWebhookUrls();
-  // Nothing to notify: neither the legacy single-URL env var nor any
-  // provider registered via the webhook registry.
-  if (!webhookUrl && urls.size === 0) return;
-
   try {
     const result = await contractQuery("get_meter", [
       StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
@@ -258,6 +255,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
           weeklyTypicalStroops,
         });
       }
+      await emailLowBalance({ meterId, balance, threshold: dynamicThreshold });
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };

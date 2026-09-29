@@ -4,7 +4,7 @@ extern crate alloc;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
-    Map, String, Symbol, Vec,
+    BytesN, Map, String, Symbol, Vec,
 };
 
 mod multi_asset;
@@ -169,6 +169,7 @@ pub enum AdminOperation {
     BulkDeactivate(Vec<String>),
     RotateAdmin(Address),
     SetGracePeriod(u64),
+    UpgradeContract(BytesN<32>, String),
 }
 
 #[contracttype]
@@ -2111,6 +2112,13 @@ impl SolarGridContract {
         if admins.len() < 3 || admins.len() > 5 || threshold == 0 || threshold > admins.len() {
             return Err(ContractError::InvalidMultisigConfiguration);
         }
+        for (index, admin) in admins.iter().enumerate() {
+            for other in admins.iter().skip(index + 1) {
+                if admin == other {
+                    return Err(ContractError::InvalidMultisigConfiguration);
+                }
+            }
+        }
         env.storage().instance().set(&MULTISIG_ADMINS, &admins);
         env.storage().instance().set(&MULTISIG_THRESHOLD, &threshold);
         Ok(())
@@ -2131,6 +2139,9 @@ impl SolarGridContract {
         env.storage().instance().set(&PROPOSAL_COUNT, &(id + 1));
         let mut approvals = Vec::new(&env); approvals.push_back(proposer);
         let threshold: u32 = env.storage().instance().get(&MULTISIG_THRESHOLD).unwrap_or(0);
+        if matches!(&operation, AdminOperation::UpgradeContract(_, _)) && threshold < 2 {
+            return Err(ContractError::InvalidMultisigConfiguration);
+        }
         env.storage().persistent().set(&DataKey::AdminProposal(id), &AdminProposal { operation, approvals, threshold, expiry });
         Ok(id)
     }
@@ -2162,6 +2173,16 @@ impl SolarGridContract {
             AdminOperation::Unpause => { if !Self::pause_is_active(&env) { return Err(ContractError::NotPaused); } env.storage().instance().set(&PAUSED, &false); },
             AdminOperation::SetGracePeriod(period) => { env.storage().instance().set(&GRACE_PERIOD, &period); },
             AdminOperation::RotateAdmin(new_admin) => { env.storage().instance().set(&ADMIN, &new_admin); },
+            AdminOperation::UpgradeContract(wasm_hash, version) => {
+                if proposal.threshold < 2 || proposal.approvals.len() < 2 {
+                    return Err(ContractError::InvalidMultisigConfiguration);
+                }
+                if version.is_empty() || version.len() > 32 {
+                    return Err(ContractError::InvalidConfiguration);
+                }
+                env.storage().instance().set(&CONTRACT_VERSION, &version);
+                env.deployer().update_current_contract_wasm(wasm_hash);
+            },
             AdminOperation::BulkDeactivate(meters) => { for meter_id in meters.iter() { let key = DataKey::Meter(meter_id); if let Some(mut meter) = env.storage().persistent().get::<DataKey, Meter>(&key) { meter.active = false; env.storage().persistent().set(&key, &meter); } } },
             AdminOperation::EmergencyWithdraw(amount) => { if amount <= 0 { return Err(ContractError::InvalidAmount); } let admin: Address = Self::get_admin(&env)?; let token_address = Self::get_token_address(&env)?; let client = token::Client::new(&env, &token_address); if amount > client.balance(&env.current_contract_address()) { return Err(ContractError::InsufficientBalance); } client.transfer(&env.current_contract_address(), &admin, &amount); },
         }
@@ -3398,6 +3419,36 @@ mod tests {
         assert_eq!(
             client.get_contract_version(),
             String::from_str(&env, CURRENT_CONTRACT_VERSION)
+        );
+    }
+
+    #[test]
+    fn test_contract_upgrade_proposal_requires_multiple_admin_approvals() {
+        let (env, client, admin) = setup();
+        let second_admin = Address::generate(&env);
+        let third_admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone(), second_admin, third_admin];
+        let wasm_hash = BytesN::from_array(&env, &[7; 32]);
+        let expiry = env.ledger().timestamp() + 100;
+
+        client.configure_multisig(&admins, &1);
+        assert_eq!(
+            client.try_propose_admin_operation(
+                &admin,
+                &AdminOperation::UpgradeContract(wasm_hash.clone(), String::from_str(&env, "0.2.0")),
+                &expiry,
+            ),
+            Err(Ok(ContractError::InvalidMultisigConfiguration)),
+        );
+
+        client.configure_multisig(&admins, &2);
+        assert_eq!(
+            client.try_propose_admin_operation(
+                &admin,
+                &AdminOperation::UpgradeContract(wasm_hash, String::from_str(&env, "0.2.0")),
+                &expiry,
+            ),
+            Ok(Ok(0)),
         );
     }
 

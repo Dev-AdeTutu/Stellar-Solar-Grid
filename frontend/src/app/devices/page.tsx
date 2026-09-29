@@ -35,6 +35,7 @@ type PerfSummary = {
   peakPowerW: number | null;
   capacityFactor: number | null;
 };
+type StabilityReport = { stabilityScore: number | null; anomalies: Array<{ id: number; metric: string; value: number; severity: string; message: string }> };
 
 const TYPE_LABEL: Record<DeviceType, string> = { solar_panel: "Solar panel", inverter: "Inverter", meter: "Meter" };
 const INPUT = "rounded border border-white/20 bg-transparent px-3 py-2 text-sm";
@@ -54,15 +55,18 @@ function DeviceRow({ device, onChanged }: { device: Device; onChanged: () => voi
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<DeviceDetail | null>(null);
   const [perf, setPerf] = useState<PerfSummary | null>(null);
+  const [stability, setStability] = useState<StabilityReport | null>(null);
   const { showToast } = useToast();
 
   const load = useCallback(async () => {
-    const [d, p] = await Promise.all([
+    const [d, p, s] = await Promise.all([
       api<DeviceDetail>(`/api/devices/${device.id}`),
       api<{ summary: PerfSummary }>(`/api/devices/${device.id}/performance?days=7`),
+      api<StabilityReport>(`/api/devices/${device.id}/stability?days=7`),
     ]);
     setDetail(d);
     setPerf(p.summary);
+    setStability(s);
   }, [device.id]);
 
   useEffect(() => {
@@ -119,9 +123,12 @@ function DeviceRow({ device, onChanged }: { device: Device; onChanged: () => voi
                 <li>Avg power: {perf.avgPowerW === null ? "—" : `${Math.round(perf.avgPowerW)} W`}</li>
                 <li>Peak power: {perf.peakPowerW === null ? "—" : `${Math.round(perf.peakPowerW)} W`}</li>
                 <li>Capacity factor: {perf.capacityFactor === null ? "—" : `${(perf.capacityFactor * 100).toFixed(1)}%`}</li>
+                <li>Grid stability: {stability?.stabilityScore === null || stability?.stabilityScore === undefined ? "—" : `${stability.stabilityScore}%`}</li>
+                <li>Recent anomalies: {stability?.anomalies.length ?? 0}</li>
               </ul>
             ) : (
               <p className="opacity-60">No telemetry yet. Devices publish to solargrid/devices/{device.id}/telemetry.</p>
+              <p className="mt-2">Grid stability: {stability?.stabilityScore === null || stability?.stabilityScore === undefined ? "No readings" : `${stability.stabilityScore}%`}</p>
             )}
           </div>
           <div>

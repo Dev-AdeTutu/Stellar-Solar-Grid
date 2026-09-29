@@ -60,6 +60,7 @@ import { requestLogger } from "./lib/requestLogger.js";
 import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
+import { globalRateLimiter } from "./middleware/globalRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
@@ -78,6 +79,7 @@ import { getUsageHistoryPoolStatus } from "./lib/usageHistory.js";
 import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { getReqId } from "./lib/requestContext.js";
 import { exportRouter } from "./routes/export.js";
+import { emailNotificationsRouter } from "./routes/emailNotifications.js";
 // Issue #696: Import idempotency cleanup for graceful shutdown
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
@@ -121,7 +123,12 @@ const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
 const STARTED_AT = Date.now();
 
 const app = express();
-app.use(cors());
+app.use(cors({ exposedHeaders: [
+  "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset",
+  "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+  "X-RateLimit-Policy", "Retry-After",
+] }));
+app.use(globalRateLimiter);
 app.use(express.json());
 
 const pool = new Pool({
@@ -167,6 +174,7 @@ app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
+app.use("/api/email-notifications", emailNotificationsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/usage", usageRouter);

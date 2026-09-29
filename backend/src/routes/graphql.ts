@@ -34,6 +34,7 @@ import {
   deleteDevice,
   getDevice,
   getPerformanceSummary,
+  getStabilityReport,
   listCertifications,
   listDevices,
   listDueMaintenance,
@@ -229,6 +230,7 @@ export function formatDevice(d: Device) {
     maintenance: () => listMaintenance(d.id),
     performance: ({ days = 7 }: { days?: number }) => getPerformanceSummary(d.id, clampDays(days, 90)),
     performanceReadings: ({ days = 7 }: { days?: number }) => listPerformance(d.id, clampDays(days, 90)),
+    stability: ({ days = 7 }: { days?: number }) => getStabilityReport(d.id, clampDays(days, 90)),
   };
 }
 

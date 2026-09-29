@@ -29,6 +29,7 @@ import {
   deleteMaintenance,
   getDevice,
   getPerformanceSummary,
+  getStabilityReport,
   listCertifications,
   listDevices,
   listDueMaintenance,
@@ -87,6 +88,7 @@ export const performanceSchema = z.object({
   powerW: z.number().min(0).optional(),
   energyKwh: z.number().min(0).optional(),
   voltageV: z.number().optional(),
+  frequencyHz: z.number().positive().max(100).optional(),
   temperatureC: z.number().optional(),
   efficiency: z.number().min(0).max(1).optional(),
 });
@@ -215,4 +217,10 @@ devicesRouter.get("/:id/performance", (req, res) => {
     summary: getPerformanceSummary(req.params.id, days),
     readings: listPerformance(req.params.id, days),
   });
+});
+
+devicesRouter.get("/:id/stability", (req, res) => {
+  if (!getDevice(req.params.id)) return res.status(404).json({ error: "Device not found" });
+  const days = intParam(req.query.days, 7, 90);
+  res.json(getStabilityReport(req.params.id, days));
 });
