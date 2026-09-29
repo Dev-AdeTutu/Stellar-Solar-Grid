@@ -121,6 +121,7 @@ const MINUTES_PER_DAY: u32 = 24 * 60;
 const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
+const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
 /// Max number of metadata key-value pairs per meter (Issue #691).
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
@@ -178,6 +179,13 @@ pub struct AdminProposal {
     pub approvals: Vec<Address>,
     pub threshold: u32,
     pub expiry: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferProposal {
+    pub proposed_admin: Address,
+    pub expires_at: u64,
 }
 
 /// Access status with grace period details
@@ -414,6 +422,7 @@ pub enum DataKey {
     MeterDelegates(String),
     /// Storage key for a multisig admin proposal.
     AdminProposal(u32),
+    AdminTransferProposal,
     /// Owner-authorized automatic top-up settings for a meter.
     AutoTopup(String),
     /// Immutable admin audit log entry by sequential id (#836).
