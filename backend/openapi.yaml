@@ -1548,3 +1548,322 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Price Heatmap (#922) ────────────────────────────────────────────────────
+  /api/heatmap/zones:
+    get:
+      summary: Get all grid zones
+      description: Returns all grid zones with their geographic and price information
+      operationId: getHeatmapZones
+      tags: [heatmap]
+      parameters:
+        - name: region
+          in: query
+          description: Filter by region name
+          schema: { type: string }
+        - name: minLat
+          in: query
+          description: Minimum latitude for bounding box
+          schema: { type: number }
+        - name: maxLat
+          in: query
+          description: Maximum latitude for bounding box
+          schema: { type: number }
+        - name: minLon
+          in: query
+          description: Minimum longitude for bounding box
+          schema: { type: number }
+        - name: maxLon
+          in: query
+          description: Maximum longitude for bounding box
+          schema: { type: number }
+      responses:
+        "200":
+          description: List of grid zones
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, zones, count]
+                properties:
+                  success: { type: boolean }
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, region, latitude, longitude, radius, population, basePrice]
+                      properties:
+                        id: { type: string }
+                        name: { type: string }
+                        region: { type: string }
+                        latitude: { type: number }
+                        longitude: { type: number }
+                        radius: { type: number }
+                        population: { type: integer }
+                        basePrice: { type: number }
+                  count: { type: integer }
+
+  /api/heatmap/zones/{zoneId}:
+    get:
+      summary: Get specific zone details
+      description: Returns detailed information for a single zone including current price and statistics
+      operationId: getHeatmapZone
+      tags: [heatmap]
+      parameters:
+        - name: zoneId
+          in: path
+          required: true
+          description: Zone identifier
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zone details
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, zone]
+                properties:
+                  success: { type: boolean }
+                  zone:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                      region: { type: string }
+                      latitude: { type: number }
+                      longitude: { type: number }
+                      radius: { type: number }
+                      population: { type: integer }
+                      basePrice: { type: number }
+                      currentPrice: { type: number }
+                      demand: { type: number }
+                      supply: { type: number }
+                      congestion: { type: number }
+                      stats:
+                        type: object
+                        properties:
+                          minPrice: { type: number }
+                          maxPrice: { type: number }
+                          avgPrice: { type: number }
+                          currentPrice: { type: number }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/heatmap/current:
+    get:
+      summary: Get current heatmap data
+      description: Returns optimized current prices for all zones for heatmap rendering
+      operationId: getCurrentHeatmap
+      tags: [heatmap]
+      responses:
+        "200":
+          description: Current heatmap data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, zones, priceRange, timestamp]
+                properties:
+                  success: { type: boolean }
+                  zones:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, lat, lon, price, name, region]
+                      properties:
+                        id: { type: string }
+                        lat: { type: number }
+                        lon: { type: number }
+                        price: { type: number }
+                        name: { type: string }
+                        region: { type: string }
+                  priceRange:
+                    type: object
+                    required: [min, max]
+                    properties:
+                      min: { type: number }
+                      max: { type: number }
+                  timestamp: { type: string, format: date-time }
+
+  /api/heatmap/prices:
+    get:
+      summary: Get current prices (detailed)
+      description: Returns detailed current price data for all zones
+      operationId: getCurrentPrices
+      tags: [heatmap]
+      responses:
+        "200":
+          description: Current prices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, prices, count, timestamp]
+                properties:
+                  success: { type: boolean }
+                  prices:
+                    type: array
+                    items:
+                      type: object
+                      required: [zoneId, price, demand, supply, congestion, timestamp]
+                      properties:
+                        zoneId: { type: string }
+                        price: { type: number }
+                        demand: { type: number }
+                        supply: { type: number }
+                        congestion: { type: number }
+                        timestamp: { type: string, format: date-time }
+                  count: { type: integer }
+                  timestamp: { type: string, format: date-time }
+
+  /api/heatmap/historical:
+    get:
+      summary: Get historical price snapshots
+      description: Returns historical price data for playback and analysis
+      operationId: getHistoricalHeatmap
+      tags: [heatmap]
+      parameters:
+        - name: startTime
+          in: query
+          description: Start time for historical data
+          schema: { type: string, format: date-time }
+        - name: endTime
+          in: query
+          description: End time for historical data
+          schema: { type: string, format: date-time }
+        - name: zoneIds
+          in: query
+          description: Comma-separated zone IDs to filter
+          schema: { type: string }
+      responses:
+        "200":
+          description: Historical snapshots
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, snapshots, count]
+                properties:
+                  success: { type: boolean }
+                  snapshots:
+                    type: array
+                    items:
+                      type: object
+                      required: [timestamp, prices]
+                      properties:
+                        timestamp: { type: string, format: date-time }
+                        prices:
+                          type: object
+                          additionalProperties: { type: number }
+                  count: { type: integer }
+
+  /api/heatmap/zones/{zoneId}/stats:
+    get:
+      summary: Get price statistics for a zone
+      description: Returns statistical analysis of prices for a specific zone
+      operationId: getZonePriceStats
+      tags: [heatmap]
+      parameters:
+        - name: zoneId
+          in: path
+          required: true
+          description: Zone identifier
+          schema: { type: string }
+        - name: startTime
+          in: query
+          description: Start time for stats calculation
+          schema: { type: string, format: date-time }
+        - name: endTime
+          in: query
+          description: End time for stats calculation
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Zone price statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, zoneId, stats]
+                properties:
+                  success: { type: boolean }
+                  zoneId: { type: string }
+                  stats:
+                    type: object
+                    required: [minPrice, maxPrice, avgPrice, currentPrice, priceRange, volatility]
+                    properties:
+                      minPrice: { type: string }
+                      maxPrice: { type: string }
+                      avgPrice: { type: string }
+                      currentPrice: { type: string }
+                      priceRange: { type: string }
+                      volatility: { type: string }
+
+  /api/heatmap/regions:
+    get:
+      summary: Get list of all regions
+      description: Returns all regions with zone counts and average prices
+      operationId: getHeatmapRegions
+      tags: [heatmap]
+      responses:
+        "200":
+          description: List of regions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, regions, count]
+                properties:
+                  success: { type: boolean }
+                  regions:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, zonesCount, avgPrice, totalPopulation]
+                      properties:
+                        name: { type: string }
+                        zonesCount: { type: integer }
+                        avgPrice: { type: string }
+                        totalPopulation: { type: integer }
+                  count: { type: integer }
+
+  /api/heatmap/summary:
+    get:
+      summary: Get overall heatmap summary statistics
+      description: Returns aggregated statistics across all zones
+      operationId: getHeatmapSummary
+      tags: [heatmap]
+      responses:
+        "200":
+          description: Heatmap summary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, summary]
+                properties:
+                  success: { type: boolean }
+                  summary:
+                    type: object
+                    required: [totalZones, priceStats, distribution, timestamp]
+                    properties:
+                      totalZones: { type: integer }
+                      priceStats:
+                        type: object
+                        required: [min, max, avg, range]
+                        properties:
+                          min: { type: string }
+                          max: { type: string }
+                          avg: { type: string }
+                          range: { type: string }
+                      distribution:
+                        type: array
+                        items:
+                          type: object
+                          required: [label, count, percentage]
+                          properties:
+                            label: { type: string }
+                            count: { type: integer }
+                            percentage: { type: string }
+                      timestamp: { type: string, format: date-time }

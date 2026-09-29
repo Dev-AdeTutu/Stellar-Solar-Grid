@@ -48,6 +48,8 @@ import { billingRouter } from "./routes/billing.js";
 import { competitionsRouter } from "./routes/competitions.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
+import priceHeatmapRouter from "./routes/priceHeatmap.js";
+import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
@@ -180,7 +182,12 @@ app.use("/api/widgets", widgetsRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/smart-home", smartHomeRouter);
+// #922: energy price heatmap
+app.use("/api/heatmap", priceHeatmapRouter);
 setRelaySender(sendRelayCommand);
+// Initialize heatmap system (#922)
+initPriceHeatmap();
+startPriceSimulation();
 startBillingScheduler();
 startCompetitionScheduler();
 startSmartHomeScheduler();
