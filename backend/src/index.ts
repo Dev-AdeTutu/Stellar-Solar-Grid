@@ -46,6 +46,8 @@ import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { congestionRouter } from "./routes/congestion.js";
+import { assetTokensRouter } from "./routes/assetTokens.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import { startBillingScheduler } from "./lib/billing.js";
@@ -180,6 +182,9 @@ app.use("/api/widgets", widgetsRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/smart-home", smartHomeRouter);
+// #936, #937: asset tokenization, congestion pricing
+app.use("/api/asset-tokens", writeLimiter, assetTokensRouter);
+app.use("/api/congestion", congestionRouter);
 setRelaySender(sendRelayCommand);
 startBillingScheduler();
 startCompetitionScheduler();
