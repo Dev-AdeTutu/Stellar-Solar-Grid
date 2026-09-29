@@ -1,6 +1,7 @@
 import "dotenv/config";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -46,8 +47,10 @@ import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { tradingSimulatorRouter } from "./routes/tradingSimulator.js";
+import { theftDetectionRouter } from "./routes/theftDetection.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
-import { widgetsRouter } from "./routes/widgets.js";
+import { attachWidgetLiveUpdates, widgetsRouter } from "./routes/widgets.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
@@ -82,6 +85,7 @@ import { exportRouter } from "./routes/export.js";
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
+import { startTheftMonitor } from "./lib/theftDetection.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -179,6 +183,8 @@ app.use("/api/provider", providerRouter);
 app.use("/api/widgets", widgetsRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
+app.use("/api/simulator", tradingSimulatorRouter);
+app.use("/api/theft", theftDetectionRouter);
 app.use("/api/smart-home", smartHomeRouter);
 setRelaySender(sendRelayCommand);
 startBillingScheduler();
@@ -243,8 +249,11 @@ app.get('/api/health', (_req: Request, res: Response) => {
 });
 
 const port = Number(process.env.PORT) || 3000;
-app.listen(port, () => {
+const httpServer = createServer(app);
+attachWidgetLiveUpdates(httpServer);
+httpServer.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
+  startTheftMonitor();
   startEventIndexer();
   startRecommendationWorker();
 });

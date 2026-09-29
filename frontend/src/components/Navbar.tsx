@@ -23,6 +23,7 @@ export default function Navbar() {
     { href: "/history", label: t("history") },
     { href: "/bills", label: t("bills") },
     { href: "/competitions", label: t("competitions") },
+    { href: "/simulator", label: "Practice trading" },
     { href: "/smart-home", label: t("smartHome") },
   ];
 

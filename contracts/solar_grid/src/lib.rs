@@ -75,6 +75,8 @@ pub enum ContractError {
     NoPendingUnstake = 40,
     /// The unstake cooldown period has not elapsed yet.
     CooldownNotElapsed = 41,
+    /// An admin transfer cannot propose the current administrator.
+    InvalidAdminTransfer = 42,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -2131,6 +2133,57 @@ impl SolarGridContract {
         Ok((admins, threshold))
     }
 
+    /// Start a seven-day admin handoff. The current admin authorizes the proposal.
+    pub fn propose_admin_transfer(env: Env, new_admin: Address) -> Result<(), ContractError> {
+        let current_admin = Self::get_admin(&env)?;
+        current_admin.require_auth();
+        if current_admin == new_admin {
+            return Err(ContractError::InvalidAdminTransfer);
+        }
+        Self::record_admin_action(&env, &current_admin, "propose_admin_transfer", "admin");
+        let expires_at = env.ledger().timestamp().saturating_add(ADMIN_TRANSFER_TTL);
+        let proposal = AdminTransferProposal {
+            proposed_admin: new_admin.clone(),
+            expires_at,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminTransferProposal, &proposal);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "AdminTransferProposed")),
+            (current_admin, new_admin, expires_at),
+        );
+        Ok(())
+    }
+
+    /// Accept the pending handoff. Authorization is required from the proposed address.
+    pub fn accept_admin_transfer(env: Env) -> Result<(), ContractError> {
+        let key = DataKey::AdminTransferProposal;
+        let proposal: AdminTransferProposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expires_at {
+            return Err(ContractError::ProposalExpired);
+        }
+        proposal.proposed_admin.require_auth();
+        let old_admin = Self::get_admin(&env)?;
+        env.storage().instance().set(&ADMIN, &proposal.proposed_admin);
+        env.storage().persistent().remove(&key);
+        Self::record_admin_action(
+            &env,
+            &proposal.proposed_admin,
+            "accept_admin_transfer",
+            "admin",
+        );
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "AdminTransferred")),
+            (old_admin, proposal.proposed_admin),
+        );
+        Ok(())
+    }
+
     pub fn propose_admin_operation(env: Env, proposer: Address, operation: AdminOperation, expiry: u64) -> Result<u32, ContractError> {
         proposer.require_auth();
         let admins: Vec<Address> = env.storage().instance().get(&MULTISIG_ADMINS).unwrap_or(Vec::new(&env));
@@ -4011,6 +4064,58 @@ mod tests {
                 && topics.get(2).map(|v| String::try_from_val(&env, &v).ok() == Some(meter_id.clone())).unwrap_or(false)
         });
         assert!(found, "meter registered event not emitted");
+    }
+
+    #[test]
+    fn test_admin_transfer_propose_accept_and_emit_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let proposed_admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let contract_id = env.register(SolarGridContract, (admin.clone(), token_address));
+        let client = SolarGridContractClient::new(&env, &contract_id);
+
+        client.propose_admin_transfer(&proposed_admin);
+        let proposal: AdminTransferProposal = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::AdminTransferProposal)
+                .unwrap()
+        });
+        assert_eq!(proposal.proposed_admin, proposed_admin);
+        assert_eq!(proposal.expires_at, env.ledger().timestamp() + ADMIN_TRANSFER_TTL);
+
+        client.accept_admin_transfer();
+        let stored_admin: Address = env.as_contract(&contract_id, || {
+            env.storage().instance().get(&ADMIN).unwrap()
+        });
+        assert_eq!(stored_admin, proposed_admin);
+
+        let emitted = events_as_tuples(&env, &env.events().all()).iter().any(|(_, topics, _)| {
+            topics.len() >= 2
+                && topics.get(0).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
+                && topics
+                    .get(1)
+                    .map(|v| Symbol::try_from_val(&env, &v).ok() == Some(Symbol::new(&env, "AdminTransferred")))
+                    .unwrap_or(false)
+        });
+        assert!(emitted, "AdminTransferred event not emitted");
+    }
+
+    #[test]
+    fn test_admin_transfer_expires_after_seven_days() {
+        let (env, client, _admin) = setup();
+        let proposed_admin = Address::generate(&env);
+        client.propose_admin_transfer(&proposed_admin);
+        env.ledger().set_timestamp(ADMIN_TRANSFER_TTL);
+        assert_eq!(
+            client.try_accept_admin_transfer(),
+            Err(Ok(ContractError::ProposalExpired))
+        );
     }
 
     #[test]

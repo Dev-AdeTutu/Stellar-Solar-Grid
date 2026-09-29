@@ -228,6 +228,49 @@ an `ETag`, so send `If-None-Match` to get a `304` when nothing has changed. See 
 }
 ```
 
+### Live energy flow (#870)
+
+- `GET /api/widgets/energy?meterId=<id>&range=5m|hourly|daily` returns up to 12 five-minute,
+  24 hourly, or 7 daily production/consumption buckets.
+- `WS /api/widgets/live?meterId=<id>&range=5m|hourly|daily` sends an initial snapshot and
+  refreshes every five seconds. The frontend reconnects with capped exponential backoff and
+  polls the HTTP route while disconnected.
+- Consumption comes from meter usage events. Production comes from active linked solar-panel
+  device telemetry (`energyKwh`, or power integrated over the bucket).
+
+## Energy Trading Simulator (#929)
+
+Practice-only cash and energy balances are stored separately from on-chain accounts. The
+simulator verifies that the supplied Stellar wallet owns its meter before account reads/trades.
+The market feed defaults to `energy-charts.info` for bidding zone `DE-LU`; set
+`ENERGY_MARKET_DATA_URL`, `ENERGY_MARKET_BIDDING_ZONE`, and
+`MARKET_PRICE_FALLBACK_EUR_KWH` to configure the feed and offline quote.
+
+- `GET /api/simulator/market?hours=24` returns historical/current EUR-per-kWh quotes and the
+  configured practice fee rate.
+- `GET /api/simulator/account?meterId=<id>&stellarAddress=<G...>` returns the virtual account
+  and recent practice trades.
+- `POST /api/simulator/trade` accepts `{ meterId, stellarAddress, side, quantityKwh }`.
+- `GET /api/simulator/leaderboard?limit=20` returns anonymized portfolio rankings.
+
+Accounts start with `SIMULATOR_STARTING_CREDITS` (default 1,000); the default virtual trade fee
+is 0.5%. Simulator transactions never call the Stellar contract.
+
+## Energy Theft Detection (#931)
+
+The backend scans newly recorded usage at `THEFT_SCAN_INTERVAL_MS` (default one minute) and
+compares readings with a robust per-meter median/MAD baseline. Alerts are persisted once per
+usage event and sent to registered provider webhooks immediately after detection. The default
+threshold is intentionally conservative; the monthly report tracks investigated false positives
+so providers can validate the under-5% target against their own metering population.
+
+All theft routes require the existing admin session or `X-Admin-Key` credential:
+
+- `GET /api/theft/alerts?status=open&limit=50&offset=0`
+- `GET /api/theft/alerts/:id/investigation`
+- `PATCH /api/theft/alerts/:id/investigation` with `{ status, assignedTo?, note?, actor? }`
+- `GET /api/theft/reports/monthly?month=YYYY-MM` generates and stores the selected monthly report.
+
 ## Monthly Bills (#902)
 
 Bills are generated on the 1st of each month, emailed as PDFs with a payment link, and kept as a permanent history.

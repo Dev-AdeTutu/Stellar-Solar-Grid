@@ -17,11 +17,15 @@
  * }
  */
 import crypto from "node:crypto";
+import type { Server } from "node:http";
 import { Router } from "express";
+import { WebSocket, WebSocketServer } from "ws";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { getOnChainMeter } from "../lib/meterOwnership.js";
 import { getUsageTotals, STROOPS_PER_XLM } from "../lib/billing.js";
 import { getPrediction } from "../lib/usagePrediction.js";
+import { db as usageDb } from "../lib/usageEvents.js";
+import { listDevices, listPerformance } from "../lib/deviceRegistry.js";
 
 export const widgetsRouter = Router();
 
@@ -62,6 +66,111 @@ async function buildSummary(meterId: string, now = new Date()): Promise<WidgetSu
     daysRemaining: prediction.estimatedDaysRemaining,
     updatedAt: now.toISOString(),
   };
+}
+
+export type EnergyRange = "5m" | "hourly" | "daily";
+export type EnergyPoint = {
+  timestamp: string;
+  productionKwh: number;
+  consumptionKwh: number;
+};
+export type EnergySnapshot = {
+  meterId: string;
+  range: EnergyRange;
+  updatedAt: string;
+  current: EnergyPoint;
+  points: EnergyPoint[];
+};
+
+const ENERGY_WINDOWS: Record<EnergyRange, { bucketMs: number; count: number; days: number }> = {
+  "5m": { bucketMs: 5 * 60_000, count: 12, days: 1 },
+  hourly: { bucketMs: 60 * 60_000, count: 24, days: 2 },
+  daily: { bucketMs: 24 * 60 * 60_000, count: 7, days: 7 },
+};
+
+function energySnapshot(meterId: string, range: EnergyRange, now = new Date()): EnergySnapshot {
+  const { bucketMs, count, days } = ENERGY_WINDOWS[range];
+  const lastBucket = Math.floor(now.getTime() / bucketMs) * bucketMs;
+  const firstBucket = lastBucket - (count - 1) * bucketMs;
+  const buckets = new Map<number, EnergyPoint>();
+  for (let index = 0; index < count; index++) {
+    const timestamp = firstBucket + index * bucketMs;
+    buckets.set(timestamp, {
+      timestamp: new Date(timestamp).toISOString(),
+      productionKwh: 0,
+      consumptionKwh: 0,
+    });
+  }
+
+  const usageRows = usageDb()
+    .prepare("SELECT received_at, units FROM usage_events WHERE meter_id = ? AND received_at >= ? AND received_at <= ?")
+    .all(meterId, new Date(firstBucket).toISOString(), now.toISOString()) as Array<{
+      received_at: string;
+      units: number;
+    }>;
+  for (const row of usageRows) {
+    const bucket = buckets.get(Math.floor(Date.parse(row.received_at) / bucketMs) * bucketMs);
+      if (bucket) bucket.consumptionKwh += (Number(row.units) || 0) / 1_000;
+  }
+
+  const panels = listDevices({ meterId, type: "solar_panel", status: "active", limit: 500 });
+  for (const panel of panels) {
+    for (const reading of listPerformance(panel.id, days, now)) {
+      const bucket = buckets.get(Math.floor(Date.parse(reading.recordedAt) / bucketMs) * bucketMs);
+      if (!bucket) continue;
+      const estimatedKwh = reading.energyKwh ??
+        ((reading.powerW ?? 0) * bucketMs) / 3_600_000_000;
+      bucket.productionKwh += estimatedKwh;
+    }
+  }
+
+  const points = [...buckets.values()];
+  return {
+    meterId,
+    range,
+    updatedAt: now.toISOString(),
+    current: points[points.length - 1],
+    points,
+  };
+}
+
+widgetsRouter.get("/energy", (req, res) => {
+  const meterId = String(req.query.meterId ?? "");
+  const range = String(req.query.range ?? "5m") as EnergyRange;
+  if (!METER_ID_RE.test(meterId)) return res.status(400).json({ error: "meterId is required" });
+  if (!(range in ENERGY_WINDOWS)) return res.status(400).json({ error: "range must be 5m, hourly, or daily" });
+  res.setHeader("Cache-Control", "no-store");
+  res.json(energySnapshot(meterId, range));
+});
+
+export function attachWidgetLiveUpdates(server: Server): WebSocketServer {
+  const sockets = new WebSocketServer({ server, path: "/api/widgets/live" });
+  sockets.on("connection", (socket, request) => {
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const meterId = url.searchParams.get("meterId") ?? "";
+    const requestedRange = url.searchParams.get("range") ?? "5m";
+    if (!METER_ID_RE.test(meterId) || !(requestedRange in ENERGY_WINDOWS)) {
+      socket.close(1008, "Invalid meterId or range");
+      return;
+    }
+    const range = requestedRange as EnergyRange;
+    let sending = false;
+    const sendSnapshot = () => {
+      if (sending || socket.readyState !== WebSocket.OPEN) return;
+      sending = true;
+      try {
+        socket.send(JSON.stringify(energySnapshot(meterId, range)));
+      } catch {
+        socket.close();
+      } finally {
+        sending = false;
+      }
+    };
+    sendSnapshot();
+    const interval = setInterval(sendSnapshot, 5_000);
+    socket.once("close", () => clearInterval(interval));
+  });
+  return sockets;
 }
 
 widgetsRouter.get(

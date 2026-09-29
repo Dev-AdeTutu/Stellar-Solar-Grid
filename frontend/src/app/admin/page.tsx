@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { env } from "@/lib/env";
 
@@ -196,12 +197,15 @@ export default function AdminPage() {
         <div className="w-full max-w-2xl">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-2xl font-bold text-solar-yellow">Admin Dashboard</h1>
-            <button
-              onClick={handleLogout}
-              className="text-xs text-gray-400 hover:text-red-400 border border-white/10 rounded-lg px-3 py-1.5 transition"
-            >
-              Sign Out
-            </button>
+            <div className="flex items-center gap-3">
+              <Link href="/admin/theft" className="text-xs text-rose-300 hover:text-rose-200">Theft investigations</Link>
+              <button
+                onClick={handleLogout}
+                className="text-xs text-gray-400 hover:text-red-400 border border-white/10 rounded-lg px-3 py-1.5 transition"
+              >
+                Sign Out
+              </button>
+            </div>
           </div>
           <p className="text-gray-400 text-sm mb-6">
             You are authenticated. Admin actions are available here.
