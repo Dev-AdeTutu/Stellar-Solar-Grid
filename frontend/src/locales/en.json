@@ -2,14 +2,21 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "My Meter",
+    "multisig": "Org Wallets",
     "pay": "Pay",
+    "analytics": "Analytics",
     "provider": "Provider",
     "history": "History",
+    "bills": "Bills",
+    "communities": "Energy Communities",
+    "competitions": "Competitions",
+    "smartHome": "Smart Home",
     "toggleTheme": "Toggle Theme",
     "openMenu": "Open menu",
     "closeMenu": "Close menu",
     "languageToggle": "Français",
-    "languageLabel": "Switch language"
+    "languageLabel": "Switch language",
+    "emergency": "Emergency"
   },
   "home": {
     "tagline": "Affordable, pay-as-you-go solar energy powered by the Stellar blockchain. No large upfront costs — just clean energy on your terms.",
@@ -170,5 +177,43 @@
       "below_average": "⚡ Below Average",
       "consistent": "📊 Consistent"
     }
+  },
+  "emergency": {
+    "title": "Emergency Energy Sharing",
+    "loading": "Loading…",
+    "active": "Emergency mode active",
+    "inactive": "Normal operation",
+    "since": "since",
+    "pool": "Shared pool",
+    "donated": "Total donated",
+    "donors": "Donors",
+    "facilities": "Priority facilities",
+    "noFacilities": "No facilities registered.",
+    "facility": "Facility",
+    "type": "Type",
+    "coverage": "Allocated / demand",
+    "donateTitle": "Donate energy",
+    "meterId": "Your meter ID",
+    "donate": "Donate",
+    "donateSuccess": "Thank you! Your energy was added to the shared pool.",
+    "donateFailed": "Donation failed. Please try again.",
+    "recentDonations": "Recent donations",
+    "types": {
+      "hospital": "Hospital",
+      "clinic": "Clinic",
+      "water": "Water supply",
+      "shelter": "Shelter",
+      "school": "School",
+      "household": "Household"
+    }
+  },
+  "recommendations": {
+    "title": "Recommendations for you",
+    "none": "No new recommendations this week.",
+    "estimated": "Estimated saving: {kwh} kWh/week",
+    "accept": "Accept",
+    "dismiss": "Dismiss",
+    "estimatedSavings": "Estimated weekly savings",
+    "actualSavings": "Actual weekly savings"
   }
 }

@@ -1,0 +1,216 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "我的电表",
+    "multisig": "组织钱包",
+    "pay": "支付",
+    "analytics": "交易分析",
+    "provider": "供应商",
+    "history": "历史",
+    "communities": "能源社区",
+    "emergency": "紧急",
+    "toggleTheme": "切换主题",
+    "openMenu": "打开菜单",
+    "closeMenu": "关闭菜单",
+    "languageToggle": "中文",
+    "languageLabel": "切换语言"
+  },
+  "home": {
+    "tagline": "由 Stellar 区块链驱动的实惠、按需付费的太阳能。无需高昂前期成本——按您的方式使用清洁能源。",
+    "userDashboard": "用户面板",
+    "providerDashboard": "供应商面板"
+  },
+  "meterCard": {
+    "balance": "余额",
+    "plan": "套餐",
+    "expiry": "到期",
+    "never": "永不",
+    "daysLeft": "剩余 {days} 天",
+    "deactivate": "停用电表",
+    "deactivating": "正在停用…",
+    "ariaLabel": "电表 {meterId}"
+  },
+  "meterStatus": {
+    "active": "启用",
+    "inactive": "停用",
+    "expired": "已过期",
+    "ariaLabel": "电表状态：{status}"
+  },
+  "wallet": {
+    "connect": "连接钱包",
+    "connectCompact": "连接",
+    "connecting": "连接中…",
+    "disconnect": "断开连接",
+    "copyAddress": "点击复制完整地址",
+    "copied": "✓ 已复制",
+    "freighterNotDetected": "未检测到 Freighter",
+    "installFreighter": "安装 Freighter ↗",
+    "wrongNetwork": "网络错误",
+    "switchNetwork": "请在 Freighter 中切换网络：设置 → 网络。",
+    "ariaWalletAddress": "钱包地址 {address}。点击复制。",
+    "ariaDisconnect": "断开钱包",
+    "ariaConnecting": "连接中"
+  },
+  "networkBanner": {
+    "wrongNetwork": "网络错误：",
+    "dismiss": "关闭网络不匹配警告"
+  },
+  "errors": {
+    "freighterNotInstalled": "所选钱包未安装。",
+    "noAccount": "所选钱包中未找到账户",
+    "walletConnectFailed": "钱包连接失败",
+    "meterLoadFailed": "加载电表数据失败：{error}",
+    "retry": "重试",
+    "installFreighter": "安装 Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "我的电表",
+      "connectWallet": "连接钱包以查看您的电表。",
+      "noMeters": "未找到与您地址关联的电表。",
+      "loading": "正在加载电表…",
+      "balance": "余额",
+      "unitsUsed": "已用电量",
+      "active": "启用",
+      "inactive": "停用",
+      "plan": "套餐",
+      "expiry": "到期"
+    },
+    "provider": {
+      "title": "供应商面板",
+      "allMeters": "所有电表",
+      "deactivate": "停用",
+      "deactivating": "正在停用…"
+    }
+  },
+  "report": {
+    "title": "电表状态报告",
+    "printReport": "打印报告",
+    "print": "打印",
+    "back": "← 返回",
+    "meterId": "电表 ID",
+    "owner": "所有者",
+    "balance": "余额",
+    "plan": "套餐",
+    "status": "状态",
+    "expiry": "到期",
+    "unitsUsed": "已用电量",
+    "generatedAt": "生成时间",
+    "recentReadings": "最近读数（最近 5 条）",
+    "noReadings": "暂无读数。",
+    "date": "日期",
+    "units": "电量",
+    "amount": "金额",
+    "qrCode": "二维码",
+    "scanToView": "扫码查看此电表",
+    "never": "永不",
+    "active": "启用",
+    "inactive": "停用"
+  },
+  "history": {
+    "title": "付款历史",
+    "noHistory": "未找到付款记录。",
+    "date": "日期",
+    "meter": "电表",
+    "plan": "套餐",
+    "amount": "金额",
+    "transaction": "交易",
+    "viewExplorer": "在浏览器中查看 ↗",
+    "export": "导出 CSV",
+    "exporting": "正在导出…",
+    "prev": "上一页",
+    "next": "下一页",
+    "page": "第 {page} / {total} 页"
+  },
+  "pay": {
+    "title": "付款",
+    "meterId": "电表 ID",
+    "amount": "金额 (XLM)",
+    "plan": "套餐",
+    "submit": "支付",
+    "submitting": "处理中…",
+    "success": "付款成功！",
+    "daily": "按日",
+    "weekly": "按周",
+    "usage": "按用量"
+  },
+  "pauseBanner": {
+    "title": "紧急暂停已启用",
+    "message": "付款和电表注册暂时停用。用量上报仍可使用。"
+  },
+  "common": {
+    "loading": "加载中…",
+    "error": "错误",
+    "close": "关闭",
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "back": "返回",
+    "xlm": "XLM"
+  },
+  "insights": {
+    "title": "能源洞察",
+    "refresh": "刷新",
+    "expand": "展开",
+    "collapse": "收起",
+    "thisWeek": "本周",
+    "vsLastWeek": "较上周",
+    "peersAvg": "同类（平均）",
+    "weeklyAvg": "周平均",
+    "hourlyProfile": "24 小时用电曲线（最近 30 天，UTC）",
+    "peak": "峰值",
+    "achievements": "成就",
+    "lastComputed": "最近计算",
+    "noData": "暂无用电数据。电表开始记录后将显示洞察。",
+    "earned": "已获得",
+    "notEarned": "尚未获得",
+    "increase": "增加",
+    "decrease": "减少",
+    "noPriorData": "无历史数据",
+    "badges": {
+      "low_consumer": "🌱 低耗能用户",
+      "off_peak_hero": "🌙 错峰达人",
+      "improver": "📉 持续改进",
+      "below_average": "⚡ 低于平均",
+      "consistent": "📊 稳定用电"
+    }
+  },
+  "emergency": {
+    "title": "紧急能源共享",
+    "loading": "加载中…",
+    "active": "紧急模式已启用",
+    "inactive": "正常运行",
+    "since": "开始于",
+    "pool": "共享能源池",
+    "donated": "累计捐赠",
+    "donors": "捐赠者",
+    "facilities": "优先设施",
+    "noFacilities": "暂无登记设施。",
+    "facility": "设施",
+    "type": "类型",
+    "coverage": "已分配 / 需求",
+    "donateTitle": "捐赠电能",
+    "meterId": "您的电表 ID",
+    "donate": "捐赠",
+    "donateSuccess": "谢谢！您的电能已加入共享能源池。",
+    "donateFailed": "捐赠失败，请重试。",
+    "recentDonations": "最近捐赠",
+    "types": {
+      "hospital": "医院",
+      "clinic": "诊所",
+      "water": "供水",
+      "shelter": "避难所",
+      "school": "学校",
+      "household": "家庭"
+    }
+  },
+  "recommendations": {
+    "title": "为您推荐",
+    "none": "本周暂无新建议。",
+    "estimated": "预计节省：{kwh} 千瓦时/周",
+    "accept": "接受",
+    "dismiss": "忽略",
+    "estimatedSavings": "预计每周节省",
+    "actualSavings": "实际每周节省"
+  }
+}

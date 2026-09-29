@@ -64,6 +64,24 @@ export default function PayPage() {
   const [currency, setCurrency] = useState("NGN");
   const [txHash, setTxHash] = useState<string | null>(null);
 
+  // #902: bill emails link here with ?meter=&amount=&bill= — pre-fill the form.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linkedMeter = params.get("meter");
+    const linkedAmount = params.get("amount");
+    if (linkedMeter) setMeterId(linkedMeter);
+    if (linkedAmount && Number(linkedAmount) > 0) {
+      setAmount(String(Number(linkedAmount)));
+      const linkedPlan = params.get("plan");
+      setPlan(linkedPlan === "Daily" || linkedPlan === "Weekly" || linkedPlan === "Monthly" || linkedPlan === "Usage"
+        ? linkedPlan
+        : "Usage");
+    }
+    const bill = params.get("bill");
+    if (bill) setMemo((m) => m || `Bill ${bill.slice(0, 8)}`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Load currency preference and recent payment amounts from localStorage
   useEffect(() => {
     const savedCurrency = localStorage.getItem("preferredCurrency");

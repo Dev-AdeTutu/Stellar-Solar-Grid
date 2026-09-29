@@ -1,0 +1,216 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "عدّادي",
+    "multisig": "محافظ المؤسسات",
+    "pay": "الدفع",
+    "analytics": "التحليلات",
+    "provider": "المزوّد",
+    "history": "السجل",
+    "communities": "مجتمعات الطاقة",
+    "emergency": "الطوارئ",
+    "toggleTheme": "تبديل السمة",
+    "openMenu": "فتح القائمة",
+    "closeMenu": "إغلاق القائمة",
+    "languageToggle": "العربية",
+    "languageLabel": "تغيير اللغة"
+  },
+  "home": {
+    "tagline": "طاقة شمسية ميسورة التكلفة بالدفع حسب الاستخدام، مدعومة بسلسلة كتل Stellar. لا تكاليف أولية كبيرة — فقط طاقة نظيفة وفق شروطك.",
+    "userDashboard": "لوحة المستخدم",
+    "providerDashboard": "لوحة المزوّد"
+  },
+  "meterCard": {
+    "balance": "الرصيد",
+    "plan": "الخطة",
+    "expiry": "الانتهاء",
+    "never": "أبدًا",
+    "daysLeft": "متبقٍ {days} يوم",
+    "deactivate": "إيقاف العدّاد",
+    "deactivating": "جارٍ الإيقاف…",
+    "ariaLabel": "العدّاد {meterId}"
+  },
+  "meterStatus": {
+    "active": "نشط",
+    "inactive": "غير نشط",
+    "expired": "منتهي",
+    "ariaLabel": "حالة العدّاد: {status}"
+  },
+  "wallet": {
+    "connect": "ربط المحفظة",
+    "connectCompact": "ربط",
+    "connecting": "جارٍ الربط…",
+    "disconnect": "قطع الاتصال",
+    "copyAddress": "انقر لنسخ العنوان الكامل",
+    "copied": "✓ تم النسخ",
+    "freighterNotDetected": "لم يتم العثور على Freighter",
+    "installFreighter": "تثبيت Freighter ↗",
+    "wrongNetwork": "شبكة خاطئة",
+    "switchNetwork": "بدّل الشبكة في Freighter: الإعدادات ← الشبكة.",
+    "ariaWalletAddress": "عنوان المحفظة {address}. انقر للنسخ.",
+    "ariaDisconnect": "قطع اتصال المحفظة",
+    "ariaConnecting": "جارٍ الربط"
+  },
+  "networkBanner": {
+    "wrongNetwork": "شبكة خاطئة:",
+    "dismiss": "إغلاق تحذير عدم تطابق الشبكة"
+  },
+  "errors": {
+    "freighterNotInstalled": "المحفظة المحددة غير مثبتة.",
+    "noAccount": "لم يتم العثور على حساب في المحفظة المحددة",
+    "walletConnectFailed": "فشل ربط المحفظة",
+    "meterLoadFailed": "فشل تحميل بيانات العدّاد: {error}",
+    "retry": "إعادة المحاولة",
+    "installFreighter": "تثبيت Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "عدّاداتي",
+      "connectWallet": "اربط محفظتك لعرض عدّاداتك.",
+      "noMeters": "لم يتم العثور على عدّادات لعنوانك.",
+      "loading": "جارٍ تحميل العدّادات…",
+      "balance": "الرصيد",
+      "unitsUsed": "الوحدات المستهلكة",
+      "active": "نشط",
+      "inactive": "غير نشط",
+      "plan": "الخطة",
+      "expiry": "الانتهاء"
+    },
+    "provider": {
+      "title": "لوحة المزوّد",
+      "allMeters": "جميع العدّادات",
+      "deactivate": "إيقاف",
+      "deactivating": "جارٍ الإيقاف…"
+    }
+  },
+  "report": {
+    "title": "تقرير حالة العدّاد",
+    "printReport": "طباعة التقرير",
+    "print": "طباعة",
+    "back": "رجوع →",
+    "meterId": "معرّف العدّاد",
+    "owner": "المالك",
+    "balance": "الرصيد",
+    "plan": "الخطة",
+    "status": "الحالة",
+    "expiry": "الانتهاء",
+    "unitsUsed": "الوحدات المستهلكة",
+    "generatedAt": "أُنشئ في",
+    "recentReadings": "القراءات الأخيرة (آخر 5)",
+    "noReadings": "لا توجد قراءات.",
+    "date": "التاريخ",
+    "units": "الوحدات",
+    "amount": "المبلغ",
+    "qrCode": "رمز QR",
+    "scanToView": "امسح لعرض هذا العدّاد",
+    "never": "أبدًا",
+    "active": "نشط",
+    "inactive": "غير نشط"
+  },
+  "history": {
+    "title": "سجل المدفوعات",
+    "noHistory": "لا يوجد سجل مدفوعات.",
+    "date": "التاريخ",
+    "meter": "العدّاد",
+    "plan": "الخطة",
+    "amount": "المبلغ",
+    "transaction": "المعاملة",
+    "viewExplorer": "عرض في المستكشف ↗",
+    "export": "تصدير CSV",
+    "exporting": "جارٍ التصدير…",
+    "prev": "السابق",
+    "next": "التالي",
+    "page": "صفحة {page} / {total}"
+  },
+  "pay": {
+    "title": "إجراء دفعة",
+    "meterId": "معرّف العدّاد",
+    "amount": "المبلغ (XLM)",
+    "plan": "الخطة",
+    "submit": "ادفع",
+    "submitting": "جارٍ المعالجة…",
+    "success": "تمت عملية الدفع بنجاح!",
+    "daily": "يومي",
+    "weekly": "أسبوعي",
+    "usage": "حسب الاستخدام"
+  },
+  "pauseBanner": {
+    "title": "إيقاف الطوارئ مفعّل",
+    "message": "المدفوعات وتسجيل العدّادات معطّلة مؤقتًا. يظل الإبلاغ عن الاستهلاك متاحًا."
+  },
+  "common": {
+    "loading": "جارٍ التحميل…",
+    "error": "خطأ",
+    "close": "إغلاق",
+    "cancel": "إلغاء",
+    "confirm": "تأكيد",
+    "save": "حفظ",
+    "back": "رجوع",
+    "xlm": "XLM"
+  },
+  "insights": {
+    "title": "رؤى الطاقة",
+    "refresh": "تحديث",
+    "expand": "توسيع",
+    "collapse": "طيّ",
+    "thisWeek": "هذا الأسبوع",
+    "vsLastWeek": "مقارنة بالأسبوع الماضي",
+    "peersAvg": "المماثلون (متوسط)",
+    "weeklyAvg": "المتوسط الأسبوعي",
+    "hourlyProfile": "ملف الاستهلاك على مدار 24 ساعة (آخر 30 يومًا، UTC)",
+    "peak": "الذروة",
+    "achievements": "الإنجازات",
+    "lastComputed": "آخر حساب",
+    "noData": "لا توجد بيانات استهلاك بعد. ستظهر الرؤى عندما يبدأ عدّادك بالتسجيل.",
+    "earned": "مُكتسب",
+    "notEarned": "لم يُكتسب بعد",
+    "increase": "زيادة",
+    "decrease": "انخفاض",
+    "noPriorData": "لا توجد بيانات سابقة",
+    "badges": {
+      "low_consumer": "🌱 مستهلك منخفض",
+      "off_peak_hero": "🌙 بطل خارج الذروة",
+      "improver": "📉 متحسّن",
+      "below_average": "⚡ أقل من المتوسط",
+      "consistent": "📊 منتظم"
+    }
+  },
+  "emergency": {
+    "title": "مشاركة الطاقة في حالات الطوارئ",
+    "loading": "جارٍ التحميل…",
+    "active": "وضع الطوارئ مفعّل",
+    "inactive": "تشغيل عادي",
+    "since": "منذ",
+    "pool": "المخزون المشترك",
+    "donated": "إجمالي التبرعات",
+    "donors": "المتبرعون",
+    "facilities": "المرافق ذات الأولوية",
+    "noFacilities": "لا توجد مرافق مسجلة.",
+    "facility": "المرفق",
+    "type": "النوع",
+    "coverage": "المخصّص / الطلب",
+    "donateTitle": "تبرّع بالطاقة",
+    "meterId": "معرّف عدّادك",
+    "donate": "تبرّع",
+    "donateSuccess": "شكرًا لك! تمت إضافة طاقتك إلى المخزون المشترك.",
+    "donateFailed": "فشل التبرع. يرجى المحاولة مرة أخرى.",
+    "recentDonations": "أحدث التبرعات",
+    "types": {
+      "hospital": "مستشفى",
+      "clinic": "عيادة",
+      "water": "إمدادات المياه",
+      "shelter": "مأوى",
+      "school": "مدرسة",
+      "household": "منزل"
+    }
+  },
+  "recommendations": {
+    "title": "توصيات لك",
+    "none": "لا توجد توصيات جديدة هذا الأسبوع.",
+    "estimated": "التوفير المقدّر: {kwh} كيلوواط ساعة/أسبوع",
+    "accept": "قبول",
+    "dismiss": "تجاهل",
+    "estimatedSavings": "التوفير الأسبوعي المقدّر",
+    "actualSavings": "التوفير الأسبوعي الفعلي"
+  }
+}

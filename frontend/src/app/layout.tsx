@@ -6,6 +6,7 @@ import { ServiceWorkerRegister } from "@/components/ServiceWorkerRegister";
 import { I18nProvider } from "@/components/I18nProvider";
 import { ContractPauseBanner } from "@/components/ContractPauseBanner";
 import { Footer } from "@/components/Footer";
+import { WidgetSync } from "@/components/WidgetSync";
 import { branding, brandingCssVars } from "@/lib/branding";
 import "./globals.css";
 
@@ -39,12 +40,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           Skip to main content
         </a>
         <ErrorBoundary>
-          <ToastProvider>
-            <ServiceWorkerRegister />
-            <OfflineBanner />
-            {children}
-          </ToastProvider>
           <I18nProvider>
+            <ServiceWorkerRegister />
+            <WidgetSync />
+            <OfflineBanner />
             <ContractPauseBanner />
             <ToastProvider>{children}</ToastProvider>
             <Footer />

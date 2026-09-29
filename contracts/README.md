@@ -190,3 +190,93 @@ The `batch_register_meters(meters: Vec<(String, Address)>)` function enables ene
 - **Input Validation:** Pre-validates empty meter IDs, duplicate IDs in batch, existing meters, and owner allowlist membership.
 - **Event Emission:** Emits standard `meter_registered` (`mtr_reg`) event for each successfully registered meter and `batch_skip` (`btch_skip`) for failed/skipped entries.
 - **Detailed Error Reporting:** Returns `Vec<BatchRegisterResult>` with `meter_id`, `success: bool`, and `error: Option<String>` detailing reasons for any partial failures (`empty_meter_id`, `duplicate_in_batch`, `meter_already_exists`, `owner_not_allowlisted`).
+
+## Admin Audit Log (#836)
+
+Every state-changing admin function (allowlist, oracle, freeze/pause, pricing,
+refunds, meter lifecycle, collaborators, distributions, migrations, multisig
+configuration, emergency withdrawals) appends an immutable `AdminAuditEntry` to
+persistent storage and emits an `AdminAct` event:
+
+| Field             | Type      | Description                              |
+|-------------------|-----------|------------------------------------------|
+| `id`              | `u64`     | Sequential entry id (0-based)            |
+| `action_type`     | `String`  | Name of the admin function invoked       |
+| `admin_address`   | `Address` | Admin that authorized the call           |
+| `affected_entity` | `String`  | Entity affected by the action            |
+| `timestamp`       | `u64`     | Ledger timestamp of the action           |
+
+Query functions:
+
+- `get_audit_log_count() -> u64`
+- `get_audit_logs(filter: AuditLogFilter, offset: u32, limit: u32) -> Vec<AdminAuditEntry>`
+  - `filter.action_type`, `filter.admin`, `filter.from_ts`, `filter.to_ts` are all optional.
+  - `offset` skips matching entries; `limit` is capped at 100.
+
+## Energy Token Staking (#899)
+
+Implemented in `solar_grid/src/staking.rs`. See `docs/STAKING_SECURITY_REVIEW.md`
+for the security review.
+
+Admin setup:
+
+- `configure_staking(stake_token, reward_token, reward_rate, cooldown_secs)`: `reward_rate`
+  is reward units per second shared by all stakers; `cooldown_secs` ≤ 90 days. Tokens
+  can't be switched once staking has activity.
+- `fund_staking_rewards(from, amount)`: tops up the reward reserve (anyone may fund).
+
+User functions (each requires the staker's auth):
+
+| Function | Notes |
+| --- | --- |
+| `stake(staker, amount)` | Blocked while the contract is paused |
+| `request_unstake(staker, amount) -> u64` | Stops rewards and voting power at once; returns the unlock time. A new request adds to the bucket and restarts the cooldown |
+| `withdraw_unstaked(staker) -> i128` | After the cooldown |
+| `cancel_unstake(staker) -> i128` | Restakes tokens that are cooling down |
+| `claim_staking_rewards(staker) -> i128` | Pays all accrued rewards |
+
+Views: `get_staking_config`, `get_staking_pool`, `get_stake_info(staker)`,
+`get_voting_power(voter)`, `get_total_voting_power()`.
+
+Rewards use a reward-per-share accumulator (scale 1e12): O(1) per call, pro-rata to
+stake, and emission stops when the funded reserve is exhausted. Voting power is the
+active stake; pass `get_voting_power(voter)` as the `weight` to
+`governance::vote_on_proposal`, and `get_total_voting_power()` to size quorum.
+
+Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
+`unstk_cxl`, `stk_claim`.
+
+New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
+`NoPendingUnstake` (40), `CooldownNotElapsed` (41).
+
+## Energy Export Certificates (#871)
+
+Non-fungible certificates attesting that a meter exported renewable energy to
+the grid. Implemented in `solar_grid/src/certificates.rs`.
+
+| Function | Description |
+|---|---|
+| `mint_export_certificate(issuer, meter_id, energy_wh, period_start, period_end, reading_hash) -> u64` | `issuer` (admin or registered oracle) must authorize. Mints to the meter owner. Periods are `[start, end)` in Unix seconds, may not end in the future, and may not overlap the meter's previously certified period |
+| `transfer_export_certificate(id, to)` | Holder must authorize; retired certificates cannot move |
+| `retire_export_certificate(id)` | Holder claims the renewable attribute; irreversible |
+| `verify_export_certificate(id, reading_hash) -> bool` | True when the certificate exists and commits to `reading_hash` |
+
+Views: `get_export_certificate(id)`, `get_certificates_by_owner(owner, offset, limit)`
+(limit capped at 100), `get_certificate_count()`, `get_last_certified_period_end(meter_id)`.
+
+Metadata (`ExportCertificate`): `id`, `meter_id`, `producer`, `owner`,
+`energy_wh`, `period_start`, `period_end`, `issued_at`, `issuer`,
+`reading_hash`, `retired_at`.
+
+`reading_hash` is the SHA-256 of the canonical JSON (keys sorted) of the
+reading payload the certificate was minted from. The backend computes it in
+`backend/src/lib/exportCertificates.ts`, prints it on the PDF certificate, and
+exposes `GET /api/certificates/:id/verify` so third parties can check a PDF
+against the chain.
+
+Events (`solargrid`, …, `id`): `cert_mint` `(meter_id, producer, energy_wh,
+period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
+`cert_ret` `(owner, energy_wh, retired_at)`.
+
+New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
+`CertificatePeriodOverlap` (52), `CertificateRetired` (53).

@@ -14,12 +14,17 @@ import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
 import * as OpenApiValidator from "express-openapi-validator";
 
-import { stellarService, server } from "./lib/stellar.js";
+import { stellarService, server, NETWORK_PASSPHRASE } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { receiptsRouter } from "./routes/receipts.js";
+import { certificatesRouter } from "./routes/certificates.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { auditRouter } from "./routes/audit.js";
+import { socialRouter } from "./routes/social.js";
+import { startLeaderboardScheduler } from "./lib/social.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
@@ -28,16 +33,35 @@ import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { loadBalancingRouter } from "./routes/loadBalancing.js";
+import { twoFactorRouter } from "./routes/twoFactor.js";
+import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
+import { weatherRouter } from "./routes/weather.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
 import { analyticsRouter } from "./routes/analytics.js";
+import { createMarketAnalyticsRouter } from "./routes/marketAnalytics.js";
 import { insightsRouter } from "./routes/insights.js";
 import { graphqlRouter } from "./routes/graphql.js";
 import { usageRouter } from "./routes/usage.js";
 import { meterMapRouter } from "./routes/meterMap.js";
 import { delegatesRouter } from "./routes/delegates.js";
-import { startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
+import { apiKeysRouter } from "./routes/apiKeys.js";
+import { meterHealthRouter } from "./routes/meterHealth.js";
+import { predictionRouter } from "./routes/prediction.js";
+import { billingRouter } from "./routes/billing.js";
+import { competitionsRouter } from "./routes/competitions.js";
+import { communitiesRouter } from "./routes/communities.js";
+import { smartHomeRouter } from "./routes/smartHome.js";
+import { widgetsRouter } from "./routes/widgets.js";
+import { startBillingScheduler } from "./lib/billing.js";
+import { startCompetitionScheduler } from "./lib/competitions.js";
+import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
+import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
+import { startHealthMonitor } from "./lib/meterHealth.js";
+import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
@@ -62,6 +86,12 @@ import { initMeterNotesStore, getMeterNotesPoolStatus } from "./lib/meterNotes.j
 import { getUsageHistoryPoolStatus } from "./lib/usageHistory.js";
 import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { getReqId } from "./lib/requestContext.js";
+import { exportRouter } from "./routes/export.js";
+import { pricingRouter } from "./routes/pricing.js";
+import { carbonCreditsRouter } from "./routes/carbonCredits.js";
+import { p2pTradingRouter } from "./routes/p2pTrading.js";
+import { adminDashboardRouter } from "./routes/adminDashboard.js";
+import { startPricingScheduler } from "./lib/dynamicPricing.js";
 // Issue #696: Import idempotency cleanup for graceful shutdown
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
@@ -118,6 +148,12 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use("/api/meters", createMeterRouter(stellarService));
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/social", socialRouter);
+startLeaderboardScheduler();
 const firmwareByMeter = new Map<string, MeterFirmware>();
 
 const LATEST_FIRMWARE_VERSION = process.env.LATEST_FIRMWARE_VERSION || '1.0.0';
@@ -128,10 +164,16 @@ function isOutdated(version: string): boolean {
 
 app.use("/api/admin", writeLimiter, adminLoginRouter);
 app.use("/api/meters/map", meterMapRouter);
+app.use("/api/keys", writeLimiter, apiKeysRouter);
+app.use("/api/meters", meterHealthRouter);
+app.use("/api/meters", predictionRouter);
+startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
+app.use("/api/export", exportRouter);
+app.use("/api/certificates", certificatesRouter);
 app.use("/api/delegates", writeLimiter, delegatesRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
@@ -141,13 +183,35 @@ app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
 app.use("/api/solar", solarRouter);
+app.use("/api/weather", weatherRouter);
 app.use("/api/usage-events", usageEventsRouter);
 app.use("/api/usage", usageRouter);
+app.use("/api/analytics/market", createMarketAnalyticsRouter(initUsageEventStore));
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/meters", insightsRouter);
 app.use("/api/graphql", graphqlRouter);
 app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
+// #901–#904: widgets, billing, competitions, smart home
+app.use("/api/widgets", widgetsRouter);
+app.use("/api/billing", writeLimiter, billingRouter);
+app.use("/api/competitions", competitionsRouter);
+app.use("/api/communities", communitiesRouter);
+app.use("/api/smart-home", smartHomeRouter);
+setRelaySender(sendRelayCommand);
+startBillingScheduler();
+startCompetitionScheduler();
+startEnergyForecastRetraining();
+startSmartHomeScheduler();
+// #877: dynamic pricing
+app.use("/api/pricing", pricingRouter);
+startPricingScheduler();
+// #878: carbon credit tracking
+app.use("/api/carbon-credits", carbonCreditsRouter);
+// #879: P2P energy trading
+app.use("/api/p2p", p2pTradingRouter);
+// #880: admin dashboard
+app.use("/api/admin/dashboard", adminDashboardRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -206,9 +270,24 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
+const httpServer = app.listen(PORT, () => {
+  logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
+  initUsageEventStore();
+  startUsageEventRetryWorker();
+  logger.info("SolarGrid backend listening", { port: PORT });
+  startLimitWatcher(stellarService);
+  try {
+    startIoTBridge();
+  } catch (err) {
+    logger.error("Failed to start IoT bridge", { err });
+  }
+});
+attachTradingWebSocket(httpServer);
 const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
+  startEventIndexer();
+  startRecommendationWorker();
 });
 
 export { app, pool, recordFirmware, isOutdated, firmwareByMeter };

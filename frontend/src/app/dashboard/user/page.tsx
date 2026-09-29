@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/Skeleton";
 import UsageChart, { type UsageDataPoint } from "@/components/UsageChart";
 import UsageForecast from "@/components/UsageForecast";
 import EnergyInsights from "@/components/EnergyInsights";
+import Recommendations from "@/components/Recommendations";
 import { MeterSearchBar, type StatusFilter } from "@/components/MeterSearchBar";
 import { fuzzyMatch } from "@/lib/fuzzySearch";
 import { useWalletStore } from "@/store/walletStore";
@@ -618,6 +619,9 @@ function MeterCard({
 
       {/* Energy Insights */}
       <EnergyInsights meterId={meterId} />
+
+      {/* Personalised Recommendations */}
+      <Recommendations meterId={meterId} ownerAddress={meter.owner} />
 
       {/* Usage History Chart */}
       <div className="pt-4 border-t border-white/10">

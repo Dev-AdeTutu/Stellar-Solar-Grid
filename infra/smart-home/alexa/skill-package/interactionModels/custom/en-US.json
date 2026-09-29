@@ -1,0 +1,42 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "solar grid",
+      "intents": [
+        {
+          "name": "GetBalanceIntent",
+          "slots": [{ "name": "meter", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "what's my balance",
+            "what is my balance",
+            "how much credit do I have",
+            "how much credit is left",
+            "what's the balance on {meter}",
+            "how much credit is on {meter}"
+          ]
+        },
+        {
+          "name": "GetUsageIntent",
+          "slots": [{ "name": "meter", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "how much energy have I used today",
+            "how much energy I used today",
+            "what's my usage today",
+            "how much has {meter} used today"
+          ]
+        },
+        {
+          "name": "RunRoutineIntent",
+          "slots": [{ "name": "routine", "type": "AMAZON.SearchQuery" }],
+          "samples": ["run {routine}", "start {routine}", "run my {routine} routine", "to run {routine}"]
+        },
+        { "name": "AMAZON.HelpIntent", "samples": [] },
+        { "name": "AMAZON.StopIntent", "samples": [] },
+        { "name": "AMAZON.CancelIntent", "samples": [] },
+        { "name": "AMAZON.FallbackIntent", "samples": [] },
+        { "name": "AMAZON.NavigateHomeIntent", "samples": [] }
+      ],
+      "types": []
+    }
+  }
+}

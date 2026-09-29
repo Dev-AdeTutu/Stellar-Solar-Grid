@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createTextPdf } from "./pdf.js";
 
 export interface ReceiptRecord {
   paymentId: string;
@@ -33,41 +34,16 @@ function persist() {
   writeFileSync(indexPath, JSON.stringify([...records.values()], null, 2));
 }
 
-function escapePdfText(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
-}
-
 /** Create a small, dependency-free PDF receipt with a standards-compliant xref table. */
 export function createReceiptPdf(record: Omit<ReceiptRecord, "filePath">): Buffer {
-  const lines = [
+  return createTextPdf([
     "SolarGrid Payment Receipt",
     `Invoice number: ${record.invoiceNumber}`,
     `Payment amount: ${record.amount} stroops`,
     `Meter ID: ${record.meterId}`,
     `Date: ${record.date}`,
     `Transaction hash: ${record.transactionHash}`,
-  ];
-  const stream = ["BT", "/F1 14 Tf", "72 740 Td", ...lines.flatMap((line, i) => [
-    i === 0 ? `(${escapePdfText(line)}) Tj` : `0 -24 Td (${escapePdfText(line)}) Tj`,
-  ]), "ET"].join("\n");
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-    `<< /Length ${Buffer.byteLength(stream, "utf8")} >>\nstream\n${stream}\nendstream`,
-    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-  ];
-  let pdf = "%PDF-1.4\n";
-  const offsets = [0];
-  for (let i = 0; i < objects.length; i++) {
-    offsets.push(Buffer.byteLength(pdf, "utf8"));
-    pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`;
-  }
-  const xrefOffset = Buffer.byteLength(pdf, "utf8");
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (let i = 1; i < offsets.length; i++) pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
-  return Buffer.from(pdf, "utf8");
+  ]);
 }
 
 export function saveReceipt(input: Omit<ReceiptRecord, "invoiceNumber" | "filePath">): ReceiptRecord {

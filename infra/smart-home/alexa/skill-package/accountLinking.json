@@ -1,0 +1,12 @@
+{
+  "accountLinkingRequest": {
+    "type": "AUTH_CODE",
+    "authorizationUrl": "https://api.REPLACE_ME/api/smart-home/oauth/authorize",
+    "accessTokenUrl": "https://api.REPLACE_ME/api/smart-home/oauth/token",
+    "clientId": "REPLACE_WITH_SMART_HOME_ALEXA_CLIENT_ID",
+    "accessTokenScheme": "HTTP_BASIC",
+    "scopes": ["read", "control"],
+    "defaultTokenExpirationInSeconds": 3600,
+    "skipOnEnablement": false
+  }
+}

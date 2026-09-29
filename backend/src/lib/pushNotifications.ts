@@ -2,6 +2,8 @@ import webpush, { PushSubscription } from "web-push";
 import { logger } from "./logger.js";
 import {
   deletePushSubscriptionByEndpoint,
+  deleteNativePushSubscription,
+  listNativePushSubscriptionsByOwner,
   listPushSubscriptionsByOwner,
   type PushSubscriptionRecord,
 } from "./pushSubscriptions.js";
@@ -47,11 +49,35 @@ export function isPushConfigured(): boolean {
   return pushConfigured;
 }
 
-export async function sendLowBalanceNotification(input: LowBalanceNotificationInput): Promise<void> {
-  if (!pushConfigured) {
-    return;
+async function sendNativePush(ownerAddresses: string[], notification: { title: string; body: string; data: Record<string, unknown> }): Promise<void> {
+  const tokens = [...new Set(ownerAddresses.flatMap((address) =>
+    listNativePushSubscriptionsByOwner(address).map((subscription) => subscription.token),
+  ))];
+  for (let offset = 0; offset < tokens.length; offset += 100) {
+    const chunk = tokens.slice(offset, offset + 100);
+    try {
+      const response = await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(chunk.map((to) => ({ to, ...notification, sound: "default" }))),
+      });
+      if (!response.ok) {
+        logger.warn({ status: response.status, tokenCount: chunk.length }, "Expo push request failed");
+        continue;
+      }
+      const result = await response.json() as { data?: Array<{ status?: string; details?: { error?: string } }> };
+      for (const [index, ticket] of (result.data ?? []).entries()) {
+        if (ticket.status === "error" && ticket.details?.error === "DeviceNotRegistered") {
+          deleteNativePushSubscription(chunk[index]);
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, tokenCount: chunk.length }, "Expo push delivery failed");
+    }
   }
+}
 
+export async function sendLowBalanceNotification(input: LowBalanceNotificationInput): Promise<void> {
   const recipients = new Set(
     [input.ownerAddress, input.emergencyContactAddress].filter(
       (address): address is string => Boolean(address),
@@ -88,6 +114,15 @@ export async function sendLowBalanceNotification(input: LowBalanceNotificationIn
     ],
   });
 
+  await sendNativePush([...recipients], {
+    title: "Low Balance Alert",
+    body: input.emergencyContactAddress
+      ? "A designated meter may need a top up to avoid interruption."
+      : "Your meter balance is running low. Top up to avoid interruption.",
+    data: { type: "LOW_BALANCE", meterId: input.meterId, topUpPath: "/pay" },
+  });
+
+  if (!pushConfigured) return;
   await Promise.all(
     subscriptions.map(async (record) => {
       try {
@@ -107,6 +142,35 @@ export async function sendLowBalanceNotification(input: LowBalanceNotificationIn
           },
           "Failed to send web push notification",
         );
+      }
+    }),
+  );
+}
+
+/** Send a generic push notification to every subscription owned by an address. */
+export async function sendPushToOwner(
+  ownerAddress: string,
+  notification: { title: string; body: string; tag: string; url?: string },
+): Promise<void> {
+  await sendNativePush([ownerAddress], {
+    title: notification.title,
+    body: notification.body,
+    data: { url: notification.url ?? "/dashboard", tag: notification.tag },
+  });
+  if (!pushConfigured) return;
+  const payload = JSON.stringify({
+    ...notification,
+    icon: "/icons/push-badge.svg",
+    data: { url: notification.url ?? "/dashboard" },
+  });
+  await Promise.all(
+    listPushSubscriptionsByOwner(ownerAddress).map(async (record) => {
+      try {
+        await webpush.sendNotification(toWebPushSubscription(record), payload);
+      } catch (err) {
+        const status = (err as { statusCode?: number }).statusCode;
+        if (status === 404 || status === 410) deletePushSubscriptionByEndpoint(record.endpoint);
+        else logger.warn({ err, ownerAddress }, "Push notification failed");
       }
     }),
   );

@@ -249,3 +249,26 @@ input, select, textarea {
     color: black !important;
   }
 }
+
+/* ── RTL support (#894) ─────────────────────────────────────────────────── */
+[dir="rtl"] body {
+  text-align: right;
+}
+[dir="rtl"] .text-left {
+  text-align: right;
+}
+[dir="rtl"] .text-right {
+  text-align: left;
+}
+[dir="rtl"] .ml-auto {
+  margin-left: 0;
+  margin-right: auto;
+}
+[dir="rtl"] .mr-auto {
+  margin-right: 0;
+  margin-left: auto;
+}
+[dir="rtl"] .space-x-2 > * + *,
+[dir="rtl"] .space-x-4 > * + * {
+  --tw-space-x-reverse: 1;
+}

@@ -1,0 +1,216 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "Mi medidor",
+    "multisig": "Carteras de org.",
+    "pay": "Pagar",
+    "analytics": "Analíticas",
+    "provider": "Proveedor",
+    "history": "Historial",
+    "communities": "Comunidades energéticas",
+    "emergency": "Emergencia",
+    "toggleTheme": "Cambiar tema",
+    "openMenu": "Abrir menú",
+    "closeMenu": "Cerrar menú",
+    "languageToggle": "Español",
+    "languageLabel": "Cambiar idioma"
+  },
+  "home": {
+    "tagline": "Energía solar asequible y de pago por uso, impulsada por la blockchain de Stellar. Sin grandes costos iniciales: solo energía limpia a tu manera.",
+    "userDashboard": "Panel de usuario",
+    "providerDashboard": "Panel de proveedor"
+  },
+  "meterCard": {
+    "balance": "Saldo",
+    "plan": "Plan",
+    "expiry": "Vencimiento",
+    "never": "Nunca",
+    "daysLeft": "Quedan {days} d",
+    "deactivate": "Desactivar medidor",
+    "deactivating": "Desactivando…",
+    "ariaLabel": "Medidor {meterId}"
+  },
+  "meterStatus": {
+    "active": "Activo",
+    "inactive": "Inactivo",
+    "expired": "Vencido",
+    "ariaLabel": "Estado del medidor: {status}"
+  },
+  "wallet": {
+    "connect": "Conectar billetera",
+    "connectCompact": "Conectar",
+    "connecting": "Conectando…",
+    "disconnect": "Desconectar",
+    "copyAddress": "Haz clic para copiar la dirección completa",
+    "copied": "✓ Copiado",
+    "freighterNotDetected": "Freighter no detectado",
+    "installFreighter": "Instalar Freighter ↗",
+    "wrongNetwork": "Red incorrecta",
+    "switchNetwork": "Cambia de red en Freighter: Ajustes → Red.",
+    "ariaWalletAddress": "Dirección de billetera {address}. Haz clic para copiar.",
+    "ariaDisconnect": "Desconectar billetera",
+    "ariaConnecting": "Conectando"
+  },
+  "networkBanner": {
+    "wrongNetwork": "Red incorrecta:",
+    "dismiss": "Descartar aviso de red incorrecta"
+  },
+  "errors": {
+    "freighterNotInstalled": "La billetera seleccionada no está instalada.",
+    "noAccount": "No se encontró ninguna cuenta en la billetera seleccionada",
+    "walletConnectFailed": "No se pudo conectar la billetera",
+    "meterLoadFailed": "No se pudieron cargar los datos del medidor: {error}",
+    "retry": "Reintentar",
+    "installFreighter": "Instalar Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "Mis medidores",
+      "connectWallet": "Conecta tu billetera para ver tus medidores.",
+      "noMeters": "No se encontraron medidores para tu dirección.",
+      "loading": "Cargando medidores…",
+      "balance": "Saldo",
+      "unitsUsed": "Unidades usadas",
+      "active": "Activo",
+      "inactive": "Inactivo",
+      "plan": "Plan",
+      "expiry": "Vencimiento"
+    },
+    "provider": {
+      "title": "Panel de proveedor",
+      "allMeters": "Todos los medidores",
+      "deactivate": "Desactivar",
+      "deactivating": "Desactivando…"
+    }
+  },
+  "report": {
+    "title": "Informe de estado del medidor",
+    "printReport": "Imprimir informe",
+    "print": "Imprimir",
+    "back": "← Volver",
+    "meterId": "ID del medidor",
+    "owner": "Propietario",
+    "balance": "Saldo",
+    "plan": "Plan",
+    "status": "Estado",
+    "expiry": "Vencimiento",
+    "unitsUsed": "Unidades usadas",
+    "generatedAt": "Generado el",
+    "recentReadings": "Lecturas recientes (últimas 5)",
+    "noReadings": "No hay lecturas disponibles.",
+    "date": "Fecha",
+    "units": "Unidades",
+    "amount": "Importe",
+    "qrCode": "Código QR",
+    "scanToView": "Escanea para ver este medidor",
+    "never": "Nunca",
+    "active": "Activo",
+    "inactive": "Inactivo"
+  },
+  "history": {
+    "title": "Historial de pagos",
+    "noHistory": "No se encontró historial de pagos.",
+    "date": "Fecha",
+    "meter": "Medidor",
+    "plan": "Plan",
+    "amount": "Importe",
+    "transaction": "Transacción",
+    "viewExplorer": "Ver en el explorador ↗",
+    "export": "Exportar CSV",
+    "exporting": "Exportando…",
+    "prev": "Anterior",
+    "next": "Siguiente",
+    "page": "Página {page} / {total}"
+  },
+  "pay": {
+    "title": "Realizar un pago",
+    "meterId": "ID del medidor",
+    "amount": "Importe (XLM)",
+    "plan": "Plan",
+    "submit": "Pagar",
+    "submitting": "Procesando…",
+    "success": "¡Pago realizado con éxito!",
+    "daily": "Diario",
+    "weekly": "Semanal",
+    "usage": "Por uso"
+  },
+  "pauseBanner": {
+    "title": "Pausa de emergencia activa",
+    "message": "Los pagos y el registro de medidores están deshabilitados temporalmente. El reporte de consumo sigue disponible."
+  },
+  "common": {
+    "loading": "Cargando…",
+    "error": "Error",
+    "close": "Cerrar",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "save": "Guardar",
+    "back": "Volver",
+    "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Información energética",
+    "refresh": "Actualizar",
+    "expand": "Expandir",
+    "collapse": "Contraer",
+    "thisWeek": "Esta semana",
+    "vsLastWeek": "vs. semana pasada",
+    "peersAvg": "Similares (prom.)",
+    "weeklyAvg": "prom. semanal",
+    "hourlyProfile": "Perfil de consumo de 24 horas (últimos 30 días, UTC)",
+    "peak": "Pico",
+    "achievements": "Logros",
+    "lastComputed": "Último cálculo",
+    "noData": "Aún no hay datos de consumo. La información aparecerá cuando tu medidor empiece a registrar.",
+    "earned": "obtenido",
+    "notEarned": "aún no obtenido",
+    "increase": "aumento",
+    "decrease": "disminución",
+    "noPriorData": "Sin datos previos",
+    "badges": {
+      "low_consumer": "🌱 Bajo consumo",
+      "off_peak_hero": "🌙 Héroe fuera de pico",
+      "improver": "📉 En mejora",
+      "below_average": "⚡ Bajo el promedio",
+      "consistent": "📊 Constante"
+    }
+  },
+  "emergency": {
+    "title": "Energía compartida de emergencia",
+    "loading": "Cargando…",
+    "active": "Modo de emergencia activo",
+    "inactive": "Funcionamiento normal",
+    "since": "desde",
+    "pool": "Reserva compartida",
+    "donated": "Total donado",
+    "donors": "Donantes",
+    "facilities": "Instalaciones prioritarias",
+    "noFacilities": "No hay instalaciones registradas.",
+    "facility": "Instalación",
+    "type": "Tipo",
+    "coverage": "Asignado / demanda",
+    "donateTitle": "Donar energía",
+    "meterId": "ID de tu medidor",
+    "donate": "Donar",
+    "donateSuccess": "¡Gracias! Tu energía se añadió a la reserva compartida.",
+    "donateFailed": "La donación falló. Inténtalo de nuevo.",
+    "recentDonations": "Donaciones recientes",
+    "types": {
+      "hospital": "Hospital",
+      "clinic": "Clínica",
+      "water": "Suministro de agua",
+      "shelter": "Refugio",
+      "school": "Escuela",
+      "household": "Hogar"
+    }
+  },
+  "recommendations": {
+    "title": "Recomendaciones para ti",
+    "none": "No hay nuevas recomendaciones esta semana.",
+    "estimated": "Ahorro estimado: {kwh} kWh/semana",
+    "accept": "Aceptar",
+    "dismiss": "Descartar",
+    "estimatedSavings": "Ahorro semanal estimado",
+    "actualSavings": "Ahorro semanal real"
+  }
+}

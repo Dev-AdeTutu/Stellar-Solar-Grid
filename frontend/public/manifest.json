@@ -3,15 +3,58 @@
   "short_name": "SolarGrid",
   "description": "Pay-as-you-go solar energy on the Stellar blockchain",
   "start_url": "/dashboard/user",
+  "scope": "/",
+  "id": "/",
   "display": "standalone",
+  "orientation": "portrait-primary",
   "background_color": "#0b0f14",
   "theme_color": "#f5b300",
+  "categories": ["finance", "utilities", "productivity"],
+  "lang": "en",
+  "dir": "ltr",
+  "prefer_related_applications": false,
   "icons": [
     {
       "src": "/icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "url": "/dashboard/user"
+    },
+    {
+      "name": "Payments",
+      "short_name": "Payments",
+      "url": "/dashboard/user/payments"
     }
   ]
 }

@@ -2,14 +2,21 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "Mon Compteur",
+    "multisig": "Portefeuilles org.",
     "pay": "Payer",
+    "analytics": "Analyses",
     "provider": "Fournisseur",
     "history": "Historique",
+    "bills": "Factures",
+    "communities": "Communautés énergétiques",
+    "competitions": "Compétitions",
+    "smartHome": "Maison connectée",
     "toggleTheme": "Changer de thème",
     "openMenu": "Ouvrir le menu",
     "closeMenu": "Fermer le menu",
     "languageToggle": "English",
-    "languageLabel": "Changer de langue"
+    "languageLabel": "Changer de langue",
+    "emergency": "Urgence"
   },
   "home": {
     "tagline": "Énergie solaire abordable et prépayée, propulsée par la blockchain Stellar. Sans frais initiaux élevés — juste de l'énergie propre selon vos conditions.",
@@ -170,5 +177,43 @@
       "below_average": "⚡ Sous la Moyenne",
       "consistent": "📊 Régulier"
     }
+  },
+  "emergency": {
+    "title": "Partage d'énergie d'urgence",
+    "loading": "Chargement…",
+    "active": "Mode urgence actif",
+    "inactive": "Fonctionnement normal",
+    "since": "depuis",
+    "pool": "Réserve partagée",
+    "donated": "Total donné",
+    "donors": "Donateurs",
+    "facilities": "Établissements prioritaires",
+    "noFacilities": "Aucun établissement enregistré.",
+    "facility": "Établissement",
+    "type": "Type",
+    "coverage": "Alloué / demande",
+    "donateTitle": "Donner de l'énergie",
+    "meterId": "ID de votre compteur",
+    "donate": "Donner",
+    "donateSuccess": "Merci ! Votre énergie a été ajoutée à la réserve partagée.",
+    "donateFailed": "Le don a échoué. Veuillez réessayer.",
+    "recentDonations": "Dons récents",
+    "types": {
+      "hospital": "Hôpital",
+      "clinic": "Clinique",
+      "water": "Approvisionnement en eau",
+      "shelter": "Abri",
+      "school": "École",
+      "household": "Foyer"
+    }
+  },
+  "recommendations": {
+    "title": "Recommandations pour vous",
+    "none": "Aucune nouvelle recommandation cette semaine.",
+    "estimated": "Économie estimée : {kwh} kWh/semaine",
+    "accept": "Accepter",
+    "dismiss": "Ignorer",
+    "estimatedSavings": "Économies hebdomadaires estimées",
+    "actualSavings": "Économies hebdomadaires réelles"
   }
 }

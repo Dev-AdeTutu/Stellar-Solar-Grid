@@ -18,9 +18,15 @@ export default function Navbar() {
 
   const NAV_LINKS = [
     { href: "/dashboard/user", label: t("myMeter") },
+    { href: "/multisig", label: t("multisig") },
     { href: "/pay", label: t("pay") },
     { href: "/dashboard/provider", label: t("provider") },
     { href: "/history", label: t("history") },
+    { href: "/analytics", label: t("analytics") },
+    { href: "/bills", label: t("bills") },
+    { href: "/communities", label: t("communities") },
+    { href: "/competitions", label: t("competitions") },
+    { href: "/smart-home", label: t("smartHome") },
   ];
 
   useEffect(() => {

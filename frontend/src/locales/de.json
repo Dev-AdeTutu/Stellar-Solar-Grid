@@ -1,0 +1,216 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "Mein Zähler",
+    "multisig": "Org-Wallets",
+    "pay": "Bezahlen",
+    "analytics": "Analysen",
+    "provider": "Anbieter",
+    "history": "Verlauf",
+    "communities": "Energiegemeinschaften",
+    "emergency": "Notfall",
+    "toggleTheme": "Design wechseln",
+    "openMenu": "Menü öffnen",
+    "closeMenu": "Menü schließen",
+    "languageToggle": "Deutsch",
+    "languageLabel": "Sprache wechseln"
+  },
+  "home": {
+    "tagline": "Bezahlbare Solarenergie nach Verbrauch, betrieben durch die Stellar-Blockchain. Keine hohen Anschaffungskosten – nur saubere Energie zu Ihren Bedingungen.",
+    "userDashboard": "Benutzer-Dashboard",
+    "providerDashboard": "Anbieter-Dashboard"
+  },
+  "meterCard": {
+    "balance": "Guthaben",
+    "plan": "Tarif",
+    "expiry": "Ablauf",
+    "never": "Nie",
+    "daysLeft": "Noch {days} T",
+    "deactivate": "Zähler deaktivieren",
+    "deactivating": "Wird deaktiviert…",
+    "ariaLabel": "Zähler {meterId}"
+  },
+  "meterStatus": {
+    "active": "Aktiv",
+    "inactive": "Inaktiv",
+    "expired": "Abgelaufen",
+    "ariaLabel": "Zählerstatus: {status}"
+  },
+  "wallet": {
+    "connect": "Wallet verbinden",
+    "connectCompact": "Verbinden",
+    "connecting": "Verbinde…",
+    "disconnect": "Trennen",
+    "copyAddress": "Klicken, um die vollständige Adresse zu kopieren",
+    "copied": "✓ Kopiert",
+    "freighterNotDetected": "Freighter nicht erkannt",
+    "installFreighter": "Freighter installieren ↗",
+    "wrongNetwork": "Falsches Netzwerk",
+    "switchNetwork": "Netzwerk in Freighter wechseln: Einstellungen → Netzwerk.",
+    "ariaWalletAddress": "Wallet-Adresse {address}. Zum Kopieren klicken.",
+    "ariaDisconnect": "Wallet trennen",
+    "ariaConnecting": "Verbinde"
+  },
+  "networkBanner": {
+    "wrongNetwork": "Falsches Netzwerk:",
+    "dismiss": "Netzwerkwarnung schließen"
+  },
+  "errors": {
+    "freighterNotInstalled": "Die ausgewählte Wallet ist nicht installiert.",
+    "noAccount": "Kein Konto in der ausgewählten Wallet gefunden",
+    "walletConnectFailed": "Wallet konnte nicht verbunden werden",
+    "meterLoadFailed": "Zählerdaten konnten nicht geladen werden: {error}",
+    "retry": "Erneut versuchen",
+    "installFreighter": "Freighter installieren ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "Meine Zähler",
+      "connectWallet": "Verbinden Sie Ihre Wallet, um Ihre Zähler anzuzeigen.",
+      "noMeters": "Keine Zähler für Ihre Adresse gefunden.",
+      "loading": "Zähler werden geladen…",
+      "balance": "Guthaben",
+      "unitsUsed": "Verbrauchte Einheiten",
+      "active": "Aktiv",
+      "inactive": "Inaktiv",
+      "plan": "Tarif",
+      "expiry": "Ablauf"
+    },
+    "provider": {
+      "title": "Anbieter-Dashboard",
+      "allMeters": "Alle Zähler",
+      "deactivate": "Deaktivieren",
+      "deactivating": "Wird deaktiviert…"
+    }
+  },
+  "report": {
+    "title": "Zählerstatusbericht",
+    "printReport": "Bericht drucken",
+    "print": "Drucken",
+    "back": "← Zurück",
+    "meterId": "Zähler-ID",
+    "owner": "Eigentümer",
+    "balance": "Guthaben",
+    "plan": "Tarif",
+    "status": "Status",
+    "expiry": "Ablauf",
+    "unitsUsed": "Verbrauchte Einheiten",
+    "generatedAt": "Erstellt am",
+    "recentReadings": "Letzte Ablesungen (letzte 5)",
+    "noReadings": "Keine Ablesungen verfügbar.",
+    "date": "Datum",
+    "units": "Einheiten",
+    "amount": "Betrag",
+    "qrCode": "QR-Code",
+    "scanToView": "Scannen, um diesen Zähler anzuzeigen",
+    "never": "Nie",
+    "active": "Aktiv",
+    "inactive": "Inaktiv"
+  },
+  "history": {
+    "title": "Zahlungsverlauf",
+    "noHistory": "Kein Zahlungsverlauf gefunden.",
+    "date": "Datum",
+    "meter": "Zähler",
+    "plan": "Tarif",
+    "amount": "Betrag",
+    "transaction": "Transaktion",
+    "viewExplorer": "Im Explorer ansehen ↗",
+    "export": "CSV exportieren",
+    "exporting": "Exportiere…",
+    "prev": "Zurück",
+    "next": "Weiter",
+    "page": "Seite {page} / {total}"
+  },
+  "pay": {
+    "title": "Zahlung durchführen",
+    "meterId": "Zähler-ID",
+    "amount": "Betrag (XLM)",
+    "plan": "Tarif",
+    "submit": "Bezahlen",
+    "submitting": "Wird verarbeitet…",
+    "success": "Zahlung erfolgreich!",
+    "daily": "Täglich",
+    "weekly": "Wöchentlich",
+    "usage": "Nach Verbrauch"
+  },
+  "pauseBanner": {
+    "title": "Notfallpause aktiv",
+    "message": "Zahlungen und Zählerregistrierung sind vorübergehend deaktiviert. Die Verbrauchsmeldung bleibt verfügbar."
+  },
+  "common": {
+    "loading": "Wird geladen…",
+    "error": "Fehler",
+    "close": "Schließen",
+    "cancel": "Abbrechen",
+    "confirm": "Bestätigen",
+    "save": "Speichern",
+    "back": "Zurück",
+    "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Energie-Einblicke",
+    "refresh": "Aktualisieren",
+    "expand": "Erweitern",
+    "collapse": "Einklappen",
+    "thisWeek": "Diese Woche",
+    "vsLastWeek": "ggü. Vorwoche",
+    "peersAvg": "Vergleich (Ø)",
+    "weeklyAvg": "Wochen-Ø",
+    "hourlyProfile": "24-Stunden-Verbrauchsprofil (letzte 30 Tage, UTC)",
+    "peak": "Spitze",
+    "achievements": "Erfolge",
+    "lastComputed": "Zuletzt berechnet",
+    "noData": "Noch keine Verbrauchsdaten. Einblicke erscheinen, sobald Ihr Zähler aufzeichnet.",
+    "earned": "erreicht",
+    "notEarned": "noch nicht erreicht",
+    "increase": "Anstieg",
+    "decrease": "Rückgang",
+    "noPriorData": "Keine Vordaten",
+    "badges": {
+      "low_consumer": "🌱 Sparsamer Verbraucher",
+      "off_peak_hero": "🌙 Nebenzeit-Held",
+      "improver": "📉 Verbesserer",
+      "below_average": "⚡ Unter Durchschnitt",
+      "consistent": "📊 Beständig"
+    }
+  },
+  "emergency": {
+    "title": "Notfall-Energieteilung",
+    "loading": "Wird geladen…",
+    "active": "Notfallmodus aktiv",
+    "inactive": "Normalbetrieb",
+    "since": "seit",
+    "pool": "Gemeinsamer Pool",
+    "donated": "Insgesamt gespendet",
+    "donors": "Spender",
+    "facilities": "Vorrangige Einrichtungen",
+    "noFacilities": "Keine Einrichtungen registriert.",
+    "facility": "Einrichtung",
+    "type": "Typ",
+    "coverage": "Zugeteilt / Bedarf",
+    "donateTitle": "Energie spenden",
+    "meterId": "Ihre Zähler-ID",
+    "donate": "Spenden",
+    "donateSuccess": "Danke! Ihre Energie wurde dem gemeinsamen Pool hinzugefügt.",
+    "donateFailed": "Spende fehlgeschlagen. Bitte erneut versuchen.",
+    "recentDonations": "Letzte Spenden",
+    "types": {
+      "hospital": "Krankenhaus",
+      "clinic": "Klinik",
+      "water": "Wasserversorgung",
+      "shelter": "Notunterkunft",
+      "school": "Schule",
+      "household": "Haushalt"
+    }
+  },
+  "recommendations": {
+    "title": "Empfehlungen für Sie",
+    "none": "Diese Woche keine neuen Empfehlungen.",
+    "estimated": "Geschätzte Ersparnis: {kwh} kWh/Woche",
+    "accept": "Annehmen",
+    "dismiss": "Verwerfen",
+    "estimatedSavings": "Geschätzte wöchentliche Ersparnis",
+    "actualSavings": "Tatsächliche wöchentliche Ersparnis"
+  }
+}

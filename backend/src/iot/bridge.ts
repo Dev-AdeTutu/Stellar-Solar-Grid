@@ -8,6 +8,8 @@
  * Expected payload:     { "units": 100, "cost": 500000 }
  */
 
+import { handleHeartbeatMessage } from "../lib/meterHealth.js";
+import { handleDeviceTelemetry } from "../lib/deviceRegistry.js";
 import mqtt from "mqtt";
 import { logger } from "../lib/logger.js";
 import {
@@ -31,10 +33,51 @@ import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, cont
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
+// Issue #834: meters publish periodic heartbeats here.
+const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
+// Issue #897: registered devices (panels, inverters, meters) publish performance telemetry here.
+const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 let mqttClient: mqtt.MqttClient | null = null;
 export function getMqttClient() { return mqttClient; }
+
+/**
+ * Issue #904: user-initiated relay control (voice assistants / energy
+ * routines). Publishes to the same control topic as contract-driven ON/OFF,
+ * tagged with its source so meter firmware and logs can tell them apart.
+ * Returns false when the MQTT bridge is not connected.
+ */
+export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source: string): boolean {
+  if (!mqttClient?.connected) return false;
+  const topic = `solargrid/meters/${meterId}/control`;
+  logger.info({ event: "relay_command", meterId, command, topic, source }, "Sending user relay command");
+  mqttClient.publish(
+    topic,
+    JSON.stringify({ cmd: command, source, timestamp: new Date().toISOString() }),
+    { qos: 1 },
+    (err) => { if (err) logger.error({ meterId, err }, `Failed to publish ${command} command`); },
+  );
+  return true;
+}
+
+export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "solargrid" ||
+    segments[1] !== "devices" ||
+    segments[3] !== "telemetry"
+  ) {
+    return false;
+  }
+  try {
+    handleDeviceTelemetry(segments[2], payload);
+  } catch (err) {
+    logger.error("Device telemetry handling failed", { topic, err });
+  }
+  return true;
+}
 const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
@@ -470,12 +513,23 @@ function startMqttBridge() {
     client.subscribe(TOPIC, { qos: 2 }, (err) => {
       if (err) logger.error("MQTT subscribe error", { err });
     });
+    client.subscribe(HEARTBEAT_TOPIC, { qos: 1 }, (err) => {
+      if (err) logger.error("MQTT heartbeat subscribe error", { err });
+    });
+    client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
+      if (err) logger.error("MQTT device telemetry subscribe error", { err });
+    });
   });
 
   client.on("message", async (topic, payload) => {
     const segments = topic.split("/");
     const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
     mqttMessages.inc({ topic: labelTopic });
+    if (segments[3] === "heartbeat") {
+      handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
+    if (handleDeviceTelemetryTopic(topic, payload)) return;
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.

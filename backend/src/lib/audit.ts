@@ -210,3 +210,124 @@ export function auditEntriesToCsv(
   });
   return [header, ...rows].join("\n");
 }
+
+// ── Energy data export (closes #905) ─────────────────────────────────────────
+
+/** Supported export serialisation formats. */
+export type ExportFormat = "csv" | "json" | "xml";
+
+/** A single energy transaction record included in a personal data export. */
+export interface EnergyTransaction {
+  /** ISO-8601 timestamp of the transaction. */
+  timestamp: string;
+  /** Meter identifier the transaction belongs to. */
+  meterId: string;
+  /** Transaction type, e.g. "production" | "consumption" | "trade". */
+  type: string;
+  /** Energy amount in kWh. */
+  amountKwh: number;
+  /** Optional monetary value associated with the transaction. */
+  value?: number;
+  /** Optional free-form metadata. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Options controlling which transactions are included in an export. */
+export interface EnergyExportOptions {
+  /** Inclusive lower bound (ISO-8601). */
+  start?: string;
+  /** Inclusive upper bound (ISO-8601). */
+  end?: string;
+  /** Filter by meter identifier. */
+  meterId?: string;
+  /** Filter by transaction type. */
+  type?: string;
+}
+
+/**
+ * Filter a user's energy transactions by date range and optional
+ * meter/type filters. Used by the personal data export endpoint (#905).
+ */
+export function filterEnergyTransactions(
+  transactions: EnergyTransaction[],
+  opts: EnergyExportOptions = {},
+): EnergyTransaction[] {
+  const { start, end, meterId, type } = opts;
+  const startMs = start ? new Date(start).getTime() : -Infinity;
+  const endMs = end ? new Date(end).getTime() : Infinity;
+
+  return transactions.filter((tx) => {
+    const ts = new Date(tx.timestamp).getTime();
+    if (Number.isNaN(ts) || ts < startMs || ts > endMs) return false;
+    if (meterId && tx.meterId !== meterId) return false;
+    if (type && tx.type !== type) return false;
+    return true;
+  });
+}
+
+/** Escape a value for safe inclusion in an XML text node. */
+function escapeXml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+/**
+ * Serialise energy transactions as CSV.
+ * Columns: timestamp, meterId, type, amountKwh, value, metadata
+ */
+export function energyTransactionsToCsv(transactions: EnergyTransaction[]): string {
+  const header = "timestamp,meterId,type,amountKwh,value,metadata";
+  const rows = transactions.map((tx) => {
+    const metadata = JSON.stringify(tx.metadata ?? null).replace(/"/g, '""');
+    return `${tx.timestamp},${tx.meterId},${tx.type},${tx.amountKwh},${tx.value ?? ""},"${metadata}"`;
+  });
+  return [header, ...rows].join("\n");
+}
+
+/**
+ * Serialise energy transactions as XML.
+ */
+export function energyTransactionsToXml(transactions: EnergyTransaction[]): string {
+  const items = transactions
+    .map((tx) => {
+      const metadata = tx.metadata
+        ? `<metadata>${escapeXml(JSON.stringify(tx.metadata))}</metadata>`
+        : "";
+      return (
+        "  <transaction>" +
+        `<timestamp>${escapeXml(tx.timestamp)}</timestamp>` +
+        `<meterId>${escapeXml(tx.meterId)}</meterId>` +
+        `<type>${escapeXml(tx.type)}</type>` +
+        `<amountKwh>${escapeXml(tx.amountKwh)}</amountKwh>` +
+        (tx.value !== undefined ? `<value>${escapeXml(tx.value)}</value>` : "") +
+        metadata +
+        "</transaction>"
+      );
+    })
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<energyExport>\n${items}\n</energyExport>`;
+}
+
+/**
+ * Serialise energy transactions in the requested format.
+ *
+ * Closes #905 — supports CSV, JSON, and XML output for GDPR data exports.
+ */
+export function serializeEnergyExport(
+  transactions: EnergyTransaction[],
+  format: ExportFormat,
+): string {
+  switch (format) {
+    case "csv":
+      return energyTransactionsToCsv(transactions);
+    case "xml":
+      return energyTransactionsToXml(transactions);
+    case "json":
+    default:
+      return JSON.stringify({ transactions }, null, 2);
+  }
+}

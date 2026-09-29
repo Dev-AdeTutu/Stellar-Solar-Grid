@@ -231,3 +231,33 @@ export async function transferMeterOwnership(
     StellarSdk.nativeToScVal(newOwnerAddress, { type: "address" }),
   ]);
 }
+
+// ── Energy token staking (#899) ─────────────────────────────────────────────
+
+const addrVal = (a: string) => StellarSdk.nativeToScVal(a, { type: "address" });
+const i128Val = (v: bigint) => StellarSdk.nativeToScVal(v, { type: "i128" });
+
+/** Stake `amount` (base units, 7 decimals) of the energy token. */
+export function stakeTokens(staker: string, amount: bigint): Promise<string> {
+  return contractInvoke(staker, "stake", [addrVal(staker), i128Val(amount)]);
+}
+
+/** Start the unstake cooldown for `amount`. */
+export function requestUnstake(staker: string, amount: bigint): Promise<string> {
+  return contractInvoke(staker, "request_unstake", [addrVal(staker), i128Val(amount)]);
+}
+
+/** Withdraw tokens whose cooldown has elapsed. */
+export function withdrawUnstaked(staker: string): Promise<string> {
+  return contractInvoke(staker, "withdraw_unstaked", [addrVal(staker)]);
+}
+
+/** Put cooling-down tokens back into the active stake. */
+export function cancelUnstake(staker: string): Promise<string> {
+  return contractInvoke(staker, "cancel_unstake", [addrVal(staker)]);
+}
+
+/** Claim all accrued staking rewards. */
+export function claimStakingRewards(staker: string): Promise<string> {
+  return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
+}

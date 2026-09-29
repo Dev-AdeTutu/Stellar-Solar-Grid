@@ -70,7 +70,7 @@ For local development setup and contributing guidelines, please refer to the [Co
 
 ### Prerequisites
 
-- [Rust](https://rustup.rs/) + `wasm32-unknown-unknown` target
+- [Rust](https://rustup.rs/) + `wasm32v1-none` target
 - [Stellar CLI](https://developers.stellar.org/docs/tools/developer-tools/cli/stellar-cli)
 - Node.js >= 18
 - [Freighter Wallet](https://freighter.app/) (browser extension)
@@ -288,3 +288,8 @@ Deployed on Stellar Testnet. Switch to Mainnet for production.
 ## License
 
 MIT
+
+## Handsoff notes
+
+<!-- handsoff-issue-908 -->
+- #908: Create Energy Community Marketplace

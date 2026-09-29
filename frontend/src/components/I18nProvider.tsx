@@ -5,24 +5,61 @@ import { NextIntlClientProvider } from "next-intl";
 import enMessages from "@/locales/en.json";
 import frMessages from "@/locales/fr.json";
 import swMessages from "@/locales/sw.json";
+import esMessages from "@/locales/es.json";
+import deMessages from "@/locales/de.json";
+import zhMessages from "@/locales/zh.json";
+import arMessages from "@/locales/ar.json";
 
-export type Locale = "en" | "fr" | "sw";
+export type Locale = "en" | "es" | "fr" | "de" | "zh" | "ar" | "sw";
 
 export const LOCALE_OPTIONS: ReadonlyArray<{ value: Locale; label: string }> = [
   { value: "en", label: "English" },
+  { value: "es", label: "Español" },
   { value: "fr", label: "Français" },
+  { value: "de", label: "Deutsch" },
+  { value: "zh", label: "中文" },
+  { value: "ar", label: "العربية" },
   { value: "sw", label: "Kiswahili" },
 ];
+
+/** Locales rendered right-to-left (#894). */
+export const RTL_LOCALES: ReadonlySet<Locale> = new Set<Locale>(["ar"]);
+
+/** BCP-47 tag + display currency per locale for Intl formatting (#894). */
+export const LOCALE_FORMATS: Record<Locale, { intl: string; currency: string }> = {
+  en: { intl: "en-US", currency: "USD" },
+  es: { intl: "es-ES", currency: "EUR" },
+  fr: { intl: "fr-FR", currency: "EUR" },
+  de: { intl: "de-DE", currency: "EUR" },
+  zh: { intl: "zh-CN", currency: "CNY" },
+  ar: { intl: "ar-EG", currency: "EGP" },
+  sw: { intl: "sw-KE", currency: "KES" },
+};
 
 const STORAGE_KEY = "sg_locale";
 const SUPPORTED_LOCALES: Locale[] = LOCALE_OPTIONS.map(({ value }) => value);
 const DEFAULT_LOCALE: Locale = "en";
 
-const messages: Record<Locale, typeof enMessages> = {
+type Messages = { [key: string]: string | Messages };
+
+/** Deep-merge a locale over English so any missing key falls back to English. */
+function withFallback(base: Messages, overrides: Messages): Messages {
+  const out: Messages = { ...base };
+  for (const [k, v] of Object.entries(overrides)) {
+    out[k] = typeof v === "object" && typeof base[k] === "object" ? withFallback(base[k] as Messages, v) : v;
+  }
+  return out;
+}
+
+const messages = {
   en: enMessages,
-  fr: frMessages,
-  sw: swMessages,
-};
+  es: withFallback(enMessages, esMessages),
+  fr: withFallback(enMessages, frMessages),
+  de: withFallback(enMessages, deMessages),
+  zh: withFallback(enMessages, zhMessages),
+  ar: withFallback(enMessages, arMessages),
+  sw: withFallback(enMessages, swMessages),
+} as Record<Locale, typeof enMessages>;
 
 // ── Context ───────────────────────────────────────────────────────────────
 
@@ -40,6 +77,22 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function useLocale() {
   return useContext(I18nContext);
+}
+
+/** Locale-aware number, currency and date formatters (#894). */
+export function useFormatters() {
+  const { locale } = useLocale();
+  const { intl, currency } = LOCALE_FORMATS[locale];
+  return {
+    formatNumber: (n: number, maxFractionDigits = 2) =>
+      new Intl.NumberFormat(intl, { maximumFractionDigits: maxFractionDigits }).format(n),
+    formatCurrency: (n: number, code: string = currency) =>
+      new Intl.NumberFormat(intl, { style: "currency", currency: code }).format(n),
+    formatDate: (d: string | number | Date) =>
+      new Intl.DateTimeFormat(intl, { dateStyle: "medium" }).format(new Date(d)),
+    formatDateTime: (d: string | number | Date) =>
+      new Intl.DateTimeFormat(intl, { dateStyle: "medium", timeStyle: "short" }).format(new Date(d)),
+  };
 }
 
 // ── Provider ──────────────────────────────────────────────────────────────
@@ -89,6 +142,13 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   // Avoid hydration mismatch: render with default locale on server / before
   // the localStorage read completes, then swap once mounted.
   const activeLocale = mounted ? locale : DEFAULT_LOCALE;
+
+  // Keep <html lang/dir> in sync so RTL layouts flip correctly.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.documentElement.lang = activeLocale;
+    document.documentElement.dir = RTL_LOCALES.has(activeLocale) ? "rtl" : "ltr";
+  }, [activeLocale]);
 
   return (
     <I18nContext.Provider value={{ locale: activeLocale, setLocale, toggleLocale }}>

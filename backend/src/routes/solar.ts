@@ -50,7 +50,7 @@ interface ForecastResponse {
  * Core solar production formula:
  *   kWh/day = capacity(kW) × peakSunHours × efficiency × systemLoss × degradationFactor
  */
-function calcDailyKwh(
+export function calcDailyKwh(
   capacityKw: number,
   peakSunHours: number,
   efficiency: number,
@@ -58,6 +58,41 @@ function calcDailyKwh(
 ): number {
   const degradationFactor = Math.pow(1 - DEGRADATION_RATE, panelAgeYears);
   return capacityKw * peakSunHours * efficiency * SYSTEM_LOSS * degradationFactor;
+}
+
+/** Build the full forecast response; shared by REST and GraphQL (#898). */
+export function computeSolarForecast(input: {
+  capacityKw: number;
+  peakSunHours: number;
+  efficiency: number;
+  panelAgeYears: number;
+  ratePerKwh: number;
+}): ForecastResponse {
+  const { capacityKw, peakSunHours, efficiency, panelAgeYears, ratePerKwh } = input;
+  const degradationFactor = Math.pow(1 - DEGRADATION_RATE, panelAgeYears);
+  const effectiveDegradation = Number(((1 - degradationFactor) * 100).toFixed(2));
+  const dailyKwh = calcDailyKwh(capacityKw, peakSunHours, efficiency, panelAgeYears);
+
+  const forecast: ForecastPeriod[] = Object.entries(PERIOD_DAYS).map(([period, days]) => {
+    const estimatedKwh = Number((dailyKwh * days).toFixed(3));
+    const estimatedRevenue = Number((estimatedKwh * ratePerKwh).toFixed(4));
+    return { period, days, estimatedKwh, estimatedRevenue };
+  });
+
+  return {
+    panelCapacityKw: capacityKw,
+    peakSunHours,
+    efficiency,
+    panelAgeYears,
+    effectiveDegradation,
+    dailyKwh: Number(dailyKwh.toFixed(3)),
+    forecast,
+    assumptions: {
+      systemLoss: SYSTEM_LOSS,
+      degradationRatePerYear: DEGRADATION_RATE,
+      ratePerKwh,
+    },
+  };
 }
 
 function parsePositiveFloat(val: unknown, name: string, max?: number): number {
@@ -78,6 +113,16 @@ function parseNonNegativeFloat(val: unknown, name: string): number {
   }
   return n;
 }
+
+export const IRRADIANCE_ZONES = [
+  { name: "Equatorial (e.g. Kenya, Nigeria, Ghana)", peakSunHours: 6.0 },
+  { name: "Tropical wet/dry (e.g. India, Brazil)", peakSunHours: 5.5 },
+  { name: "Sub-Saharan savanna", peakSunHours: 6.5 },
+  { name: "Mediterranean (e.g. Spain, South Africa)", peakSunHours: 5.2 },
+  { name: "Temperate (e.g. Central Europe, UK)", peakSunHours: 3.5 },
+  { name: "Desert (e.g. Sahara, Arizona, Middle East)", peakSunHours: 7.5 },
+  { name: "Northern / cloudy (e.g. Scandinavia, Canada)", peakSunHours: 2.5 },
+];
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 
@@ -114,33 +159,7 @@ solarRouter.get(
     const panelAgeYears = parseNonNegativeFloat(rawAge, "panelAgeYears");
     const ratePerKwh = parseNonNegativeFloat(rawRate, "ratePerKwh");
 
-    const degradationFactor = Math.pow(1 - DEGRADATION_RATE, panelAgeYears);
-    const effectiveDegradation = Number(((1 - degradationFactor) * 100).toFixed(2));
-
-    const dailyKwh = calcDailyKwh(capacityKw, peakSunHours, efficiency, panelAgeYears);
-
-    const forecast: ForecastPeriod[] = Object.entries(PERIOD_DAYS).map(
-      ([period, days]) => {
-        const estimatedKwh = Number((dailyKwh * days).toFixed(3));
-        const estimatedRevenue = Number((estimatedKwh * ratePerKwh).toFixed(4));
-        return { period, days, estimatedKwh, estimatedRevenue };
-      },
-    );
-
-    const response: ForecastResponse = {
-      panelCapacityKw: capacityKw,
-      peakSunHours,
-      efficiency,
-      panelAgeYears,
-      effectiveDegradation,
-      dailyKwh: Number(dailyKwh.toFixed(3)),
-      forecast,
-      assumptions: {
-        systemLoss: SYSTEM_LOSS,
-        degradationRatePerYear: DEGRADATION_RATE,
-        ratePerKwh,
-      },
-    };
+    const response = computeSolarForecast({ capacityKw, peakSunHours, efficiency, panelAgeYears, ratePerKwh });
 
     logger.info(
       { capacityKw, peakSunHours, efficiency, dailyKwh: response.dailyKwh },
@@ -158,15 +177,5 @@ solarRouter.get(
  * Useful for the frontend dropdown so users don't need to look this up.
  */
 solarRouter.get("/irradiance-zones", (_req: Request, res: Response) => {
-  res.json({
-    zones: [
-      { name: "Equatorial (e.g. Kenya, Nigeria, Ghana)", peakSunHours: 6.0 },
-      { name: "Tropical wet/dry (e.g. India, Brazil)", peakSunHours: 5.5 },
-      { name: "Sub-Saharan savanna", peakSunHours: 6.5 },
-      { name: "Mediterranean (e.g. Spain, South Africa)", peakSunHours: 5.2 },
-      { name: "Temperate (e.g. Central Europe, UK)", peakSunHours: 3.5 },
-      { name: "Desert (e.g. Sahara, Arizona, Middle East)", peakSunHours: 7.5 },
-      { name: "Northern / cloudy (e.g. Scandinavia, Canada)", peakSunHours: 2.5 },
-    ],
-  });
+  res.json({ zones: IRRADIANCE_ZONES });
 });
