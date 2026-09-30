@@ -31,6 +31,14 @@ components:
   schemas:
     # ── Common ────────────────────────────────────────────────────────────────
 
+    EnergyForecastModel:
+      type: [object, "null"]
+      properties:
+        algorithm: { type: string, example: seasonal-ridge }
+        trainingSamples: { type: integer }
+        accuracyPct: { type: [number, "null"], minimum: 0, maximum: 100 }
+        trainedAt: { type: string, format: date-time }
+
     Error:
       type: object
       required: [error]
@@ -39,6 +47,25 @@ components:
           type: string
         code:
           type: string
+
+    ExportCertificate:
+      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
+      properties:
+        id: { type: string }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
 
     TxHash:
       type: object
@@ -1549,429 +1576,77 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
-    # ── Forecast Schemas ──────────────────────────────────────────────────────
-    
-    ForecastRequest:
-      type: object
-      properties:
-        horizon:
-          type: integer
-          enum: [1, 24, 168]
-          description: Forecast horizon in hours (1h, 24h, or 168h)
-          example: 24
-        timestamp:
-          type: string
-          format: date-time
-          description: Base timestamp for predictions (optional, defaults to now)
-          example: "2024-01-01T00:00:00Z"
-        recent_data:
-          type: array
-          description: Recent data points for context (optional)
-          items:
-            type: object
-    
-    ForecastResponse:
-      type: object
-      required: [horizon, predictions, timestamps, metadata]
-      properties:
-        horizon:
-          type: integer
-          description: Forecast horizon in hours
-          example: 24
-        predictions:
-          type: array
-          items:
-            type: number
-          description: Predicted load values in kW
-          example: [1234.5, 1256.3, 1289.7]
-        timestamps:
-          type: array
-          items:
-            type: string
-            format: date-time
-          description: Timestamps for each prediction
-          example: ["2024-01-01T01:00:00Z", "2024-01-01T02:00:00Z"]
-        metadata:
-          type: object
-          properties:
-            prediction_time:
-              type: string
-              format: date-time
-            latency_seconds:
-              type: number
-            base_timestamp:
-              type: string
-              format: date-time
-    
-    AllHorizonsForecastResponse:
-      type: object
-      required: [forecasts, metadata]
-      properties:
-        forecasts:
-          type: object
-          properties:
-            "1":
-              $ref: '#/components/schemas/HorizonForecast'
-            "24":
-              $ref: '#/components/schemas/HorizonForecast'
-            "168":
-              $ref: '#/components/schemas/HorizonForecast'
-        metadata:
-          type: object
-          properties:
-            prediction_time:
-              type: string
-              format: date-time
-            latency_seconds:
-              type: number
-            base_timestamp:
-              type: string
-              format: date-time
-            horizons:
-              type: array
-              items:
-                type: integer
-    
-    HorizonForecast:
-      type: object
-      properties:
-        predictions:
-          type: array
-          items:
-            type: number
-        timestamps:
-          type: array
-          items:
-            type: string
-            format: date-time
-    
-    BatchForecastRequest:
-      type: object
-      required: [horizon, timestamps]
-      properties:
-        horizon:
-          type: integer
-          enum: [1, 24, 168]
-        timestamps:
-          type: array
-          items:
-            type: string
-            format: date-time
-        recent_data:
-          type: object
-    
-    BatchForecastResponse:
-      type: object
-      required: [horizon, results, metadata]
-      properties:
-        horizon:
-          type: integer
-        results:
-          type: array
-          items:
-            type: object
-            properties:
-              base_timestamp:
-                type: string
-                format: date-time
-              predictions:
-                type: array
-                items:
-                  type: number
-              timestamps:
-                type: array
-                items:
-                  type: string
-                  format: date-time
-        metadata:
-          type: object
-          properties:
-            prediction_time:
-              type: string
-              format: date-time
-            count:
-              type: integer
-    
-    ModelInfo:
-      type: object
-      properties:
-        horizons:
-          type: array
-          items:
-            type: integer
-          example: [1, 24, 168]
-        sequence_length:
-          type: integer
-          example: 168
-        n_features:
-          type: integer
-          example: 45
-        features:
-          type: array
-          items:
-            type: string
-        metadata:
-          type: object
-
-  # ── Load Forecasting ────────────────────────────────────────────────────────
-  
-  /api/forecast/health:
+  /api/weather/energy-forecast:
     get:
-      tags:
-        - Forecasting
-      summary: Check ML service health
-      description: Check the health status of the load forecasting ML service
-      operationId: getForecastHealth
+      summary: Forecast hourly energy production and consumption
+      description: |
+        Returns up to 48 hourly forecasts using a seasonal regression trained
+        on the preceding 90 days of meter usage and/or registered solar-panel
+        telemetry. OpenWeather hourly conditions are used to adjust estimates.
+        Accuracy is measured on held-out history and is null when unavailable.
+      operationId: getHourlyEnergyForecast
+      tags: [weather]
+      parameters:
+        - name: meterId
+          in: query
+          description: Meter whose historical milli-kWh usage should be forecast.
+          schema: { type: string, maxLength: 64 }
+        - name: deviceId
+          in: query
+          description: Registered solar_panel device whose production should be forecast.
+          schema: { type: string, maxLength: 100 }
+        - name: lat
+          in: query
+          description: Latitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -90, maximum: 90 }
+        - name: lon
+          in: query
+          description: Longitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -180, maximum: 180 }
+        - name: hours
+          in: query
+          description: Forecast horizon in whole hours (default 48).
+          schema: { type: integer, minimum: 1, maximum: 48, default: 48 }
       responses:
-        '200':
-          description: ML service health status
+        "200":
+          description: Hourly forecast and per-model holdout accuracy.
           content:
             application/json:
               schema:
                 type: object
+                required: [horizonHours, generatedAt, location, weatherStale, models, forecast]
                 properties:
-                  ml_service:
+                  meterId: { type: [string, "null"] }
+                  deviceId: { type: [string, "null"] }
+                  horizonHours: { type: integer, minimum: 1, maximum: 48 }
+                  generatedAt: { type: string, format: date-time }
+                  weatherStale: { type: boolean }
+                  models:
                     type: object
                     properties:
-                      status:
-                        type: string
-                      model_loaded:
-                        type: boolean
-                      timestamp:
-                        type: string
-                        format: date-time
-                  api_status:
-                    type: string
-        '503':
-          description: ML service unavailable
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/forecast/model/info:
-    get:
-      tags:
-        - Forecasting
-      summary: Get model information
-      description: Get information about the loaded forecasting model
-      operationId: getModelInfo
-      responses:
-        '200':
-          description: Model information
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ModelInfo'
-        '503':
-          description: Model not loaded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/forecast:
-    post:
-      tags:
-        - Forecasting
-      summary: Generate load forecast
-      description: Generate load forecast for a specific time horizon (1h, 24h, or 168h)
-      operationId: generateForecast
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ForecastRequest'
-            examples:
-              24h_forecast:
-                summary: 24-hour forecast
-                value:
-                  horizon: 24
-                  timestamp: "2024-01-01T00:00:00Z"
-              1h_forecast:
-                summary: 1-hour forecast
-                value:
-                  horizon: 1
-              168h_forecast:
-                summary: 7-day forecast
-                value:
-                  horizon: 168
-                  timestamp: "2024-01-01T00:00:00Z"
-      responses:
-        '200':
-          description: Forecast generated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ForecastResponse'
-        '400':
-          description: Invalid request parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Forecast generation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '503':
-          description: Model not loaded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/forecast/all:
-    post:
-      tags:
-        - Forecasting
-      summary: Generate forecasts for all horizons
-      description: Generate load forecasts for all supported time horizons (1h, 24h, 168h)
-      operationId: generateAllHorizonsForecast
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                timestamp:
-                  type: string
-                  format: date-time
-                  description: Base timestamp for predictions
-                recent_data:
-                  type: array
-                  description: Recent data for context
-            examples:
-              default:
-                summary: Generate all horizons
-                value:
-                  timestamp: "2024-01-01T00:00:00Z"
-      responses:
-        '200':
-          description: Forecasts generated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AllHorizonsForecastResponse'
-        '500':
-          description: Forecast generation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '503':
-          description: Model not loaded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/forecast/batch:
-    post:
-      tags:
-        - Forecasting
-      summary: Generate batch forecasts
-      description: Generate forecasts for multiple timestamps in a single request
-      operationId: generateBatchForecast
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BatchForecastRequest'
-            examples:
-              batch_24h:
-                summary: Batch 24-hour forecasts
-                value:
-                  horizon: 24
-                  timestamps:
-                    - "2024-01-01T00:00:00Z"
-                    - "2024-01-02T00:00:00Z"
-                    - "2024-01-03T00:00:00Z"
-      responses:
-        '200':
-          description: Batch forecasts generated successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/BatchForecastResponse'
-        '400':
-          description: Invalid request parameters
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '500':
-          description: Batch forecast generation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '503':
-          description: Model not loaded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/forecast/reload:
-    post:
-      tags:
-        - Forecasting
-      summary: Reload ML model
-      description: Reload the forecasting model from disk (admin only)
-      operationId: reloadModel
-      security:
-        - AdminKey: []
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                model_dir:
-                  type: string
-                  description: Path to model directory
-                  example: "./models/latest"
-      responses:
-        '200':
-          description: Model reloaded successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  message:
-                    type: string
-        '500':
-          description: Model reload failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/forecast/metrics:
-    get:
-      tags:
-        - Forecasting
-      summary: Get ML service metrics
-      description: Get Prometheus-compatible metrics from the ML service
-      operationId: getForecastMetrics
-      responses:
-        '200':
-          description: Prometheus metrics
-          content:
-            text/plain:
-              schema:
-                type: string
-
-tags:
-  - name: Forecasting
-    description: Load forecasting and energy demand predictions
+                      production: { $ref: "#/components/schemas/EnergyForecastModel" }
+                      consumption: { $ref: "#/components/schemas/EnergyForecastModel" }
+                  forecast:
+                    type: array
+                    items:
+                      type: object
+                      required: [timestamp, productionKwh, consumptionKwh, weather]
+                      properties:
+                        timestamp: { type: string, format: date-time }
+                        productionKwh: { type: [number, "null"] }
+                        consumptionKwh: { type: [number, "null"] }
+                        weather:
+                          type: object
+                          properties:
+                            temperatureC: { type: number }
+                            cloudCoverPct: { type: number }
+                            precipitationProbability: { type: number }
+                            condition: { type: string }
+                            productionFactor: { type: number }
+                            consumptionTemperatureFactor: { type: number }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: Weather provider did not return a usable 48-hour forecast.

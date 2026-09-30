@@ -22,6 +22,8 @@ interface WalletState {
   disconnect: () => void;
   clearConnectError: () => void;
   signTransaction: (xdr: string) => Promise<string>;
+  /** SEP-43 signAuthEntry: returns the signature over the preimage's hash. */
+  signAuthEntry: (preimageXdr: string) => Promise<string>;
   recordTopUp: (meterId: string, amount: bigint) => void;
   setPendingTransaction: (isPending: boolean) => void;
 }
@@ -180,6 +182,19 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
     });
     return signedTxXdr;
+  },
+
+  signAuthEntry: async (preimageXdr: string) => {
+    const { kit, address } = get();
+    if (!kit || !address) throw new Error("Wallet not connected");
+    const { signedAuthEntry } = await kit.signAuthEntry(preimageXdr, {
+      address,
+      networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
+    });
+    if (get().address !== address) {
+      throw new Error("Wallet was disconnected while signing");
+    }
+    return signedAuthEntry;
   },
 
   recordTopUp: (meterId: string, amount: bigint) => {

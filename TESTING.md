@@ -1,5 +1,10 @@
 # Testing
 
+## Smart contracts (#874)
+
+The contract unit, integration, property-based and resource tests, coverage
+gate and conventions are documented in [contracts/TESTING.md](contracts/TESTING.md).
+
 ## Load testing (#840)
 
 Load tests use [k6](https://k6.io) and live in `backend/loadtest/`.

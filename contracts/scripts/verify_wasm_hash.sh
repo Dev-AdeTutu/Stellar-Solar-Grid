@@ -6,7 +6,7 @@
 #
 # Optional environment variables:
 #   WASM_FILE    Path to the compiled .wasm artifact.
-#                Defaults to: contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm
+#                Defaults to: contracts/target/wasm32v1-none/release/solar_grid.wasm
 #   CONTRACT_ID  Deployed Stellar contract ID.  When set, the script fetches the
 #                on-chain WASM hash via `stellar contract info` and compares it
 #                against the local sha256sum.  Exit 1 on mismatch.
@@ -21,13 +21,13 @@ set -euo pipefail
 
 # ── defaults ──────────────────────────────────────────────────────────────────
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WASM_FILE="${WASM_FILE:-${REPO_ROOT}/contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm}"
+WASM_FILE="${WASM_FILE:-${REPO_ROOT}/contracts/target/wasm32v1-none/release/solar_grid.wasm}"
 NETWORK="${NETWORK:-testnet}"
 
 # ── sanity checks ─────────────────────────────────────────────────────────────
 if [[ ! -f "${WASM_FILE}" ]]; then
   echo "ERROR: WASM file not found: ${WASM_FILE}" >&2
-  echo "       Build the contract first: cargo build --target wasm32-unknown-unknown --release" >&2
+  echo "       Build the contract first: cargo build --target wasm32v1-none --release" >&2
   exit 1
 fi
 

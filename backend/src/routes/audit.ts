@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { complianceReport, queryAudit, toCsv, toPdf, verifyAuditChain, type AuditFilter } from "../lib/audit.js";
+import { complianceReport, queryAudit, toCsv, toPdf, verifyAuditChain, type AuditFilter } from "../lib/auditTrail.js";
 
 export const auditRouter = Router();
 
