@@ -2,10 +2,13 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "My Meter",
+    "multisig": "Org Wallets",
     "pay": "Pay",
+    "analytics": "Analytics",
     "provider": "Provider",
     "history": "History",
     "bills": "Bills",
+    "communities": "Energy Communities",
     "competitions": "Competitions",
     "smartHome": "Smart Home",
     "toggleTheme": "Toggle Theme",

@@ -7,7 +7,7 @@ set -Eeuo pipefail
 NETWORK="testnet"
 CONTRACT_ID=""
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WASM="${ROOT_DIR}/contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm"
+WASM="${ROOT_DIR}/contracts/target/wasm32v1-none/release/solar_grid.wasm"
 STATE_DIR="${ROOT_DIR}/.deployments"
 
 usage() { sed -n '1,8p' "$0"; }
@@ -31,7 +31,7 @@ fi
 
 mkdir -p "$STATE_DIR"
 cd "$ROOT_DIR/contracts"
-cargo build --release --target wasm32-unknown-unknown
+cargo build --release --target wasm32v1-none
 sha256sum "$WASM" | tee "$STATE_DIR/${NETWORK}-wasm.sha256"
 
 if [[ -z "$CONTRACT_ID" ]]; then

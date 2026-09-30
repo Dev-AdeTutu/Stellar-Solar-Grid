@@ -56,6 +56,19 @@ export type DailyForecast = {
   daylightHours: number | null;
 };
 
+export type HourlyForecast = {
+  time: string;
+  temperatureC: number;
+  cloudCoverPct: number;
+  humidityPct: number;
+  windSpeedMs: number;
+  precipitationProbability: number;
+  rainMm: number;
+  uvIndex: number | null;
+  conditionId: number;
+  condition: string;
+};
+
 export type ProviderAlert = {
   sender: string;
   event: string;
@@ -67,6 +80,7 @@ export type ProviderAlert = {
 export type WeatherReport = {
   location: { lat: number; lon: number; timezone: string | null };
   current: WeatherConditions;
+  hourly: HourlyForecast[];
   daily: DailyForecast[];
   providerAlerts: ProviderAlert[];
   fetchedAt: string;
@@ -155,11 +169,27 @@ function mapDaily(d: any): DailyForecast {
   };
 }
 
+function mapHourly(h: any): HourlyForecast {
+  const w = h.weather?.[0] ?? {};
+  return {
+    time: iso(h.dt)!,
+    temperatureC: h.temp,
+    cloudCoverPct: h.clouds ?? 0,
+    humidityPct: h.humidity ?? 0,
+    windSpeedMs: h.wind_speed ?? 0,
+    precipitationProbability: h.pop ?? 0,
+    rainMm: h.rain?.["1h"] ?? 0,
+    uvIndex: h.uvi ?? null,
+    conditionId: w.id ?? 800,
+    condition: w.main ?? "Clear",
+  };
+}
+
 async function fetchFromProvider(lat: number, lon: number): Promise<CacheEntry> {
   const url = new URL(BASE_URL);
   url.searchParams.set("lat", String(lat));
   url.searchParams.set("lon", String(lon));
-  url.searchParams.set("exclude", "minutely,hourly");
+  url.searchParams.set("exclude", "minutely");
   url.searchParams.set("units", "metric");
   url.searchParams.set("appid", API_KEY!);
 
@@ -172,6 +202,7 @@ async function fetchFromProvider(lat: number, lon: number): Promise<CacheEntry> 
     report: {
       location: { lat, lon, timezone: body.timezone ?? null },
       current: mapCurrent(body.current ?? {}),
+      hourly: (body.hourly ?? []).slice(0, 48).map(mapHourly),
       daily: (body.daily ?? []).slice(0, 8).map(mapDaily),
       providerAlerts: (body.alerts ?? []).map((a: any) => ({
         sender: a.sender_name ?? "",

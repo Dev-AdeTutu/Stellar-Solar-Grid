@@ -2,6 +2,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { StellarService } from '../lib/stellar.js';
 import { getMqttClient } from './mqttClient.js';
 import { logger } from '../lib/logger.js';
+import { listDevices, listPerformance } from '../lib/deviceRegistry.js';
 
 const THRESHOLD = 0.8;
 const warnedToday = new Set<string>();
@@ -93,17 +94,69 @@ export function optimizeStorageCycle(state: StorageState, predicted: number[]): 
   return 'HOLD';
 }
 
+export function chooseRegisteredStorageAction(
+  stateOfCharge: number,
+  currentPrice: number,
+  chargePriceBelow: number,
+  dischargePriceAbove: number,
+): 'CHARGE' | 'DISCHARGE' | 'HOLD' {
+  if (stateOfCharge < STORAGE_MAX_SOC && currentPrice <= chargePriceBelow) return 'CHARGE';
+  if (stateOfCharge > STORAGE_MIN_SOC && currentPrice >= dischargePriceAbove) return 'DISCHARGE';
+  return 'HOLD';
+}
+
+async function optimizeRegisteredBatteries(stellar: StellarService, mqtt: ReturnType<typeof getMqttClient>) {
+  const batteries = listDevices({ type: 'battery', status: 'active', limit: 500 }).filter(
+    (device) => device.specs.automationEnabled === true &&
+      typeof device.specs.chargePriceBelow === 'number' &&
+      typeof device.specs.dischargePriceAbove === 'number',
+  );
+  if (batteries.length === 0) return;
+
+  const rawPrice = await stellar.query('get_current_rate', []);
+  const currentPrice = Number(StellarSdk.scValToNative(rawPrice));
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    logger.warn('Storage dispatch skipped because current price is invalid', { currentPrice });
+    return;
+  }
+
+  for (const battery of batteries) {
+    const latest = listPerformance(battery.id, 90).at(-1);
+    if (latest?.stateOfCharge === null || latest?.stateOfCharge === undefined) {
+      logger.info({ deviceId: battery.id }, 'Storage dispatch skipped until SoC telemetry is received');
+      continue;
+    }
+    const action = chooseRegisteredStorageAction(
+      latest.stateOfCharge,
+      currentPrice,
+      Number(battery.specs.chargePriceBelow),
+      Number(battery.specs.dischargePriceAbove),
+    );
+    mqtt.publish(
+      `solargrid/devices/${battery.id}/command`,
+      JSON.stringify({ type: 'STORAGE_DISPATCH', action, stateOfCharge: latest.stateOfCharge, price: currentPrice }),
+      { qos: 1 },
+    );
+    storageMetrics.push({
+      at: new Date().toISOString(),
+      batteryId: battery.id,
+      action,
+      soc: latest.stateOfCharge,
+      savings: 0,
+    });
+    if (storageMetrics.length > 288) storageMetrics.shift();
+  }
+}
+
 /**
  * Optimize battery storage charge/discharge cycles to maximize cost savings
  * while preserving battery health (SoC limits, cycle counting, degradation).
  */
 export async function optimizeEnergyStorage(stellar: StellarService) {
+  const mqtt = getMqttClient();
   try {
     const raw = await stellar.query('get_all_batteries', []);
     const batteries = (StellarSdk.scValToNative(raw) as any[]) ?? [];
-    if (batteries.length === 0) return;
-
-    const mqtt = getMqttClient();
     for (const battery of batteries) {
       const batteryId = battery.id;
       const state = getStorageState(batteryId, battery);
@@ -162,6 +215,11 @@ export async function optimizeEnergyStorage(stellar: StellarService) {
     }
   } catch (err) {
     logger.error('optimizeEnergyStorage error', { err });
+  }
+  try {
+    await optimizeRegisteredBatteries(stellar, mqtt);
+  } catch (err) {
+    logger.error('Registered battery price dispatch failed', { err });
   }
 }
 

@@ -9,13 +9,12 @@ use soroban_sdk::{
 fn setup() -> (Env, SolarGridContractClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let id = env.register_contract(None, SolarGridContract);
-    let client = SolarGridContractClient::new(&env, &id);
     let admin = Address::generate(&env);
     let tok = env
         .register_stellar_asset_contract_v2(Address::generate(&env))
         .address();
-    client.initialize(&admin, &tok);
+    let id = env.register(SolarGridContract, (admin.clone(), tok.clone()));
+    let client = SolarGridContractClient::new(&env, &id);
     (env, client, admin)
 }
 
@@ -45,6 +44,7 @@ fn payment_in_supported_asset_is_converted() {
     let payer = Address::generate(&env);
     token::StellarAssetClient::new(&env, &eurc).mint(&payer, &1_000);
     let meter = String::from_str(&env, "M1");
+    client.allowlist_add(&payer);
     client.register_meter(&meter, &payer);
 
     client.add_supported_asset(&eurc, &(RATE_SCALE * 2));
@@ -59,6 +59,7 @@ fn payment_in_unsupported_asset_rejected() {
     let (env, client, _) = setup();
     let payer = Address::generate(&env);
     let meter = String::from_str(&env, "M1");
+    client.allowlist_add(&payer);
     client.register_meter(&meter, &payer);
     assert_eq!(
         client.try_make_asset_payment(&meter, &payer, &Address::generate(&env), &100),
@@ -73,6 +74,7 @@ fn warranty_validation_and_expiry_query() {
     let owner = Address::generate(&env);
     let m1 = String::from_str(&env, "M1");
     let m2 = String::from_str(&env, "M2");
+    client.allowlist_add(&owner);
     client.register_meter(&m1, &owner);
     client.register_meter(&m2, &owner);
 
@@ -94,7 +96,7 @@ fn warranty_validation_and_expiry_query() {
     client.update_meter_metadata(&m2, &later);
 
     assert_eq!(client.get_warranty_expiry(&m1), Some(5000));
-    let expiring = client.get_meters_with_expiring_warranty(&10_000);
+    let expiring = client.get_meters_expiring_warranty(&10_000);
     assert_eq!(expiring.len(), 1);
     assert_eq!(expiring.get(0).unwrap(), m1);
 }

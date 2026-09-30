@@ -52,7 +52,7 @@ impl SolarGridContract {
 
     /// Meter IDs whose warranty expires within `within_secs` from now
     /// (already-expired warranties are included).
-    pub fn get_meters_with_expiring_warranty(env: Env, within_secs: u64) -> Vec<String> {
+    pub fn get_meters_expiring_warranty(env: Env, within_secs: u64) -> Vec<String> {
         let deadline = env.ledger().timestamp().saturating_add(within_secs);
         let ids: Vec<String> = env
             .storage()
