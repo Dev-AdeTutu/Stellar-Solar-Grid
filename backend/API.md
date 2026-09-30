@@ -2,6 +2,57 @@
 
 This document describes the backend HTTP API surface.
 
+## Energy Forecasting Service (#881)
+
+`GET /api/weather/energy-forecast`
+
+Returns hourly production and/or consumption estimates for up to 48 hours. At
+least one of `meterId` or `deviceId` is required. A `deviceId` must identify a
+registered `solar_panel`; its `ratedPowerW`, `latitude`, and `longitude` specs
+are used when available. `lat` and `lon` may be supplied explicitly and are
+required for meter-only requests. `hours` defaults to 48 and may be an integer
+from 1 through 48.
+
+Example:
+
+```text
+GET /api/weather/energy-forecast?meterId=METER_01&deviceId=PANEL_01&hours=48
+```
+
+Consumption training reads the previous 90 days of meter usage and converts
+the platform's milli-kWh event units to kWh. Production training uses the
+previous 90 days of registered solar-panel performance telemetry. Both models
+use a regularized seasonal regression over hour-of-day and weekday features;
+missing hours are treated as zero. OpenWeather hourly cloud cover and
+temperature adjust production estimates; temperature adjusts consumption
+estimates. Precipitation probability is included as forecast context. Models retrain at
+startup and every six hours by default; configure the interval with
+`ENERGY_FORECAST_RETRAIN_INTERVAL_MS`.
+
+The response includes per-stream `trainingSamples`, `accuracyPct`, and
+`trainedAt`. Accuracy is a held-out weighted absolute-error score and is `null`
+when there is no usable validation history; the service does not claim a fixed
+accuracy for meters or sites without representative historical data.
+
+```json
+{
+  "horizonHours": 48,
+  "weatherStale": false,
+  "models": {
+    "production": { "algorithm": "seasonal-ridge", "trainingSamples": 1200, "accuracyPct": 91.2 },
+    "consumption": { "algorithm": "seasonal-ridge", "trainingSamples": 2160, "accuracyPct": 88.5 }
+  },
+  "forecast": [
+    {
+      "timestamp": "2026-09-29T12:00:00.000Z",
+      "productionKwh": 2.15,
+      "consumptionKwh": 0.42,
+      "weather": { "temperatureC": 22, "cloudCoverPct": 18, "productionFactor": 0.91 }
+    }
+  ]
+}
+```
+
 ## Energy Grid Simulation Tool (#909)
 
 The simulation tool lets operators test grid scenarios, inspect grid state,
@@ -240,5 +291,22 @@ Endpoints live under `/api/competitions`. See `docs/COMPETITIONS.md`.
 
 ## Smart Home (#904)
 
+- Failed webhook calls are logged but do not crash the IoT bridge
+- Webhook timeouts can be configured via your HTTP client settings
+- Consider idempotency keys on your webhook endpoint to handle retries
+
+## Load Balancing (#889)
+`POST /api/load-balancing/balance` — body `{ capacityKw, pricePerKwh, peakPriceThreshold?, loads: [{ id, demandKw, priority: "critical"|"high"|"normal"|"deferrable", override?: "on"|"off" }] }`.
+Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`. Critical loads are always served; `override` lets users force a load on/off; deferrable loads are shifted when the price exceeds `peakPriceThreshold`.
+
+## Two-Factor Authentication (#890)
+- `POST /api/2fa/enroll` `{ account, phone? }` → TOTP secret, `otpauthUrl` for authenticator apps, 10 single-use recovery codes.
+- `POST /api/2fa/verify` `{ account, code, method?: "totp"|"sms"|"recovery" }` — 5 failures lock the account for 15 min.
+- `POST /api/2fa/sms` `{ account }` — sends SMS fallback code (5-min expiry).
+- `POST /api/2fa/recovery-codes` `{ account, code }` — regenerates recovery codes.
+- Enforcement: `requireTwoFactor` middleware requires 2FA for accounts with value ≥ `TWO_FACTOR_ENFORCE_THRESHOLD`.
+
+## Trading Bot API (#891)
+See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.

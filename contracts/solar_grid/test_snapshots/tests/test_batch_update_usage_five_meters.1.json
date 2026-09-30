@@ -1127,6 +1127,754 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "set_oracle"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "1"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "2"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "register_meter_with_metadata"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "2"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "3"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "3"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "4"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "register_meter_with_metadata"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "4"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "5"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "5"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "6"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "register_meter_with_metadata"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "6"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "7"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "7"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "8"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "register_meter_with_metadata"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "8"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "9"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "allowlist_add"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "9"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "10"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "register_meter_with_metadata"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "10"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Meter"
                   },
                   {
@@ -1140,6 +1888,14 @@
                   {
                     "key": {
                       "symbol": "active"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
                     },
                     "val": {
                       "bool": true
@@ -1191,6 +1947,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -1199,10 +1963,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata"
+                      "symbol": "max_capacity_watts"
                     },
                     "val": {
-                      "map": []
+                      "u32": 0
                     }
                   },
                   {
@@ -1238,7 +2002,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 4
+                      "u32": 6
                     }
                   }
                 ]
@@ -1279,6 +2043,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -1323,6 +2095,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -1331,10 +2111,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata"
+                      "symbol": "max_capacity_watts"
                     },
                     "val": {
-                      "map": []
+                      "u32": 0
                     }
                   },
                   {
@@ -1370,7 +2150,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 4
+                      "u32": 6
                     }
                   }
                 ]
@@ -1411,6 +2191,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "daily_limit"
                     },
                     "val": {
@@ -1455,6 +2243,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -1463,10 +2259,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata"
+                      "symbol": "max_capacity_watts"
                     },
                     "val": {
-                      "map": []
+                      "u32": 0
                     }
                   },
                   {
@@ -1502,7 +2298,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 4
+                      "u32": 6
                     }
                   }
                 ]
@@ -1543,131 +2339,7 @@
                   },
                   {
                     "key": {
-                      "symbol": "daily_limit"
-                    },
-                    "val": {
-                      "i128": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "day_spent"
-                    },
-                    "val": {
-                      "i128": "1000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "day_start"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "emergency_contact"
-                    },
-                    "val": "void"
-                  },
-                  {
-                    "key": {
-                      "symbol": "expires_at"
-                    },
-                    "val": {
-                      "u64": "18446744073709551615"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "grace_expires_at"
-                    },
-                    "val": "void"
-                  },
-                  {
-                    "key": {
-                      "symbol": "last_payment"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "metadata"
-                    },
-                    "val": {
-                      "map": []
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "owner"
-                    },
-                    "val": {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "plan"
-                    },
-                    "val": {
-                      "vec": [
-                        {
-                          "symbol": "UsageBased"
-                        }
-                      ]
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "units_used"
-                    },
-                    "val": {
-                      "u64": "5"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "version"
-                    },
-                    "val": {
-                      "u32": 4
-                    }
-                  }
-                ]
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "Meter"
-                  },
-                  {
-                    "string": "B5_M5"
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "map": [
-                  {
-                    "key": {
-                      "symbol": "active"
+                      "symbol": "auto_deactivate"
                     },
                     "val": {
                       "bool": true
@@ -1719,6 +2391,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "last_payment"
                     },
                     "val": {
@@ -1727,10 +2407,158 @@
                   },
                   {
                     "key": {
-                      "symbol": "metadata"
+                      "symbol": "max_capacity_watts"
                     },
                     "val": {
-                      "map": []
+                      "u32": 0
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "owner"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "plan"
+                    },
+                    "val": {
+                      "vec": [
+                        {
+                          "symbol": "UsageBased"
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "units_used"
+                    },
+                    "val": {
+                      "u64": "5"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "version"
+                    },
+                    "val": {
+                      "u32": 6
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "Meter"
+                  },
+                  {
+                    "string": "B5_M5"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "active"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "auto_deactivate"
+                    },
+                    "val": {
+                      "bool": true
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "daily_limit"
+                    },
+                    "val": {
+                      "i128": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "day_spent"
+                    },
+                    "val": {
+                      "i128": "1000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "day_start"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "emergency_contact"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "expires_at"
+                    },
+                    "val": {
+                      "u64": "18446744073709551615"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "grace_expires_at"
+                    },
+                    "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "installed_at"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "last_payment"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "max_capacity_watts"
+                    },
+                    "val": {
+                      "u32": 0
                     }
                   },
                   {
@@ -1766,7 +2594,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 4
+                      "u32": 6
                     }
                   }
                 ]
@@ -1905,6 +2733,141 @@
               "durability": "persistent",
               "val": {
                 "i128": "9000"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterSchemaVer"
+                  },
+                  {
+                    "string": "B5_M1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 7
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterSchemaVer"
+                  },
+                  {
+                    "string": "B5_M2"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 7
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterSchemaVer"
+                  },
+                  {
+                    "string": "B5_M3"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 7
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterSchemaVer"
+                  },
+                  {
+                    "string": "B5_M4"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 7
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterSchemaVer"
+                  },
+                  {
+                    "string": "B5_M5"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u32": 7
               }
             }
           },
@@ -2293,6 +3256,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "AUD_CNT"
+                      },
+                      "val": {
+                        "u64": "11"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "CTR_VER"
                       },
                       "val": {
@@ -2353,6 +3324,14 @@
                       },
                       "val": {
                         "address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "TOT_REV"
+                      },
+                      "val": {
+                        "i128": "50000"
                       }
                     }
                   ]

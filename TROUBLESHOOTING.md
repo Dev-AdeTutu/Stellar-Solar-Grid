@@ -187,7 +187,7 @@ error: cannot find crate for `std`
 
 **Fix**
 ```bash
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32v1-none
 make build
 ```
 

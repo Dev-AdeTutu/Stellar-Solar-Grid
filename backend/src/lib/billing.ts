@@ -25,6 +25,7 @@ import { db as usageDb } from "./usageEvents.js";
 import { createTextPdf } from "./pdf.js";
 import { sendEmail } from "./mailer.js";
 import { logger } from "./logger.js";
+import { getMemberDiscountPercent } from "./communities.js";
 
 const DB_PATH = process.env.BILLING_DB_PATH ?? path.resolve(process.cwd(), "data", "billing.sqlite");
 const PDF_DIR = process.env.BILLING_PDF_DIR ?? path.resolve(process.cwd(), "data", "bills");
@@ -52,6 +53,8 @@ export type Bill = {
   period_end: string;
   units: number;
   energy_charge: number;
+  discount_percent: number;
+  discount_amount: number;
   service_charge: number;
   tax: number;
   total: number;
@@ -107,6 +110,8 @@ function db(): Database.Database {
         period_end TEXT NOT NULL,
         units INTEGER NOT NULL,
         energy_charge INTEGER NOT NULL,
+        discount_percent REAL NOT NULL DEFAULT 0,
+        discount_amount INTEGER NOT NULL DEFAULT 0,
         service_charge INTEGER NOT NULL,
         tax INTEGER NOT NULL,
         total INTEGER NOT NULL,
@@ -123,6 +128,15 @@ function db(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_bills_meter_period ON bills (meter_id, period DESC);
       CREATE INDEX IF NOT EXISTS idx_bills_period ON bills (period);
     `);
+    const billColumns = new Set(
+      (_db.pragma("table_info(bills)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!billColumns.has("discount_percent")) {
+      _db.exec("ALTER TABLE bills ADD COLUMN discount_percent REAL NOT NULL DEFAULT 0");
+    }
+    if (!billColumns.has("discount_amount")) {
+      _db.exec("ALTER TABLE bills ADD COLUMN discount_amount INTEGER NOT NULL DEFAULT 0");
+    }
   }
   return _db;
 }
@@ -214,18 +228,35 @@ export function getUsageTotals(meterId: string, start: Date, end: Date): UsageTo
 export type BillCharges = {
   units: number;
   energyCharge: number;
+  discountPercent: number;
+  discountAmount: number;
   serviceCharge: number;
   tax: number;
   total: number;
 };
 
 /** Pure charge calculation — integer stroops throughout. */
-export function calculateCharges(usage: UsageTotals, config: BillingConfig = billingConfig()): BillCharges {
-  const energyCharge =
+export function calculateCharges(
+  usage: UsageTotals,
+  config: BillingConfig = billingConfig(),
+  requestedDiscountPercent = 0,
+): BillCharges {
+  const rawEnergyCharge =
     config.unitPriceStroops !== null ? Math.round(usage.units * config.unitPriceStroops) : Math.round(usage.cost);
+  const discountPercent = Math.min(100, Math.max(0, requestedDiscountPercent));
+  const discountAmount = Math.round(rawEnergyCharge * discountPercent / 100);
+  const energyCharge = rawEnergyCharge - discountAmount;
   const serviceCharge = Math.round(config.serviceChargeStroops);
   const tax = Math.round((energyCharge + serviceCharge) * config.taxRate);
-  return { units: usage.units, energyCharge, serviceCharge, tax, total: energyCharge + serviceCharge + tax };
+  return {
+    units: usage.units,
+    energyCharge,
+    discountPercent,
+    discountAmount,
+    serviceCharge,
+    tax,
+    total: energyCharge + serviceCharge + tax,
+  };
 }
 
 /** Meters to bill for a period: every billing account plus any meter with usage. */
@@ -294,6 +325,7 @@ export function createBillPdf(bill: Bill, account?: BillingAccount): Buffer {
       { text: "Charges", bold: true },
       `Energy consumed: ${bill.units} units`,
       `Energy charge: ${xlm(bill.energy_charge)}`,
+      ...(bill.discount_amount > 0 ? [`Community discount (${bill.discount_percent}%): -${xlm(bill.discount_amount)}`] : []),
       `Service charge: ${xlm(bill.service_charge)}`,
       `Tax: ${xlm(bill.tax)}`,
       { text: `Total due: ${xlm(bill.total)}`, bold: true },
@@ -336,6 +368,7 @@ export async function emailBill(bill: Bill): Promise<boolean> {
     `Your SolarGrid bill for ${bill.period} (meter ${bill.meter_id}) is ready.`,
     "",
     `Energy consumed: ${bill.units} units`,
+    ...(bill.discount_amount > 0 ? [`Community discount: -${xlm(bill.discount_amount)}`] : []),
     `Total due: ${xlm(bill.total)} by ${bill.due_at.slice(0, 10)}`,
     "",
     `Pay online: ${bill.payment_link}`,
@@ -345,7 +378,7 @@ export async function emailBill(bill: Bill): Promise<boolean> {
   ].join("\n");
   const html = `<p>Hello${account.name ? ` ${escapeHtml(account.name)}` : ""},</p>
 <p>Your SolarGrid bill for <strong>${bill.period}</strong> (meter ${escapeHtml(bill.meter_id)}) is ready.</p>
-<ul><li>Energy consumed: ${bill.units} units</li><li>Total due: <strong>${xlm(bill.total)}</strong> by ${bill.due_at.slice(0, 10)}</li></ul>
+<ul><li>Energy consumed: ${bill.units} units</li>${bill.discount_amount > 0 ? `<li>Community discount: -${xlm(bill.discount_amount)}</li>` : ""}<li>Total due: <strong>${xlm(bill.total)}</strong> by ${bill.due_at.slice(0, 10)}</li></ul>
 <p><a href="${escapeHtml(bill.payment_link)}">Pay your bill</a>${sep7 ? ` or <a href="${escapeHtml(sep7)}">pay from a Stellar wallet</a>` : ""}</p>
 <p>Your bill is attached as a PDF.</p>`;
 
@@ -401,7 +434,9 @@ export function generateBill(meterId: string, period: string, now = new Date()):
   if (existing) return { bill: existing, created: false };
 
   const { start, end } = periodBounds(period);
-  const charges = calculateCharges(getUsageTotals(meterId, start, end));
+  const account = getBillingAccount(meterId);
+  const discountPercent = account?.stellar_address ? getMemberDiscountPercent(account.stellar_address) : 0;
+  const charges = calculateCharges(getUsageTotals(meterId, start, end), billingConfig(), discountPercent);
   const id = crypto.randomUUID();
   const billNumber = `BILL-${period.replace("-", "")}-${meterId.replace(/[^A-Za-z0-9]/g, "").slice(0, 12).toUpperCase()}-${id.slice(0, 4).toUpperCase()}`;
   const dueAt = new Date(now.getTime() + billingConfig().dueDays * 86_400_000);
@@ -410,8 +445,9 @@ export function generateBill(meterId: string, period: string, now = new Date()):
   db()
     .prepare(
       `INSERT INTO bills (id, bill_number, meter_id, period, period_start, period_end, units,
-         energy_charge, service_charge, tax, total, status, issued_at, due_at, payment_link)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?)`,
+         energy_charge, discount_percent, discount_amount, service_charge, tax, total,
+         status, issued_at, due_at, payment_link)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', ?, ?, ?)`,
     )
     .run(
       id,
@@ -422,6 +458,8 @@ export function generateBill(meterId: string, period: string, now = new Date()):
       end.toISOString(),
       charges.units,
       charges.energyCharge,
+      charges.discountPercent,
+      charges.discountAmount,
       charges.serviceCharge,
       charges.tax,
       charges.total,

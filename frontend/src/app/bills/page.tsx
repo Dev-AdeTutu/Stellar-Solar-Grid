@@ -20,6 +20,8 @@ type Bill = {
   period: string;
   units: number;
   energy_charge: number;
+  discount_percent: number;
+  discount_amount: number;
   service_charge: number;
   tax: number;
   total: number;
@@ -145,6 +147,9 @@ export default function BillsPage() {
                         <td>{b.units}</td>
                         <td title={`Energy ${xlm(b.energy_charge)} · Service ${xlm(b.service_charge)} · Tax ${xlm(b.tax)}`}>
                           {xlm(b.total)}
+                          {b.discount_amount > 0 && (
+                            <div className="text-xs text-green-500">{b.discount_percent}% community discount</div>
+                          )}
                         </td>
                         <td>{new Date(b.due_at).toLocaleDateString()}</td>
                         <td>
