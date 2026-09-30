@@ -31,6 +31,14 @@ components:
   schemas:
     # ── Common ────────────────────────────────────────────────────────────────
 
+    EnergyForecastModel:
+      type: [object, "null"]
+      properties:
+        algorithm: { type: string, example: seasonal-ridge }
+        trainingSamples: { type: integer }
+        accuracyPct: { type: [number, "null"], minimum: 0, maximum: 100 }
+        trainedAt: { type: string, format: date-time }
+
     Error:
       type: object
       required: [error]
@@ -39,6 +47,25 @@ components:
           type: string
         code:
           type: string
+
+    ExportCertificate:
+      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
+      properties:
+        id: { type: string }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
 
     TxHash:
       type: object
@@ -1549,393 +1576,77 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
-  # ── Demand Response ─────────────────────────────────────────────────────────
-  
-  /api/demand-response/stats:
+  /api/weather/energy-forecast:
     get:
-      tags:
-        - Demand Response
-      summary: Get program statistics
-      description: Get demand response program statistics including ROI metrics
-      operationId: getDemandResponseStats
-      responses:
-        '200':
-          description: Program statistics
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  stats:
-                    type: object
-                    properties:
-                      totalEvents:
-                        type: integer
-                      activeParticipants:
-                        type: integer
-                      totalReductionKwh:
-                        type: number
-                      totalRewardsDistributed:
-                        type: number
-                      averageParticipationRate:
-                        type: string
-                      roi:
-                        type: string
-                      programHealth:
-                        type: string
-                        enum: [positive, negative]
-  
-  /api/demand-response/events:
-    get:
-      tags:
-        - Demand Response
-      summary: Get all peak events
-      description: Get list of peak demand events
-      operationId: getPeakEvents
-      parameters:
-        - name: status
-          in: query
-          schema:
-            type: string
-            enum: [scheduled, active, completed, cancelled]
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 50
-      responses:
-        '200':
-          description: List of peak events
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  events:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                        startTime:
-                          type: string
-                          format: date-time
-                        endTime:
-                          type: string
-                          format: date-time
-                        predictedDemand:
-                          type: number
-                        threshold:
-                          type: number
-                        status:
-                          type: string
-                        notificationsSent:
-                          type: boolean
-                        createdAt:
-                          type: string
-                          format: date-time
-                  count:
-                    type: integer
-  
-  /api/demand-response/events/{eventId}:
-    get:
-      tags:
-        - Demand Response
-      summary: Get peak event details
-      description: Get detailed information about a specific peak event
-      operationId: getPeakEvent
-      parameters:
-        - name: eventId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Peak event details
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  event:
-                    type: object
-                  participants:
-                    type: object
-                    properties:
-                      count:
-                        type: integer
-                      totalReduction:
-                        type: number
-                      totalRewards:
-                        type: number
-        '404':
-          description: Event not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/demand-response/participation/{meterId}:
-    get:
-      tags:
-        - Demand Response
-      summary: Get participation history
-      description: Get demand response participation history for a meter
-      operationId: getParticipationHistory
+      summary: Forecast hourly energy production and consumption
+      description: |
+        Returns up to 48 hourly forecasts using a seasonal regression trained
+        on the preceding 90 days of meter usage and/or registered solar-panel
+        telemetry. OpenWeather hourly conditions are used to adjust estimates.
+        Accuracy is measured on held-out history and is null when unavailable.
+      operationId: getHourlyEnergyForecast
+      tags: [weather]
       parameters:
         - name: meterId
-          in: path
-          required: true
-          schema:
-            type: string
+          in: query
+          description: Meter whose historical milli-kWh usage should be forecast.
+          schema: { type: string, maxLength: 64 }
+        - name: deviceId
+          in: query
+          description: Registered solar_panel device whose production should be forecast.
+          schema: { type: string, maxLength: 100 }
+        - name: lat
+          in: query
+          description: Latitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -90, maximum: 90 }
+        - name: lon
+          in: query
+          description: Longitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -180, maximum: 180 }
+        - name: hours
+          in: query
+          description: Forecast horizon in whole hours (default 48).
+          schema: { type: integer, minimum: 1, maximum: 48, default: 48 }
       responses:
-        '200':
-          description: Participation history
+        "200":
+          description: Hourly forecast and per-model holdout accuracy.
           content:
             application/json:
               schema:
                 type: object
+                required: [horizonHours, generatedAt, location, weatherStale, models, forecast]
                 properties:
-                  success:
-                    type: boolean
-                  meterId:
-                    type: string
-                  history:
+                  meterId: { type: [string, "null"] }
+                  deviceId: { type: [string, "null"] }
+                  horizonHours: { type: integer, minimum: 1, maximum: 48 }
+                  generatedAt: { type: string, format: date-time }
+                  weatherStale: { type: boolean }
+                  models:
+                    type: object
+                    properties:
+                      production: { $ref: "#/components/schemas/EnergyForecastModel" }
+                      consumption: { $ref: "#/components/schemas/EnergyForecastModel" }
+                  forecast:
                     type: array
                     items:
                       type: object
+                      required: [timestamp, productionKwh, consumptionKwh, weather]
                       properties:
-                        peakEventId:
-                          type: string
-                        baselineConsumption:
-                          type: number
-                        actualConsumption:
-                          type: number
-                        reduction:
-                          type: number
-                        rewardAmount:
-                          type: number
-                        participatedAt:
-                          type: string
-                          format: date-time
-                  summary:
-                    type: object
-                    properties:
-                      participationCount:
-                        type: integer
-                      totalReductionKwh:
-                        type: number
-                      totalRewardsEarned:
-                        type: number
-                      averageRewardPerEvent:
-                        type: string
-  
-  /api/demand-response/detect:
-    post:
-      tags:
-        - Demand Response
-      summary: Trigger peak detection
-      description: Manually trigger peak demand detection (admin only)
-      operationId: triggerPeakDetection
-      security:
-        - AdminKey: []
-      responses:
-        '200':
-          description: Detection result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  peakDetected:
-                    type: boolean
-                  event:
-                    type: object
-                  notificationsSent:
-                    type: integer
-  
-  /api/demand-response/events/{eventId}/process:
-    post:
-      tags:
-        - Demand Response
-      summary: Process event participation
-      description: Manually process participation for a completed event (admin only)
-      operationId: processEventParticipation
-      security:
-        - AdminKey: []
-      parameters:
-        - name: eventId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Processing result
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  results:
-                    type: object
-                    properties:
-                      participantCount:
-                        type: integer
-                      totalReductionKwh:
-                        type: number
-                      totalRewardsDistributed:
-                        type: number
-        '404':
-          description: Event not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/demand-response/events/{eventId}/status:
-    put:
-      tags:
-        - Demand Response
-      summary: Update event status
-      description: Update the status of a peak event (admin only)
-      operationId: updateEventStatus
-      security:
-        - AdminKey: []
-      parameters:
-        - name: eventId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - status
-              properties:
-                status:
-                  type: string
-                  enum: [scheduled, active, completed, cancelled]
-      responses:
-        '200':
-          description: Status updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  message:
-                    type: string
-                  eventId:
-                    type: string
-                  newStatus:
-                    type: string
-        '400':
-          description: Invalid status
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-  
-  /api/demand-response/leaderboard:
-    get:
-      tags:
-        - Demand Response
-      summary: Get leaderboard
-      description: Get top participants by rewards earned
-      operationId: getDemandResponseLeaderboard
-      parameters:
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 10
-      responses:
-        '200':
-          description: Leaderboard
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  leaderboard:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        rank:
-                          type: integer
-                        meterId:
-                          type: string
-                        owner:
-                          type: string
-                        participationCount:
-                          type: integer
-                        totalReductionKwh:
-                          type: number
-                        totalRewards:
-                          type: number
-  
-  /api/demand-response/analytics:
-    get:
-      tags:
-        - Demand Response
-      summary: Get program analytics
-      description: Get detailed analytics for the demand response program
-      operationId: getDemandResponseAnalytics
-      parameters:
-        - name: period
-          in: query
-          schema:
-            type: string
-            enum: [7d, 30d, 90d]
-            default: 30d
-      responses:
-        '200':
-          description: Program analytics
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success:
-                    type: boolean
-                  period:
-                    type: string
-                  analytics:
-                    type: object
-                    properties:
-                      eventsByStatus:
-                        type: array
-                      participationTrend:
-                        type: array
-                      hourlyDistribution:
-                        type: array
-
-tags:
-  - name: Demand Response
-    description: Demand response program - reward users for reducing consumption during peak periods
+                        timestamp: { type: string, format: date-time }
+                        productionKwh: { type: [number, "null"] }
+                        consumptionKwh: { type: [number, "null"] }
+                        weather:
+                          type: object
+                          properties:
+                            temperatureC: { type: number }
+                            cloudCoverPct: { type: number }
+                            precipitationProbability: { type: number }
+                            condition: { type: string }
+                            productionFactor: { type: number }
+                            consumptionTemperatureFactor: { type: number }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: Weather provider did not return a usable 48-hour forecast.

@@ -28,9 +28,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       - run: cd contracts && cargo test
-      - run: cd contracts && cargo build --target wasm32-unknown-unknown --release
+      - run: cd contracts && cargo build --target wasm32v1-none --release
 
   frontend:
     runs-on: ubuntu-latest
@@ -47,6 +47,12 @@ jobs:
 
   backend:
     runs-on: ubuntu-latest
+    # The secrets context is not available in step-level `if:` expressions
+    # (it made the whole workflow file invalid), so expose them as job env.
+    env:
+      STELLAR_NETWORK: testnet
+      CONTRACT_ID: ${{ secrets.CONTRACT_ID }}
+      ADMIN_SECRET_KEY: ${{ secrets.ADMIN_SECRET_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -55,7 +61,7 @@ jobs:
       - run: cd backend && npm ci
       - run: cd backend && npm run build
       - name: Run e2e tests (only when secrets are available)
-        if: ${{ secrets.CONTRACT_ID != '' && secrets.ADMIN_SECRET_KEY != '' }}
+        if: ${{ env.CONTRACT_ID != '' && env.ADMIN_SECRET_KEY != '' }}
         run: |
           cd backend
           mkdir -p test-logs
@@ -66,7 +72,3 @@ jobs:
             echo "Admin secret appeared in e2e logs - failing CI"
             exit 1
           fi
-        env:
-          STELLAR_NETWORK: testnet
-          CONTRACT_ID: ${{ secrets.CONTRACT_ID }}
-          ADMIN_SECRET_KEY: ${{ secrets.ADMIN_SECRET_KEY }}
