@@ -61,6 +61,9 @@ import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
+import { startResilienceMonitor } from "./lib/gridResilience.js";
+import { gridResilienceRouter } from "./routes/gridResilience.js";
+import { privacyRouter } from "./routes/privacy.js";
 import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -212,6 +215,11 @@ app.use("/api/carbon-credits", carbonCreditsRouter);
 app.use("/api/p2p", p2pTradingRouter);
 // #880: admin dashboard
 app.use("/api/admin/dashboard", adminDashboardRouter);
+// #941: grid resilience scoring
+app.use("/api/grid", gridResilienceRouter);
+startResilienceMonitor();
+// #939: energy data privacy controls
+app.use("/api/privacy", writeLimiter, privacyRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
