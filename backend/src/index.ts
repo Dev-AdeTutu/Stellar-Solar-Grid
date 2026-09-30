@@ -202,6 +202,9 @@ app.use("/api/communities", communitiesRouter);
 app.use("/api/smart-home", smartHomeRouter);
 app.use("/api/forecast", forecastRouter);
 setRelaySender(sendRelayCommand);
+// Initialize heatmap system (#922)
+initPriceHeatmap();
+startPriceSimulation();
 startBillingScheduler();
 startCompetitionScheduler();
 startEnergyForecastRetraining();
