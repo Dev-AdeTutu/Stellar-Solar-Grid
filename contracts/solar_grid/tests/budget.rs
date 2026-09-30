@@ -47,7 +47,8 @@ fn register_meter_cost() {
         "register_meter",
         Ceiling {
             instructions: 350_000,
-            write_entries: 5,
+            // The current meter schema persists the capacity/schema metadata.
+            write_entries: 6,
         },
     );
 }

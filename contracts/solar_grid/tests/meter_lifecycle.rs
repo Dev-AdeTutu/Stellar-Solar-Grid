@@ -24,7 +24,7 @@ fn register_with_metadata_round_trips() {
     let meter = fx.id("MD1");
     let md = metadata(&fx, &[("site", "Lagos"), ("panel", "400W")]);
     fx.client
-        .register_meter_with_metadata(&meter, &owner, &Some(md.clone()));
+        .register_meter_with_metadata(&meter, &owner, &Some(md.clone()), &None);
     assert_eq!(fx.client.get_meter_metadata(&meter), md);
 
     let updated = metadata(&fx, &[("site", "Abuja")]);
@@ -268,7 +268,7 @@ fn legacy_v1_meter_is_migrated_on_read() {
     let m = fx.client.get_meter(&meter);
     assert_eq!(
         (m.version, m.owner, m.units_used, m.expires_at),
-        (6, owner, 9, 999)
+        (7, owner, 9, 999)
     );
     assert_eq!(m.installed_at, 77);
     assert_eq!(m.daily_limit, 0);
@@ -297,7 +297,7 @@ fn legacy_v2_meter_keeps_daily_limit() {
     );
     fx.client.migrate_meter_to_v3(&meter);
     let m = fx.client.get_meter(&meter);
-    assert_eq!((m.version, m.daily_limit, m.day_spent), (6, 321, 12));
+    assert_eq!((m.version, m.daily_limit, m.day_spent), (7, 321, 12));
     assert!(m.auto_deactivate);
 }
 
@@ -327,7 +327,7 @@ fn legacy_v5_meter_gets_installation_date() {
     );
     fx.client.migrate_meter_v5(&meter);
     let m = fx.client.get_meter(&meter);
-    assert_eq!(m.version, 6);
+    assert_eq!(m.version, 7);
     assert_eq!(m.installed_at, 4_242);
     assert_eq!(m.emergency_contact, Some(contact));
     assert!(!m.auto_deactivate);
@@ -352,7 +352,7 @@ fn legacy_v0_meter_migrates_through_any_read_path() {
     );
     // A plain read migrates and persists the entry.
     assert!(fx.client.check_access_status(&meter).has_access == false);
-    assert_eq!(fx.client.get_meter(&meter).version, 6);
+    assert_eq!(fx.client.get_meter(&meter).version, 7);
     // And the admin entry point is then a no-op.
     fx.client.migrate_meter(&meter);
     assert_eq!(fx.client.get_meter(&meter).units_used, 3);
