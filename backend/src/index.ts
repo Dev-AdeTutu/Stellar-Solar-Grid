@@ -57,6 +57,7 @@ import { competitionsRouter } from "./routes/competitions.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
+import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
@@ -293,3 +294,6 @@ app.listen(port, () => {
 });
 
 export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
+
+// #923: Arbitrage Trading Bot
+app.use("/api/arbitrage", arbitrageBotRouter);
