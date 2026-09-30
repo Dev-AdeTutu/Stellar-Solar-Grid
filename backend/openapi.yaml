@@ -31,6 +31,14 @@ components:
   schemas:
     # ── Common ────────────────────────────────────────────────────────────────
 
+    EnergyForecastModel:
+      type: [object, "null"]
+      properties:
+        algorithm: { type: string, example: seasonal-ridge }
+        trainingSamples: { type: integer }
+        accuracyPct: { type: [number, "null"], minimum: 0, maximum: 100 }
+        trainedAt: { type: string, format: date-time }
+
     Error:
       type: object
       required: [error]
@@ -39,6 +47,25 @@ components:
           type: string
         code:
           type: string
+
+    ExportCertificate:
+      type: object
+      description: Renewable energy export certificate (#871)
+      required: [id, meterId, producer, owner, energyWh, energyKwh, periodStart, periodEnd, issuedAt, issuer, readingHash, retiredAt, status]
+      properties:
+        id: { type: string }
+        meterId: { type: string }
+        producer: { type: string, description: Meter owner at issuance }
+        owner: { type: string, description: Current holder }
+        energyWh: { type: string, description: Exported watt-hours (decimal string) }
+        energyKwh: { type: number }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        issuedAt: { type: string, format: date-time }
+        issuer: { type: string }
+        readingHash: { type: string, description: SHA-256 hex of the canonical reading payload }
+        retiredAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, retired] }
 
     TxHash:
       type: object
@@ -1549,321 +1576,77 @@ paths:
                         name: { type: string }
                         peakSunHours: { type: number }
 
-  # ── Price Heatmap (#922) ────────────────────────────────────────────────────
-  /api/heatmap/zones:
+  /api/weather/energy-forecast:
     get:
-      summary: Get all grid zones
-      description: Returns all grid zones with their geographic and price information
-      operationId: getHeatmapZones
-      tags: [heatmap]
+      summary: Forecast hourly energy production and consumption
+      description: |
+        Returns up to 48 hourly forecasts using a seasonal regression trained
+        on the preceding 90 days of meter usage and/or registered solar-panel
+        telemetry. OpenWeather hourly conditions are used to adjust estimates.
+        Accuracy is measured on held-out history and is null when unavailable.
+      operationId: getHourlyEnergyForecast
+      tags: [weather]
       parameters:
-        - name: region
+        - name: meterId
           in: query
-          description: Filter by region name
-          schema: { type: string }
-        - name: minLat
+          description: Meter whose historical milli-kWh usage should be forecast.
+          schema: { type: string, maxLength: 64 }
+        - name: deviceId
           in: query
-          description: Minimum latitude for bounding box
-          schema: { type: number }
-        - name: maxLat
+          description: Registered solar_panel device whose production should be forecast.
+          schema: { type: string, maxLength: 100 }
+        - name: lat
           in: query
-          description: Maximum latitude for bounding box
-          schema: { type: number }
-        - name: minLon
+          description: Latitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -90, maximum: 90 }
+        - name: lon
           in: query
-          description: Minimum longitude for bounding box
-          schema: { type: number }
-        - name: maxLon
+          description: Longitude; required unless supplied by the registered solar device.
+          schema: { type: number, minimum: -180, maximum: 180 }
+        - name: hours
           in: query
-          description: Maximum longitude for bounding box
-          schema: { type: number }
+          description: Forecast horizon in whole hours (default 48).
+          schema: { type: integer, minimum: 1, maximum: 48, default: 48 }
       responses:
         "200":
-          description: List of grid zones
+          description: Hourly forecast and per-model holdout accuracy.
           content:
             application/json:
               schema:
                 type: object
-                required: [success, zones, count]
+                required: [horizonHours, generatedAt, location, weatherStale, models, forecast]
                 properties:
-                  success: { type: boolean }
-                  zones:
+                  meterId: { type: [string, "null"] }
+                  deviceId: { type: [string, "null"] }
+                  horizonHours: { type: integer, minimum: 1, maximum: 48 }
+                  generatedAt: { type: string, format: date-time }
+                  weatherStale: { type: boolean }
+                  models:
+                    type: object
+                    properties:
+                      production: { $ref: "#/components/schemas/EnergyForecastModel" }
+                      consumption: { $ref: "#/components/schemas/EnergyForecastModel" }
+                  forecast:
                     type: array
                     items:
                       type: object
-                      required: [id, name, region, latitude, longitude, radius, population, basePrice]
+                      required: [timestamp, productionKwh, consumptionKwh, weather]
                       properties:
-                        id: { type: string }
-                        name: { type: string }
-                        region: { type: string }
-                        latitude: { type: number }
-                        longitude: { type: number }
-                        radius: { type: number }
-                        population: { type: integer }
-                        basePrice: { type: number }
-                  count: { type: integer }
-
-  /api/heatmap/zones/{zoneId}:
-    get:
-      summary: Get specific zone details
-      description: Returns detailed information for a single zone including current price and statistics
-      operationId: getHeatmapZone
-      tags: [heatmap]
-      parameters:
-        - name: zoneId
-          in: path
-          required: true
-          description: Zone identifier
-          schema: { type: string }
-      responses:
-        "200":
-          description: Zone details
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, zone]
-                properties:
-                  success: { type: boolean }
-                  zone:
-                    type: object
-                    properties:
-                      id: { type: string }
-                      name: { type: string }
-                      region: { type: string }
-                      latitude: { type: number }
-                      longitude: { type: number }
-                      radius: { type: number }
-                      population: { type: integer }
-                      basePrice: { type: number }
-                      currentPrice: { type: number }
-                      demand: { type: number }
-                      supply: { type: number }
-                      congestion: { type: number }
-                      stats:
-                        type: object
-                        properties:
-                          minPrice: { type: number }
-                          maxPrice: { type: number }
-                          avgPrice: { type: number }
-                          currentPrice: { type: number }
+                        timestamp: { type: string, format: date-time }
+                        productionKwh: { type: [number, "null"] }
+                        consumptionKwh: { type: [number, "null"] }
+                        weather:
+                          type: object
+                          properties:
+                            temperatureC: { type: number }
+                            cloudCoverPct: { type: number }
+                            precipitationProbability: { type: number }
+                            condition: { type: string }
+                            productionFactor: { type: number }
+                            consumptionTemperatureFactor: { type: number }
+        "400":
+          $ref: "#/components/responses/ValidationError"
         "404":
           $ref: "#/components/responses/NotFound"
-
-  /api/heatmap/current:
-    get:
-      summary: Get current heatmap data
-      description: Returns optimized current prices for all zones for heatmap rendering
-      operationId: getCurrentHeatmap
-      tags: [heatmap]
-      responses:
-        "200":
-          description: Current heatmap data
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, zones, priceRange, timestamp]
-                properties:
-                  success: { type: boolean }
-                  zones:
-                    type: array
-                    items:
-                      type: object
-                      required: [id, lat, lon, price, name, region]
-                      properties:
-                        id: { type: string }
-                        lat: { type: number }
-                        lon: { type: number }
-                        price: { type: number }
-                        name: { type: string }
-                        region: { type: string }
-                  priceRange:
-                    type: object
-                    required: [min, max]
-                    properties:
-                      min: { type: number }
-                      max: { type: number }
-                  timestamp: { type: string, format: date-time }
-
-  /api/heatmap/prices:
-    get:
-      summary: Get current prices (detailed)
-      description: Returns detailed current price data for all zones
-      operationId: getCurrentPrices
-      tags: [heatmap]
-      responses:
-        "200":
-          description: Current prices
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, prices, count, timestamp]
-                properties:
-                  success: { type: boolean }
-                  prices:
-                    type: array
-                    items:
-                      type: object
-                      required: [zoneId, price, demand, supply, congestion, timestamp]
-                      properties:
-                        zoneId: { type: string }
-                        price: { type: number }
-                        demand: { type: number }
-                        supply: { type: number }
-                        congestion: { type: number }
-                        timestamp: { type: string, format: date-time }
-                  count: { type: integer }
-                  timestamp: { type: string, format: date-time }
-
-  /api/heatmap/historical:
-    get:
-      summary: Get historical price snapshots
-      description: Returns historical price data for playback and analysis
-      operationId: getHistoricalHeatmap
-      tags: [heatmap]
-      parameters:
-        - name: startTime
-          in: query
-          description: Start time for historical data
-          schema: { type: string, format: date-time }
-        - name: endTime
-          in: query
-          description: End time for historical data
-          schema: { type: string, format: date-time }
-        - name: zoneIds
-          in: query
-          description: Comma-separated zone IDs to filter
-          schema: { type: string }
-      responses:
-        "200":
-          description: Historical snapshots
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, snapshots, count]
-                properties:
-                  success: { type: boolean }
-                  snapshots:
-                    type: array
-                    items:
-                      type: object
-                      required: [timestamp, prices]
-                      properties:
-                        timestamp: { type: string, format: date-time }
-                        prices:
-                          type: object
-                          additionalProperties: { type: number }
-                  count: { type: integer }
-
-  /api/heatmap/zones/{zoneId}/stats:
-    get:
-      summary: Get price statistics for a zone
-      description: Returns statistical analysis of prices for a specific zone
-      operationId: getZonePriceStats
-      tags: [heatmap]
-      parameters:
-        - name: zoneId
-          in: path
-          required: true
-          description: Zone identifier
-          schema: { type: string }
-        - name: startTime
-          in: query
-          description: Start time for stats calculation
-          schema: { type: string, format: date-time }
-        - name: endTime
-          in: query
-          description: End time for stats calculation
-          schema: { type: string, format: date-time }
-      responses:
-        "200":
-          description: Zone price statistics
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, zoneId, stats]
-                properties:
-                  success: { type: boolean }
-                  zoneId: { type: string }
-                  stats:
-                    type: object
-                    required: [minPrice, maxPrice, avgPrice, currentPrice, priceRange, volatility]
-                    properties:
-                      minPrice: { type: string }
-                      maxPrice: { type: string }
-                      avgPrice: { type: string }
-                      currentPrice: { type: string }
-                      priceRange: { type: string }
-                      volatility: { type: string }
-
-  /api/heatmap/regions:
-    get:
-      summary: Get list of all regions
-      description: Returns all regions with zone counts and average prices
-      operationId: getHeatmapRegions
-      tags: [heatmap]
-      responses:
-        "200":
-          description: List of regions
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, regions, count]
-                properties:
-                  success: { type: boolean }
-                  regions:
-                    type: array
-                    items:
-                      type: object
-                      required: [name, zonesCount, avgPrice, totalPopulation]
-                      properties:
-                        name: { type: string }
-                        zonesCount: { type: integer }
-                        avgPrice: { type: string }
-                        totalPopulation: { type: integer }
-                  count: { type: integer }
-
-  /api/heatmap/summary:
-    get:
-      summary: Get overall heatmap summary statistics
-      description: Returns aggregated statistics across all zones
-      operationId: getHeatmapSummary
-      tags: [heatmap]
-      responses:
-        "200":
-          description: Heatmap summary
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [success, summary]
-                properties:
-                  success: { type: boolean }
-                  summary:
-                    type: object
-                    required: [totalZones, priceStats, distribution, timestamp]
-                    properties:
-                      totalZones: { type: integer }
-                      priceStats:
-                        type: object
-                        required: [min, max, avg, range]
-                        properties:
-                          min: { type: string }
-                          max: { type: string }
-                          avg: { type: string }
-                          range: { type: string }
-                      distribution:
-                        type: array
-                        items:
-                          type: object
-                          required: [label, count, percentage]
-                          properties:
-                            label: { type: string }
-                            count: { type: integer }
-                            percentage: { type: string }
-                      timestamp: { type: string, format: date-time }
+        "502":
+          description: Weather provider did not return a usable 48-hour forecast.

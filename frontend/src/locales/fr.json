@@ -2,10 +2,13 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "Mon Compteur",
+    "multisig": "Portefeuilles org.",
     "pay": "Payer",
+    "analytics": "Analyses",
     "provider": "Fournisseur",
     "history": "Historique",
     "bills": "Factures",
+    "communities": "Communautés énergétiques",
     "competitions": "Compétitions",
     "smartHome": "Maison connectée",
     "toggleTheme": "Changer de thème",

@@ -20,7 +20,7 @@ const DB_PATH =
   process.env.DEVICE_REGISTRY_DB_PATH ??
   path.resolve(process.cwd(), "data", "device-registry.sqlite");
 
-export const DEVICE_TYPES = ["solar_panel", "inverter", "meter"] as const;
+export const DEVICE_TYPES = ["solar_panel", "inverter", "meter", "battery"] as const;
 export type DeviceType = (typeof DEVICE_TYPES)[number];
 
 export const DEVICE_STATUSES = ["active", "inactive", "maintenance", "decommissioned"] as const;
@@ -76,6 +76,9 @@ export type PerformanceReading = {
   voltageV: number | null;
   temperatureC: number | null;
   efficiency: number | null;
+  stateOfCharge: number | null;
+  chargedEnergyKwh: number | null;
+  dischargedEnergyKwh: number | null;
 };
 
 export type PerformanceSummary = {
@@ -90,6 +93,12 @@ export type PerformanceSummary = {
   avgTemperatureC: number | null;
   /** Actual energy vs. rated capacity over the window (0–1), when rated power is known. */
   capacityFactor: number | null;
+  latestStateOfCharge: number | null;
+  storageCapacityKwh: number | null;
+  availableStorageKwh: number | null;
+  totalChargedEnergyKwh: number;
+  totalDischargedEnergyKwh: number;
+  roundTripEfficiency: number | null;
 };
 
 let _db: Database.Database | undefined;
@@ -150,10 +159,25 @@ function db(): Database.Database {
         energy_kwh REAL,
         voltage_v REAL,
         temperature_c REAL,
-        efficiency REAL
+        efficiency REAL,
+        state_of_charge REAL,
+        charged_energy_kwh REAL,
+        discharged_energy_kwh REAL
       );
       CREATE INDEX IF NOT EXISTS idx_device_perf ON device_performance (device_id, recorded_at);
     `);
+    const performanceColumns = new Set(
+      (_db.pragma("table_info(device_performance)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    for (const [name, type] of [
+      ["state_of_charge", "REAL"],
+      ["charged_energy_kwh", "REAL"],
+      ["discharged_energy_kwh", "REAL"],
+    ] as const) {
+      if (!performanceColumns.has(name)) {
+        _db.exec(`ALTER TABLE device_performance ADD COLUMN ${name} ${type}`);
+      }
+    }
   }
   return _db;
 }
@@ -507,13 +531,18 @@ export function deleteMaintenance(deviceId: string, scheduleId: string): boolean
 export type PerformanceInput = Partial<Omit<PerformanceReading, "deviceId">>;
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const nonNegativeNum = (v: unknown) => {
+  const value = num(v);
+  return value !== null && value >= 0 ? value : null;
+};
 
 export function recordPerformance(deviceId: string, input: PerformanceInput): void {
   db()
     .prepare(
       `INSERT INTO device_performance (device_id, recorded_at, power_w, energy_kwh, voltage_v,
-                                       temperature_c, efficiency)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                                       temperature_c, efficiency, state_of_charge,
+                                       charged_energy_kwh, discharged_energy_kwh)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       deviceId,
@@ -523,13 +552,17 @@ export function recordPerformance(deviceId: string, input: PerformanceInput): vo
       num(input.voltageV),
       num(input.temperatureC),
       num(input.efficiency),
+      num(input.stateOfCharge),
+      num(input.chargedEnergyKwh),
+      num(input.dischargedEnergyKwh),
     );
 }
 
 export function listPerformance(deviceId: string, sinceDays = 7, now = new Date()): PerformanceReading[] {
   const rows = db()
     .prepare(
-      `SELECT device_id, recorded_at, power_w, energy_kwh, voltage_v, temperature_c, efficiency
+            `SELECT device_id, recorded_at, power_w, energy_kwh, voltage_v, temperature_c, efficiency,
+              state_of_charge, charged_energy_kwh, discharged_energy_kwh
          FROM device_performance
         WHERE device_id = ? AND recorded_at >= ?
         ORDER BY recorded_at ASC LIMIT 5000`,
@@ -543,6 +576,9 @@ export function listPerformance(deviceId: string, sinceDays = 7, now = new Date(
     voltageV: r.voltage_v,
     temperatureC: r.temperature_c,
     efficiency: r.efficiency,
+    stateOfCharge: r.state_of_charge,
+    chargedEnergyKwh: r.charged_energy_kwh,
+    dischargedEnergyKwh: r.discharged_energy_kwh,
   }));
 }
 
@@ -553,15 +589,27 @@ export function getPerformanceSummary(
 ): PerformanceSummary {
   const row = db()
     .prepare(
-      `SELECT COUNT(*) AS n, MIN(recorded_at) AS first, MAX(recorded_at) AS last,
+      SELECT COUNT(*) AS n, MIN(recorded_at) AS first, MAX(recorded_at) AS last,
               COALESCE(SUM(energy_kwh), 0) AS energy, AVG(power_w) AS avg_power,
-              MAX(power_w) AS peak_power, AVG(efficiency) AS avg_eff, AVG(temperature_c) AS avg_temp
+              MAX(power_w) AS peak_power, AVG(efficiency) AS avg_eff, AVG(temperature_c) AS avg_temp,
+              (SELECT state_of_charge FROM device_performance
+                WHERE device_id = ? AND recorded_at >= ?
+                ORDER BY recorded_at DESC, id DESC LIMIT 1) AS latest_soc,
+              COALESCE(SUM(charged_energy_kwh), 0) AS charged_energy,
+              COALESCE(SUM(discharged_energy_kwh), 0) AS discharged_energy
          FROM device_performance
         WHERE device_id = ? AND recorded_at >= ?`,
     )
-    .get(deviceId, addDays(now.toISOString(), -sinceDays)) as Record<string, any>;
+    .get(
+      deviceId,
+      addDays(now.toISOString(), -sinceDays),
+      deviceId,
+      addDays(now.toISOString(), -sinceDays),
+    ) as Record<string, any>;
 
-  const ratedW = Number(getDevice(deviceId)?.specs.ratedPowerW);
+  const device = getDevice(deviceId);
+  const ratedW = Number(device?.specs.ratedPowerW);
+  const storageCapacityKwh = Number(device?.specs.capacityKwh);
   const capacityFactor =
     Number.isFinite(ratedW) && ratedW > 0
       ? Math.min(1, row.energy / ((ratedW / 1000) * sinceDays * 24))
@@ -578,6 +626,15 @@ export function getPerformanceSummary(
     avgEfficiency: row.avg_eff,
     avgTemperatureC: row.avg_temp,
     capacityFactor,
+    latestStateOfCharge: row.latest_soc,
+    storageCapacityKwh: Number.isFinite(storageCapacityKwh) && storageCapacityKwh > 0 ? storageCapacityKwh : null,
+    availableStorageKwh:
+      Number.isFinite(storageCapacityKwh) && storageCapacityKwh > 0 && row.latest_soc !== null
+        ? storageCapacityKwh * row.latest_soc
+        : null,
+    totalChargedEnergyKwh: row.charged_energy,
+    totalDischargedEnergyKwh: row.discharged_energy,
+    roundTripEfficiency: row.charged_energy > 0 ? row.discharged_energy / row.charged_energy : null,
   };
 }
 
@@ -590,7 +647,8 @@ export function prunePerformance(retentionDays = 90, now = new Date()): number {
 
 /**
  * Handle an MQTT telemetry message on `solargrid/devices/{deviceId}/telemetry`.
- * Payload: `{ "powerW": 350, "energyKwh": 0.12, "voltageV": 38.2, "temperatureC": 41, "efficiency": 0.19 }`.
+ * Payload supports generation telemetry and storage fields (`stateOfCharge` in
+ * 0–1, interval `chargedEnergyKwh`/`dischargedEnergyKwh`).
  * Unknown devices are ignored so stray publishers can't fill the table.
  */
 export function handleDeviceTelemetry(deviceId: string | undefined, payload: Buffer): void {
@@ -612,6 +670,12 @@ export function handleDeviceTelemetry(deviceId: string | undefined, payload: Buf
     voltageV: num(body.voltageV) ?? undefined,
     temperatureC: num(body.temperatureC) ?? undefined,
     efficiency: num(body.efficiency) ?? undefined,
+    stateOfCharge:
+      typeof body.stateOfCharge === "number" && body.stateOfCharge >= 0 && body.stateOfCharge <= 1
+        ? body.stateOfCharge
+        : undefined,
+    chargedEnergyKwh: nonNegativeNum(body.chargedEnergyKwh) ?? undefined,
+    dischargedEnergyKwh: nonNegativeNum(body.dischargedEnergyKwh) ?? undefined,
   });
 }
 
