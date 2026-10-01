@@ -52,10 +52,12 @@ import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
+import forecastRouter from "./routes/forecast.js";
 import { competitionsRouter } from "./routes/competitions.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { widgetsRouter } from "./routes/widgets.js";
+import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
@@ -198,7 +200,11 @@ app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/communities", communitiesRouter);
 app.use("/api/smart-home", smartHomeRouter);
+app.use("/api/forecast", forecastRouter);
 setRelaySender(sendRelayCommand);
+// Initialize heatmap system (#922)
+initPriceHeatmap();
+startPriceSimulation();
 startBillingScheduler();
 startCompetitionScheduler();
 startEnergyForecastRetraining();
@@ -291,3 +297,6 @@ app.listen(port, () => {
 });
 
 export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
+
+// #923: Arbitrage Trading Bot
+app.use("/api/arbitrage", arbitrageBotRouter);
