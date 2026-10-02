@@ -2,9 +2,12 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "Mi medidor",
+    "multisig": "Carteras de org.",
     "pay": "Pagar",
+    "analytics": "Analíticas",
     "provider": "Proveedor",
     "history": "Historial",
+    "communities": "Comunidades energéticas",
     "emergency": "Emergencia",
     "toggleTheme": "Cambiar tema",
     "openMenu": "Abrir menú",

@@ -1,7 +1,7 @@
 import path from "node:path";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
-import { recordAudit } from "./audit.js";
+import { recordAudit } from "./auditTrail.js";
 import { logger } from "./logger.js";
 import { deadLetterEvents, usageEvents } from "./metrics.js";
 import { registerDatabase } from "./databaseLifecycle.js";
@@ -233,6 +233,35 @@ export function getUsageHistory(
   };
 }
 
+export type HourlyUsageSample = { timestamp: string; energyKwh: number };
+
+/** Hourly usage totals in kWh; source events store energy in milli-kWh. */
+export function getHourlyUsage(meterId: string, days = 90, now = new Date()): HourlyUsageSample[] {
+  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+  const rows = db()
+    .prepare(`
+      SELECT substr(received_at, 1, 13) AS hour, SUM(units) AS units
+      FROM usage_events
+      WHERE meter_id = ? AND status = 'submitted' AND received_at >= ?
+      GROUP BY hour ORDER BY hour ASC
+    `)
+    .all(meterId, cutoff) as Array<{ hour: string; units: number }>;
+  const byHour = new Map(rows.map((row) => [row.hour, Number(row.units) / 1000]));
+  const first = new Date(now.getTime() - days * 86_400_000);
+  first.setUTCMinutes(0, 0, 0);
+  const last = new Date(now);
+  last.setUTCMinutes(0, 0, 0);
+  const samples: HourlyUsageSample[] = [];
+  for (let hour = first.getTime(); hour <= last.getTime(); hour += 3_600_000) {
+    const timestamp = new Date(hour).toISOString();
+    samples.push({
+      timestamp,
+      energyKwh: byHour.get(timestamp.slice(0, 13)) ?? 0,
+    });
+  }
+  return samples;
+}
+
 export function getTypicalWeeklyUsageStroops(meterId: string): number {
   const row = db()
     .prepare(
@@ -286,26 +315,6 @@ export function insertSubmittedUsageEvents(
       `,
     );
 
-  recordAudit({
-    action: "usage_batch_submitted",
-    txHash,
-    amount: readings.reduce((sum, r) => sum + r.cost, 0),
-    details: { count: readings.length, meters: [...new Set(readings.map((r) => r.meterId))] },
-  });
-
-  const insert = db.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
-    for (const r of rows) {
-      stmt.run(
-        r.meterId,
-        r.units,
-        String(r.cost),
-        now,
-        r.sourceTopic ?? null,
-        now,
-        txHash,
-        now,
-      );
-    }
     const insert = database.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
       for (const r of rows) {
         stmt.run(
@@ -323,6 +332,13 @@ export function insertSubmittedUsageEvents(
     });
 
     insert(readings);
+  });
+
+  recordAudit({
+    action: "usage_batch_submitted",
+    txHash,
+    amount: readings.reduce((sum, r) => sum + r.cost, 0),
+    details: { count: readings.length, meters: [...new Set(readings.map((r) => r.meterId))] },
   });
 }
 
@@ -430,25 +446,6 @@ async function submitUsageEvent(id: number) {
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = 'submitted',
-            attempt_count = attempt_count + 1,
-            last_attempt_at = ?,
-            last_error = NULL,
-            on_chain_tx_hash = ?,
-            submitted_at = ?
-        WHERE id = ?
-      `
-    ).run(attemptedAt, hash, attemptedAt, id);
-    recordAudit({
-      action: "usage_submitted",
-      meterId: event.meter_id,
-      amount: event.cost,
-      txHash: hash,
-      details: { units: event.units, eventId: id },
-    });
     pool.withConnection((database) => {
       database
         .prepare(
@@ -464,6 +461,13 @@ async function submitUsageEvent(id: number) {
           `
         )
         .run(attemptedAt, hash, attemptedAt, id);
+    });
+    recordAudit({
+      action: "usage_submitted",
+      meterId: event.meter_id,
+      amount: event.cost,
+      txHash: hash,
+      details: { units: event.units, eventId: id },
     });
 
     usageEvents.inc({ status: "submitted" });
@@ -525,7 +529,7 @@ export type MeterUsageStats = {
 
 /** Aggregate per-meter usage totals (used by leaderboards and achievements). */
 export function getMeterUsageStats(): MeterUsageStats[] {
-  return db
+  return db()
     .prepare(
       `SELECT meter_id,
               SUM(units) AS total_units,
@@ -536,6 +540,8 @@ export function getMeterUsageStats(): MeterUsageStats[] {
        FROM usage_events GROUP BY meter_id`,
     )
     .all() as MeterUsageStats[];
+}
+
 /**
  * Return all events in 'failed' (dead-lettered) status, newest first.
  * Supports optional pagination via limit/offset.

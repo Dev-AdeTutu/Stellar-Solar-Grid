@@ -12,7 +12,7 @@ import { env } from "@/lib/env";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 
-type DeviceType = "solar_panel" | "inverter" | "meter";
+type DeviceType = "solar_panel" | "inverter" | "meter" | "battery";
 type Device = {
   id: string;
   type: DeviceType;
@@ -34,10 +34,16 @@ type PerfSummary = {
   avgPowerW: number | null;
   peakPowerW: number | null;
   capacityFactor: number | null;
+  latestStateOfCharge: number | null;
+  storageCapacityKwh: number | null;
+  availableStorageKwh: number | null;
+  totalChargedEnergyKwh: number;
+  totalDischargedEnergyKwh: number;
+  roundTripEfficiency: number | null;
 };
 type StabilityReport = { stabilityScore: number | null; anomalies: Array<{ id: number; metric: string; value: number; severity: string; message: string }> };
 
-const TYPE_LABEL: Record<DeviceType, string> = { solar_panel: "Solar panel", inverter: "Inverter", meter: "Meter" };
+const TYPE_LABEL: Record<DeviceType, string> = { solar_panel: "Solar panel", inverter: "Inverter", meter: "Meter", battery: "Battery" };
 const INPUT = "rounded border border-white/20 bg-transparent px-3 py-2 text-sm";
 const BTN = "rounded-lg border border-white/20 px-3 py-1.5 text-sm hover:bg-white/5 disabled:opacity-40";
 
@@ -70,8 +76,14 @@ function DeviceRow({ device, onChanged }: { device: Device; onChanged: () => voi
   }, [device.id]);
 
   useEffect(() => {
-    if (open && !detail) load().catch((e) => showToast({ title: e.message, variant: "error" }));
-  }, [open, detail, load, showToast]);
+    if (!open) return;
+    load().catch((e) => showToast({ title: e.message, variant: "error" }));
+    if (device.type !== "battery") return;
+    const timer = setInterval(() => {
+      load().catch((e) => showToast({ title: e.message, variant: "error" }));
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [open, device.type, load, showToast]);
 
   const complete = async (m: Maintenance) => {
     try {
@@ -122,9 +134,16 @@ function DeviceRow({ device, onChanged }: { device: Device; onChanged: () => voi
                 <li>Energy: {perf.totalEnergyKwh.toFixed(2)} kWh</li>
                 <li>Avg power: {perf.avgPowerW === null ? "—" : `${Math.round(perf.avgPowerW)} W`}</li>
                 <li>Peak power: {perf.peakPowerW === null ? "—" : `${Math.round(perf.peakPowerW)} W`}</li>
-                <li>Capacity factor: {perf.capacityFactor === null ? "—" : `${(perf.capacityFactor * 100).toFixed(1)}%`}</li>
-                <li>Grid stability: {stability?.stabilityScore === null || stability?.stabilityScore === undefined ? "—" : `${stability.stabilityScore}%`}</li>
-                <li>Recent anomalies: {stability?.anomalies.length ?? 0}</li>
+                {device.type === "battery" ? (
+                  <>
+                    <li>State of charge: {perf.latestStateOfCharge === null ? "—" : `${(perf.latestStateOfCharge * 100).toFixed(1)}%`}</li>
+                    <li>Available: {perf.availableStorageKwh === null ? "—" : `${perf.availableStorageKwh.toFixed(2)} / ${perf.storageCapacityKwh?.toFixed(2)} kWh`}</li>
+                    <li>Charged / discharged: {perf.totalChargedEnergyKwh.toFixed(2)} / {perf.totalDischargedEnergyKwh.toFixed(2)} kWh</li>
+                    <li>Round-trip efficiency: {perf.roundTripEfficiency === null ? "—" : `${(perf.roundTripEfficiency * 100).toFixed(1)}%`}</li>
+                  </>
+                ) : (
+                  <li>Capacity factor: {perf.capacityFactor === null ? "—" : `${(perf.capacityFactor * 100).toFixed(1)}%`}</li>
+                )}
               </ul>
             ) : (
               <p className="opacity-60">No telemetry yet. Devices publish to solargrid/devices/{device.id}/telemetry.</p>
@@ -184,6 +203,7 @@ export default function DevicesPage() {
   const [due, setDue] = useState<Maintenance[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [registerType, setRegisterType] = useState<DeviceType>("solar_panel");
 
   const load = useCallback(async () => {
     try {
@@ -209,10 +229,16 @@ export default function DevicesPage() {
     e.preventDefault();
     if (!address) return;
     const f = new FormData(e.currentTarget);
-    const specs: Record<string, number> = {};
+    const specs: Record<string, number | boolean> = {};
     for (const key of ["ratedPowerW", "latitude", "longitude"]) {
       const v = String(f.get(key) ?? "").trim();
       if (v) specs[key] = Number(v);
+    }
+    if (registerType === "battery") {
+      for (const key of ["capacityKwh", "chargePriceBelow", "dischargePriceAbove"]) {
+        specs[key] = Number(f.get(key));
+      }
+      specs.automationEnabled = f.get("automationEnabled") === "on";
     }
     setSubmitting(true);
     try {
@@ -265,10 +291,11 @@ export default function DevicesPage() {
         {address ? (
           <form onSubmit={register} className="mb-8 rounded-lg border border-white/10 p-4 grid gap-3 md:grid-cols-3">
             <h2 className="font-semibold md:col-span-3">Register a device</h2>
-            <select name="type" className={INPUT} defaultValue="solar_panel" aria-label="Device type">
+            <select name="type" className={INPUT} value={registerType} onChange={(e) => setRegisterType(e.target.value as DeviceType)} aria-label="Device type">
               <option value="solar_panel">Solar panel</option>
               <option value="inverter">Inverter</option>
               <option value="meter">Meter</option>
+              <option value="battery">Battery storage</option>
             </select>
             <input name="manufacturer" required placeholder="Manufacturer" className={INPUT} />
             <input name="model" required placeholder="Model" className={INPUT} />
@@ -278,6 +305,17 @@ export default function DevicesPage() {
             <input name="ratedPowerW" type="number" min={0} placeholder="Rated power (W)" className={INPUT} />
             <input name="latitude" type="number" step="any" min={-90} max={90} placeholder="Latitude (for weather)" className={INPUT} />
             <input name="longitude" type="number" step="any" min={-180} max={180} placeholder="Longitude (for weather)" className={INPUT} />
+            {registerType === "battery" && (
+              <>
+                <input name="capacityKwh" type="number" step="any" min="0.01" required placeholder="Storage capacity (kWh)" className={INPUT} />
+                <input name="chargePriceBelow" type="number" step="any" min="0" required placeholder="Charge at or below price" className={INPUT} />
+                <input name="dischargePriceAbove" type="number" step="any" min="0" required placeholder="Discharge at or above price" className={INPUT} />
+                <label className="flex items-center gap-2 text-sm">
+                  <input name="automationEnabled" type="checkbox" defaultChecked />
+                  Enable automatic dispatch
+                </label>
+              </>
+            )}
             <div className="md:col-span-3">
               <button type="submit" disabled={submitting} className={BTN}>
                 {submitting ? "Registering…" : "Register device"}

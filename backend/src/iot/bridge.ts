@@ -61,6 +61,24 @@ export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source:
   );
   return true;
 }
+
+export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "solargrid" ||
+    segments[1] !== "devices" ||
+    segments[3] !== "telemetry"
+  ) {
+    return false;
+  }
+  try {
+    handleDeviceTelemetry(segments[2], payload);
+  } catch (err) {
+    logger.error("Device telemetry handling failed", { topic, err });
+  }
+  return true;
+}
 const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
 const EVENT_POLL_INTERVAL_MS = Number(
   process.env.EVENT_POLL_INTERVAL_MS ?? 5_000,
@@ -509,14 +527,7 @@ function startMqttBridge() {
       handleHeartbeatMessage(segments[2], payload);
       return;
     }
-    if (segments[1] === "devices" && segments[3] === "telemetry") {
-      try {
-        handleDeviceTelemetry(segments[2], payload);
-      } catch (err) {
-        logger.error("Device telemetry handling failed", { topic, err });
-      }
-      return;
-    }
+    if (handleDeviceTelemetryTopic(topic, payload)) return;
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.

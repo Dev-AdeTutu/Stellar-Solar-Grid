@@ -57,6 +57,26 @@ export const registerSchema = z.object({
   location: z.string().max(200).nullish(),
   installedAt: isoDate.nullish(),
   specs: specsSchema.optional(),
+}).superRefine((device, ctx) => {
+  if (device.type !== "battery") return;
+  const capacity = device.specs?.capacityKwh;
+  if (typeof capacity !== "number" || capacity <= 0) {
+    ctx.addIssue({ code: "custom", path: ["specs", "capacityKwh"], message: "battery capacityKwh must be greater than zero" });
+  }
+  const chargeBelow = device.specs?.chargePriceBelow;
+  const dischargeAbove = device.specs?.dischargePriceAbove;
+  if (device.specs?.automationEnabled === true) {
+    if (typeof chargeBelow !== "number" || typeof dischargeAbove !== "number") {
+      ctx.addIssue({ code: "custom", path: ["specs"], message: "automated batteries require chargePriceBelow and dischargePriceAbove" });
+    } else if (chargeBelow >= dischargeAbove) {
+      ctx.addIssue({ code: "custom", path: ["specs", "chargePriceBelow"], message: "charge price must be lower than discharge price" });
+    }
+  }
+  for (const [key, price] of [["chargePriceBelow", chargeBelow], ["dischargePriceAbove", dischargeAbove]] as const) {
+    if (typeof price === "number" && price < 0) {
+      ctx.addIssue({ code: "custom", path: ["specs", key], message: "price thresholds cannot be negative" });
+    }
+  }
 });
 
 export const updateSchema = z.object({
@@ -91,6 +111,9 @@ export const performanceSchema = z.object({
   frequencyHz: z.number().positive().max(100).optional(),
   temperatureC: z.number().optional(),
   efficiency: z.number().min(0).max(1).optional(),
+  stateOfCharge: z.number().min(0).max(1).optional(),
+  chargedEnergyKwh: z.number().min(0).optional(),
+  dischargedEnergyKwh: z.number().min(0).optional(),
 });
 
 function badRequest(res: any, error: z.ZodError) {
@@ -206,6 +229,15 @@ devicesRouter.post("/:id/performance", (req, res) => {
   if (!getDevice(req.params.id)) return res.status(404).json({ error: "Device not found" });
   const parsed = performanceSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);
+  const device = getDevice(req.params.id)!;
+  if (
+    device.type !== "battery" &&
+    [parsed.data.stateOfCharge, parsed.data.chargedEnergyKwh, parsed.data.dischargedEnergyKwh].some(
+      (value) => value !== undefined,
+    )
+  ) {
+    return res.status(400).json({ error: "storage telemetry is only valid for battery devices" });
+  }
   recordPerformance(req.params.id, parsed.data);
   res.status(202).json({ accepted: true });
 });

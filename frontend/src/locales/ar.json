@@ -2,9 +2,12 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "عدّادي",
+    "multisig": "محافظ المؤسسات",
     "pay": "الدفع",
+    "analytics": "التحليلات",
     "provider": "المزوّد",
     "history": "السجل",
+    "communities": "مجتمعات الطاقة",
     "emergency": "الطوارئ",
     "toggleTheme": "تبديل السمة",
     "openMenu": "فتح القائمة",
