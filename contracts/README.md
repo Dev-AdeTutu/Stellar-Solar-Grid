@@ -264,3 +264,35 @@ Events (`solar`, …): `stk_cfg`, `stk_fund`, `staked`, `unstk_req`, `unstaked`,
 
 New errors: `StakingNotConfigured` (38), `InsufficientStake` (39),
 `NoPendingUnstake` (40), `CooldownNotElapsed` (41).
+
+## Energy Export Certificates (#871)
+
+Non-fungible certificates attesting that a meter exported renewable energy to
+the grid. Implemented in `solar_grid/src/certificates.rs`.
+
+| Function | Description |
+|---|---|
+| `mint_export_certificate(issuer, meter_id, energy_wh, period_start, period_end, reading_hash) -> u64` | `issuer` (admin or registered oracle) must authorize. Mints to the meter owner. Periods are `[start, end)` in Unix seconds, may not end in the future, and may not overlap the meter's previously certified period |
+| `transfer_export_certificate(id, to)` | Holder must authorize; retired certificates cannot move |
+| `retire_export_certificate(id)` | Holder claims the renewable attribute; irreversible |
+| `verify_export_certificate(id, reading_hash) -> bool` | True when the certificate exists and commits to `reading_hash` |
+
+Views: `get_export_certificate(id)`, `get_certificates_by_owner(owner, offset, limit)`
+(limit capped at 100), `get_certificate_count()`, `get_last_certified_period_end(meter_id)`.
+
+Metadata (`ExportCertificate`): `id`, `meter_id`, `producer`, `owner`,
+`energy_wh`, `period_start`, `period_end`, `issued_at`, `issuer`,
+`reading_hash`, `retired_at`.
+
+`reading_hash` is the SHA-256 of the canonical JSON (keys sorted) of the
+reading payload the certificate was minted from. The backend computes it in
+`backend/src/lib/exportCertificates.ts`, prints it on the PDF certificate, and
+exposes `GET /api/certificates/:id/verify` so third parties can check a PDF
+against the chain.
+
+Events (`solargrid`, …, `id`): `cert_mint` `(meter_id, producer, energy_wh,
+period_start, period_end, reading_hash)`, `cert_xfer` `(from, to)`,
+`cert_ret` `(owner, energy_wh, retired_at)`.
+
+New errors: `CertificateNotFound` (50), `InvalidCertificatePeriod` (51),
+`CertificatePeriodOverlap` (52), `CertificateRetired` (53).

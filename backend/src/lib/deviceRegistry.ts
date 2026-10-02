@@ -20,7 +20,7 @@ const DB_PATH =
   process.env.DEVICE_REGISTRY_DB_PATH ??
   path.resolve(process.cwd(), "data", "device-registry.sqlite");
 
-export const DEVICE_TYPES = ["solar_panel", "inverter", "meter"] as const;
+export const DEVICE_TYPES = ["solar_panel", "inverter", "meter", "battery"] as const;
 export type DeviceType = (typeof DEVICE_TYPES)[number];
 
 export const DEVICE_STATUSES = ["active", "inactive", "maintenance", "decommissioned"] as const;
@@ -74,8 +74,22 @@ export type PerformanceReading = {
   powerW: number | null;
   energyKwh: number | null;
   voltageV: number | null;
+  frequencyHz: number | null;
   temperatureC: number | null;
   efficiency: number | null;
+  stateOfCharge: number | null;
+  chargedEnergyKwh: number | null;
+  dischargedEnergyKwh: number | null;
+};
+
+export type StabilityAnomaly = {
+  id: number;
+  deviceId: string;
+  recordedAt: string;
+  metric: "voltage" | "frequency";
+  value: number;
+  severity: "warning" | "critical";
+  message: string;
 };
 
 export type PerformanceSummary = {
@@ -90,6 +104,12 @@ export type PerformanceSummary = {
   avgTemperatureC: number | null;
   /** Actual energy vs. rated capacity over the window (0–1), when rated power is known. */
   capacityFactor: number | null;
+  latestStateOfCharge: number | null;
+  storageCapacityKwh: number | null;
+  availableStorageKwh: number | null;
+  totalChargedEnergyKwh: number;
+  totalDischargedEnergyKwh: number;
+  roundTripEfficiency: number | null;
 };
 
 let _db: Database.Database | undefined;
@@ -149,11 +169,43 @@ function db(): Database.Database {
         power_w REAL,
         energy_kwh REAL,
         voltage_v REAL,
+        frequency_hz REAL,
         temperature_c REAL,
-        efficiency REAL
+        efficiency REAL,
+        state_of_charge REAL,
+        charged_energy_kwh REAL,
+        discharged_energy_kwh REAL
       );
       CREATE INDEX IF NOT EXISTS idx_device_perf ON device_performance (device_id, recorded_at);
+      CREATE TABLE IF NOT EXISTS device_stability_anomalies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id TEXT NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
+        recorded_at TEXT NOT NULL,
+        metric TEXT NOT NULL,
+        value REAL NOT NULL,
+        severity TEXT NOT NULL,
+        message TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_stability_anomaly_device ON device_stability_anomalies (device_id, recorded_at);
+      CREATE TABLE IF NOT EXISTS device_stability_alert_state (
+        device_id TEXT NOT NULL REFERENCES devices (id) ON DELETE CASCADE,
+        metric TEXT NOT NULL,
+        last_alert_at TEXT NOT NULL,
+        PRIMARY KEY (device_id, metric)
+      );
     `);
+    const performanceColumns = new Set(
+      (_db.pragma("table_info(device_performance)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    for (const [name, type] of [
+      ["state_of_charge", "REAL"],
+      ["charged_energy_kwh", "REAL"],
+      ["discharged_energy_kwh", "REAL"],
+    ] as const) {
+      if (!performanceColumns.has(name)) {
+        _db.exec(`ALTER TABLE device_performance ADD COLUMN ${name} ${type}`);
+      }
+    }
   }
   return _db;
 }
@@ -507,29 +559,104 @@ export function deleteMaintenance(deviceId: string, scheduleId: string): boolean
 export type PerformanceInput = Partial<Omit<PerformanceReading, "deviceId">>;
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+const nonNegativeNum = (v: unknown) => {
+  const value = num(v);
+  return value !== null && value >= 0 ? value : null;
+};
 
 export function recordPerformance(deviceId: string, input: PerformanceInput): void {
+  const recordedAt = input.recordedAt ?? new Date().toISOString();
   db()
     .prepare(
       `INSERT INTO device_performance (device_id, recorded_at, power_w, energy_kwh, voltage_v,
-                                       temperature_c, efficiency)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                                       temperature_c, efficiency, state_of_charge,
+                                       charged_energy_kwh, discharged_energy_kwh)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       deviceId,
-      input.recordedAt ?? new Date().toISOString(),
+      recordedAt,
       num(input.powerW),
       num(input.energyKwh),
       num(input.voltageV),
+      num(input.frequencyHz),
       num(input.temperatureC),
       num(input.efficiency),
+      num(input.stateOfCharge),
+      num(input.chargedEnergyKwh),
+      num(input.dischargedEnergyKwh),
     );
+  recordStabilityAnomalies(deviceId, recordedAt, input.voltageV, input.frequencyHz);
+}
+
+function recordStabilityAnomalies(deviceId: string, recordedAt: string, voltageV?: number | null, frequencyHz?: number | null): void {
+  const voltageMin = Number(process.env.GRID_VOLTAGE_MIN_V ?? 207);
+  const voltageMax = Number(process.env.GRID_VOLTAGE_MAX_V ?? 253);
+  const frequencyMin = Number(process.env.GRID_FREQUENCY_MIN_HZ ?? 49.5);
+  const frequencyMax = Number(process.env.GRID_FREQUENCY_MAX_HZ ?? 50.5);
+  const checks = [
+    voltageV != null && (voltageV < voltageMin || voltageV > voltageMax)
+      ? { metric: "voltage" as const, value: voltageV, critical: voltageV < voltageMin * 0.9 || voltageV > voltageMax * 1.1, bounds: `${voltageMin}-${voltageMax} V` }
+      : undefined,
+    frequencyHz != null && (frequencyHz < frequencyMin || frequencyHz > frequencyMax)
+      ? { metric: "frequency" as const, value: frequencyHz, critical: frequencyHz < frequencyMin - 0.5 || frequencyHz > frequencyMax + 0.5, bounds: `${frequencyMin}-${frequencyMax} Hz` }
+      : undefined,
+  ].filter((check): check is NonNullable<typeof check> => Boolean(check));
+  if (checks.length === 0) return;
+
+  const device = getDevice(deviceId);
+  const insert = db().prepare(`INSERT INTO device_stability_anomalies
+    (device_id, recorded_at, metric, value, severity, message) VALUES (?, ?, ?, ?, ?, ?)`);
+  for (const check of checks) {
+    const severity = check.critical ? "critical" : "warning";
+    const message = `${check.metric} reading ${check.value} is outside the configured ${check.bounds} operating range`;
+    insert.run(deviceId, recordedAt, check.metric, check.value, severity, message);
+    if (device) {
+      const now = new Date();
+      const lastAlert = db().prepare("SELECT last_alert_at FROM device_stability_alert_state WHERE device_id = ? AND metric = ?")
+        .get(deviceId, check.metric) as {last_alert_at: string} | undefined;
+      if (!lastAlert || now.getTime() - Date.parse(lastAlert.last_alert_at) >= 15 * 60_000) {
+        db().prepare(`INSERT INTO device_stability_alert_state (device_id, metric, last_alert_at) VALUES (?, ?, ?)
+          ON CONFLICT(device_id, metric) DO UPDATE SET last_alert_at = excluded.last_alert_at`)
+          .run(deviceId, check.metric, now.toISOString());
+        const body = JSON.stringify({ event: "grid.stability_anomaly", deviceId, owner: device.owner, recordedAt, ...check, severity, message });
+        for (const url of getWebhookUrls(device.owner)) {
+          void fireWebhook(url, body).catch((error) => logger.warn({ error, deviceId }, "Stability anomaly webhook failed"));
+        }
+      }
+    }
+  }
+}
+
+export function getStabilityReport(deviceId: string, sinceDays = 7, now = new Date()) {
+  const since = addDays(now.toISOString(), -sinceDays);
+  const totals = db().prepare(`SELECT COUNT(CASE WHEN voltage_v IS NOT NULL OR frequency_hz IS NOT NULL THEN 1 END) AS total,
+    SUM(CASE WHEN (voltage_v IS NULL OR (voltage_v BETWEEN ? AND ?))
+      AND (frequency_hz IS NULL OR (frequency_hz BETWEEN ? AND ?))
+      AND (voltage_v IS NOT NULL OR frequency_hz IS NOT NULL) THEN 1 ELSE 0 END) AS stable
+    FROM device_performance WHERE device_id = ? AND recorded_at >= ?`).get(
+    Number(process.env.GRID_VOLTAGE_MIN_V ?? 207), Number(process.env.GRID_VOLTAGE_MAX_V ?? 253),
+    Number(process.env.GRID_FREQUENCY_MIN_HZ ?? 49.5), Number(process.env.GRID_FREQUENCY_MAX_HZ ?? 50.5), deviceId, since,
+  ) as {total: number; stable: number | null};
+  const anomalies = db().prepare(`SELECT id, device_id AS deviceId, recorded_at AS recordedAt,
+    metric, value, severity, message FROM device_stability_anomalies
+    WHERE device_id = ? AND recorded_at >= ? ORDER BY recorded_at DESC LIMIT 500`)
+    .all(deviceId, since) as StabilityAnomaly[];
+  return {
+    deviceId,
+    from: since,
+    to: now.toISOString(),
+    readings: totals.total,
+    stabilityScore: totals.total ? Math.round(((totals.stable ?? 0) / totals.total) * 100) : null,
+    anomalies,
+  };
 }
 
 export function listPerformance(deviceId: string, sinceDays = 7, now = new Date()): PerformanceReading[] {
   const rows = db()
     .prepare(
-      `SELECT device_id, recorded_at, power_w, energy_kwh, voltage_v, temperature_c, efficiency
+            `SELECT device_id, recorded_at, power_w, energy_kwh, voltage_v, temperature_c, efficiency,
+              state_of_charge, charged_energy_kwh, discharged_energy_kwh
          FROM device_performance
         WHERE device_id = ? AND recorded_at >= ?
         ORDER BY recorded_at ASC LIMIT 5000`,
@@ -541,8 +668,12 @@ export function listPerformance(deviceId: string, sinceDays = 7, now = new Date(
     powerW: r.power_w,
     energyKwh: r.energy_kwh,
     voltageV: r.voltage_v,
+    frequencyHz: r.frequency_hz,
     temperatureC: r.temperature_c,
     efficiency: r.efficiency,
+    stateOfCharge: r.state_of_charge,
+    chargedEnergyKwh: r.charged_energy_kwh,
+    dischargedEnergyKwh: r.discharged_energy_kwh,
   }));
 }
 
@@ -553,15 +684,27 @@ export function getPerformanceSummary(
 ): PerformanceSummary {
   const row = db()
     .prepare(
-      `SELECT COUNT(*) AS n, MIN(recorded_at) AS first, MAX(recorded_at) AS last,
+      SELECT COUNT(*) AS n, MIN(recorded_at) AS first, MAX(recorded_at) AS last,
               COALESCE(SUM(energy_kwh), 0) AS energy, AVG(power_w) AS avg_power,
-              MAX(power_w) AS peak_power, AVG(efficiency) AS avg_eff, AVG(temperature_c) AS avg_temp
+              MAX(power_w) AS peak_power, AVG(efficiency) AS avg_eff, AVG(temperature_c) AS avg_temp,
+              (SELECT state_of_charge FROM device_performance
+                WHERE device_id = ? AND recorded_at >= ?
+                ORDER BY recorded_at DESC, id DESC LIMIT 1) AS latest_soc,
+              COALESCE(SUM(charged_energy_kwh), 0) AS charged_energy,
+              COALESCE(SUM(discharged_energy_kwh), 0) AS discharged_energy
          FROM device_performance
         WHERE device_id = ? AND recorded_at >= ?`,
     )
-    .get(deviceId, addDays(now.toISOString(), -sinceDays)) as Record<string, any>;
+    .get(
+      deviceId,
+      addDays(now.toISOString(), -sinceDays),
+      deviceId,
+      addDays(now.toISOString(), -sinceDays),
+    ) as Record<string, any>;
 
-  const ratedW = Number(getDevice(deviceId)?.specs.ratedPowerW);
+  const device = getDevice(deviceId);
+  const ratedW = Number(device?.specs.ratedPowerW);
+  const storageCapacityKwh = Number(device?.specs.capacityKwh);
   const capacityFactor =
     Number.isFinite(ratedW) && ratedW > 0
       ? Math.min(1, row.energy / ((ratedW / 1000) * sinceDays * 24))
@@ -578,6 +721,15 @@ export function getPerformanceSummary(
     avgEfficiency: row.avg_eff,
     avgTemperatureC: row.avg_temp,
     capacityFactor,
+    latestStateOfCharge: row.latest_soc,
+    storageCapacityKwh: Number.isFinite(storageCapacityKwh) && storageCapacityKwh > 0 ? storageCapacityKwh : null,
+    availableStorageKwh:
+      Number.isFinite(storageCapacityKwh) && storageCapacityKwh > 0 && row.latest_soc !== null
+        ? storageCapacityKwh * row.latest_soc
+        : null,
+    totalChargedEnergyKwh: row.charged_energy,
+    totalDischargedEnergyKwh: row.discharged_energy,
+    roundTripEfficiency: row.charged_energy > 0 ? row.discharged_energy / row.charged_energy : null,
   };
 }
 
@@ -590,7 +742,8 @@ export function prunePerformance(retentionDays = 90, now = new Date()): number {
 
 /**
  * Handle an MQTT telemetry message on `solargrid/devices/{deviceId}/telemetry`.
- * Payload: `{ "powerW": 350, "energyKwh": 0.12, "voltageV": 38.2, "temperatureC": 41, "efficiency": 0.19 }`.
+ * Payload supports generation telemetry and storage fields (`stateOfCharge` in
+ * 0–1, interval `chargedEnergyKwh`/`dischargedEnergyKwh`).
  * Unknown devices are ignored so stray publishers can't fill the table.
  */
 export function handleDeviceTelemetry(deviceId: string | undefined, payload: Buffer): void {
@@ -610,8 +763,15 @@ export function handleDeviceTelemetry(deviceId: string | undefined, payload: Buf
     powerW: num(body.powerW) ?? undefined,
     energyKwh: num(body.energyKwh) ?? undefined,
     voltageV: num(body.voltageV) ?? undefined,
+    frequencyHz: num(body.frequencyHz) ?? undefined,
     temperatureC: num(body.temperatureC) ?? undefined,
     efficiency: num(body.efficiency) ?? undefined,
+    stateOfCharge:
+      typeof body.stateOfCharge === "number" && body.stateOfCharge >= 0 && body.stateOfCharge <= 1
+        ? body.stateOfCharge
+        : undefined,
+    chargedEnergyKwh: nonNegativeNum(body.chargedEnergyKwh) ?? undefined,
+    dischargedEnergyKwh: nonNegativeNum(body.dischargedEnergyKwh) ?? undefined,
   });
 }
 

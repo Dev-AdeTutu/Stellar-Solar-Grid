@@ -8,6 +8,7 @@ import { asyncHandler } from "../lib/asyncHandler.js";
 import { idempotency } from "../middleware/idempotency.js";
 import { sendPaymentWebhook, stroopsToXlm } from "../lib/paymentWebhook.js";
 import { saveReceipt } from "../lib/receipts.js";
+import { emailTrade } from "../lib/billing.js";
 
 export const paymentsRouter = Router();
 
@@ -117,10 +118,12 @@ paymentsRouter.post(
 
     // Issue #692: Send webhook notification for successful payment
     // Fire async webhook in background without blocking response
-    (async () => {
+    void (async () => {
       try {
         const balance = await getMeterBalance(meterId);
         const plan = await getMeterPlan(meterId);
+
+        await emailTrade({ meterId, payer, amountXlm: stroopsToXlm(amount), transactionHash: hash });
 
         await sendPaymentWebhook({
           meter_id: meterId,

@@ -12,11 +12,16 @@ data class MeterSummary(
     val last7DaysUnits: List<Double>,
     val daysRemaining: Double?,
     val updatedAt: String,
+    val priceXlmPerKwh: Double? = null,
+    val alertTriggered: Boolean = false,
+    val transactions: List<String> = emptyList(),
 ) {
     companion object {
         fun fromJson(json: String): MeterSummary? = try {
             val o = JSONObject(json)
             val days = o.getJSONArray("last7DaysUnits")
+            val alerts = o.optJSONArray("alerts")
+            val txs = o.optJSONArray("recentTransactions")
             MeterSummary(
                 meterId = o.getString("meterId"),
                 active = o.getBoolean("active"),
@@ -25,6 +30,13 @@ data class MeterSummary(
                 last7DaysUnits = List(days.length()) { days.getDouble(it) },
                 daysRemaining = if (o.isNull("daysRemaining")) null else o.getDouble("daysRemaining"),
                 updatedAt = o.getString("updatedAt"),
+                priceXlmPerKwh = if (o.isNull("priceXlmPerKwh")) null else o.optDouble("priceXlmPerKwh"),
+                alertTriggered = alerts != null && (0 until alerts.length()).any { alerts.getJSONObject(it).optBoolean("triggered") },
+                transactions = if (txs == null) emptyList() else (0 until minOf(3, txs.length())).map {
+                    val t = txs.getJSONObject(it)
+                    val sign = if (t.getString("type") == "topup") "+" else "−"
+                    String.format(java.util.Locale.US, "%s%.2f XLM", sign, t.getDouble("amount")) + " · " + t.getString("type")
+                },
             )
         } catch (e: Exception) {
             null

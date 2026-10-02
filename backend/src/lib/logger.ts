@@ -1,5 +1,5 @@
 import winston from "winston";
-import { getReqId } from "./requestContext.js";
+import { getReqId, getRequestId } from "./requestContext.js";
 import { sanitizeForLogging } from "./errorSanitizer.js";
 
 const isProduction = process.env.NODE_ENV === "production";

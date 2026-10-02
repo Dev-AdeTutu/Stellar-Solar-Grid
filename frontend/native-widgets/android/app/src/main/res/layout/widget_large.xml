@@ -83,10 +83,38 @@
             android:textColor="@color/widget_text_secondary"
             android:textSize="11sp" />
 
+        <TextView
+            android:id="@+id/widget_price"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="@color/widget_brand"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/widget_transactions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textColor="@color/widget_text_secondary"
+            android:textSize="11sp" />
+
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/widget_sell"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_gravity="end"
+            android:background="@drawable/widget_button"
+            android:paddingHorizontal="16dp"
+            android:text="@string/widget_sell"
+            android:textAllCaps="false"
+            android:textColor="#FF000000"
+            android:textSize="13sp" />
 
         <Button
             android:id="@+id/widget_topup"

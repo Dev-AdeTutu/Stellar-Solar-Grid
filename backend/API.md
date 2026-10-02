@@ -1,6 +1,72 @@
+# Issue #886: Global Rate Limiting
+
+Every request is charged to an IP-based fixed-window quota before JSON parsing. If a valid `X-API-Key` is present, the owning provider is also charged to a tier quota based on the key's `read`, `write`, or `admin` permission. The tighter payment and write limiters remain in force for their routes.
+
+Configure `RATE_LIMIT_WINDOW_MS` and `RATE_LIMIT_MAX` for the shared IP quota, and `RATE_LIMIT_USER_READ_MAX`, `RATE_LIMIT_USER_WRITE_MAX`, and `RATE_LIMIT_USER_ADMIN_MAX` for provider quotas. Configure `REDIS_URL` to share atomic counters across replicas; without Redis the backend falls back to a bounded process-local store. `TRUST_PROXY_HOPS` must match the trusted proxy chain or clients may be misidentified. Responses include `X-RateLimit-*`, `RateLimit-*`, and `Retry-After` headers; CORS exposes those headers to browser clients.
+
+# Issue #882: Email Notifications
+
+`POST /api/email-notifications/price-alert` sends an admin-triggered price alert. Billing notifications are emitted for successful meter payments and generated bills, and low-balance email notifications use the meter's billing account address. `GET /api/email-notifications/manage?token=...` offers per-event controls; signed tokens are linked in delivered messages. `GET /api/email-notifications/unsubscribe?token=...` displays a confirmation page and the subsequent form POST unsubscribes from all email categories.
+
+Set `EMAIL_PROVIDER` to `resend`, `sendgrid`, or `log`, and configure the corresponding provider API key, `EMAIL_FROM`, `EMAIL_PREFERENCES_SECRET`, and `EMAIL_PREFERENCES_BASE_URL`. The log provider does not deliver mail. Delivery rates are provider/deployment dependent and must be measured from provider events; the application cannot guarantee a 95% deliverability rate by itself.
+
+# Issue #885: Grid Stability
+
+Device voltage and frequency readings are accepted over `solargrid/devices/{deviceId}/telemetry`, HTTP `POST /api/devices/:id/performance`, and GraphQL `recordDevicePerformance`. `GET /api/devices/:id/stability?days=7` returns the measured-readings stability score and historical anomalies. Anomalies are persisted and sent to device-owner webhooks with a per-device/metric 15-minute alert cooldown. Set `GRID_VOLTAGE_MIN_V`, `GRID_VOLTAGE_MAX_V`, `GRID_FREQUENCY_MIN_HZ`, and `GRID_FREQUENCY_MAX_HZ` to match the local grid standard.
 # Backend API
 
 This document describes the backend HTTP API surface.
+
+## Energy Forecasting Service (#881)
+
+`GET /api/weather/energy-forecast`
+
+Returns hourly production and/or consumption estimates for up to 48 hours. At
+least one of `meterId` or `deviceId` is required. A `deviceId` must identify a
+registered `solar_panel`; its `ratedPowerW`, `latitude`, and `longitude` specs
+are used when available. `lat` and `lon` may be supplied explicitly and are
+required for meter-only requests. `hours` defaults to 48 and may be an integer
+from 1 through 48.
+
+Example:
+
+```text
+GET /api/weather/energy-forecast?meterId=METER_01&deviceId=PANEL_01&hours=48
+```
+
+Consumption training reads the previous 90 days of meter usage and converts
+the platform's milli-kWh event units to kWh. Production training uses the
+previous 90 days of registered solar-panel performance telemetry. Both models
+use a regularized seasonal regression over hour-of-day and weekday features;
+missing hours are treated as zero. OpenWeather hourly cloud cover and
+temperature adjust production estimates; temperature adjusts consumption
+estimates. Precipitation probability is included as forecast context. Models retrain at
+startup and every six hours by default; configure the interval with
+`ENERGY_FORECAST_RETRAIN_INTERVAL_MS`.
+
+The response includes per-stream `trainingSamples`, `accuracyPct`, and
+`trainedAt`. Accuracy is a held-out weighted absolute-error score and is `null`
+when there is no usable validation history; the service does not claim a fixed
+accuracy for meters or sites without representative historical data.
+
+```json
+{
+  "horizonHours": 48,
+  "weatherStale": false,
+  "models": {
+    "production": { "algorithm": "seasonal-ridge", "trainingSamples": 1200, "accuracyPct": 91.2 },
+    "consumption": { "algorithm": "seasonal-ridge", "trainingSamples": 2160, "accuracyPct": 88.5 }
+  },
+  "forecast": [
+    {
+      "timestamp": "2026-09-29T12:00:00.000Z",
+      "productionKwh": 2.15,
+      "consumptionKwh": 0.42,
+      "weather": { "temperatureC": 22, "cloudCoverPct": 18, "productionFactor": 0.91 }
+    }
+  ]
+}
+```
 
 ## Energy Grid Simulation Tool (#909)
 
@@ -283,5 +349,22 @@ Endpoints live under `/api/competitions`. See `docs/COMPETITIONS.md`.
 
 ## Smart Home (#904)
 
+- Failed webhook calls are logged but do not crash the IoT bridge
+- Webhook timeouts can be configured via your HTTP client settings
+- Consider idempotency keys on your webhook endpoint to handle retries
+
+## Load Balancing (#889)
+`POST /api/load-balancing/balance` — body `{ capacityKw, pricePerKwh, peakPriceThreshold?, loads: [{ id, demandKw, priority: "critical"|"high"|"normal"|"deferrable", override?: "on"|"off" }] }`.
+Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`. Critical loads are always served; `override` lets users force a load on/off; deferrable loads are shifted when the price exceeds `peakPriceThreshold`.
+
+## Two-Factor Authentication (#890)
+- `POST /api/2fa/enroll` `{ account, phone? }` → TOTP secret, `otpauthUrl` for authenticator apps, 10 single-use recovery codes.
+- `POST /api/2fa/verify` `{ account, code, method?: "totp"|"sms"|"recovery" }` — 5 failures lock the account for 15 min.
+- `POST /api/2fa/sms` `{ account }` — sends SMS fallback code (5-min expiry).
+- `POST /api/2fa/recovery-codes` `{ account, code }` — regenerates recovery codes.
+- Enforcement: `requireTwoFactor` middleware requires 2FA for accounts with value ≥ `TWO_FACTOR_ENFORCE_THRESHOLD`.
+
+## Trading Bot API (#891)
+See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.

@@ -5,6 +5,10 @@ import {
   extractPayerAddress,
   MemoryPayerRateLimitStore,
 } from "../src/middleware/payerRateLimit.js";
+import {
+  createGlobalRateLimiter,
+  MemoryRateLimitStore,
+} from "../src/middleware/globalRateLimit.js";
 
 function request(body: Record<string, unknown> = {}, headers: Record<string, string> = {}) {
   return {
@@ -83,5 +87,58 @@ describe("payer-aware rate limiting", () => {
     expect(extractPayerAddress(request({ owner: payer }))).toBe(payer);
     expect(extractPayerAddress(request({}, { "x-payer-address": payer }))).toBe(payer);
     expect(extractPayerAddress(request({ payer: "   " }))).toBeNull();
+  });
+});
+
+describe("global rate limiting", () => {
+  it("limits every IP and returns remaining and retry headers", async () => {
+    const middleware = createGlobalRateLimiter({
+      store: new MemoryRateLimitStore(),
+      ipLimit: 1,
+      windowMs: 60_000,
+    });
+    const req = request();
+    Object.assign(req, { ip: "192.0.2.1", socket: { remoteAddress: "192.0.2.1" } });
+
+    const first = response();
+    const firstNext = vi.fn() as unknown as NextFunction;
+    await middleware(req, first, firstNext);
+    expect(firstNext).toHaveBeenCalledOnce();
+    expect(first.setHeader).toHaveBeenCalledWith("X-RateLimit-Remaining", "0");
+
+    const second = response();
+    const secondNext = vi.fn() as unknown as NextFunction;
+    await middleware(req, second, secondNext);
+    expect(secondNext).not.toHaveBeenCalled();
+    expect(second.status).toHaveBeenCalledWith(429);
+    expect(second.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "RATE_LIMITED", retryAfter: expect.any(Number) }),
+    );
+    expect(second.setHeader).toHaveBeenCalledWith("Retry-After", expect.any(String));
+  });
+
+  it("applies permission-tier quotas independently of IP quotas", async () => {
+    const middleware = createGlobalRateLimiter({
+      store: new MemoryRateLimitStore(),
+      ipLimit: 10,
+      windowMs: 60_000,
+      userLimits: { read: 1, write: 2, admin: 3 },
+      resolveIdentity: () => ({ id: "provider-1", tier: "read" }),
+    });
+    const req = request();
+    Object.assign(req, { ip: "192.0.2.2", socket: { remoteAddress: "192.0.2.2" } });
+
+    const first = response();
+    const firstNext = vi.fn() as unknown as NextFunction;
+    await middleware(req, first, firstNext);
+    expect(firstNext).toHaveBeenCalledOnce();
+    expect(first.setHeader).toHaveBeenCalledWith("X-RateLimit-Limit-User", "1");
+
+    const second = response();
+    const secondNext = vi.fn() as unknown as NextFunction;
+    await middleware(req, second, secondNext);
+    expect(secondNext).not.toHaveBeenCalled();
+    expect(second.status).toHaveBeenCalledWith(429);
+    expect(second.setHeader).toHaveBeenCalledWith("X-RateLimit-Remaining-User", "0");
   });
 });

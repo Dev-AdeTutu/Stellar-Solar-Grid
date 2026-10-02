@@ -110,10 +110,14 @@ class SolarGridWidgetProvider : AppWidgetProvider() {
                 views.setImageViewBitmap(R.id.widget_chart, usageChart(s.last7DaysUnits))
             }
             if (layout == R.layout.widget_large) {
-                views.setOnClickPendingIntent(
-                    R.id.widget_topup,
-                    deepLink(context, "solargrid://pay?meter=${Uri.encode(s.meterId)}", 1),
+                val meter = Uri.encode(s.meterId)
+                views.setOnClickPendingIntent(R.id.widget_topup, deepLink(context, "solargrid://trade?meter=$meter&side=buy", 1))
+                views.setOnClickPendingIntent(R.id.widget_sell, deepLink(context, "solargrid://trade?meter=$meter&side=sell", 2))
+                views.setTextViewText(
+                    R.id.widget_price,
+                    s.priceXlmPerKwh?.let { String.format(Locale.US, "%.3f XLM/kWh", it) + if (s.alertTriggered) " 🔔" else "" } ?: "",
                 )
+                views.setTextViewText(R.id.widget_transactions, s.transactions.joinToString("\n"))
             }
             return views
         }

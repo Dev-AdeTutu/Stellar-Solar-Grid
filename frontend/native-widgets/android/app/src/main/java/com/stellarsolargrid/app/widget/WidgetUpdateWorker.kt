@@ -18,7 +18,7 @@ import java.net.URL
 import java.util.concurrent.TimeUnit
 
 /**
- * Refreshes widget data every 15 minutes (#901).
+ * Refreshes widget data every 5 minutes (#938; was 15 in #901).
  *
  * Battery: WorkManager batches this with other jobs and honours Doze; the
  * job only runs with a network connection and when the battery is not low,
@@ -63,6 +63,9 @@ class WidgetUpdateWorker(context: Context, params: WorkerParameters) : Coroutine
         }
 
         SolarGridWidgetProvider.updateAll(ctx)
+        // WorkManager periodic work cannot go below 15 minutes, so chain a delayed
+        // one-time job for the 5-minute cadence; the periodic job stays as a fallback.
+        scheduleNext(ctx)
         return Result.success()
     }
 
@@ -82,6 +85,17 @@ class WidgetUpdateWorker(context: Context, params: WorkerParameters) : Coroutine
                 .build()
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.KEEP, request)
+        }
+
+        private const val NEXT = "solargrid-widget-refresh-next"
+
+        private fun scheduleNext(context: Context) {
+            if (WidgetDataStore.meterId(context) == null) return
+            val request = OneTimeWorkRequestBuilder<WidgetUpdateWorker>()
+                .setInitialDelay(5, TimeUnit.MINUTES)
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(NEXT, ExistingWorkPolicy.REPLACE, request)
         }
 
         fun refreshNow(context: Context) {
