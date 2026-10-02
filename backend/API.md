@@ -1,3 +1,18 @@
+# Issue #886: Global Rate Limiting
+
+Every request is charged to an IP-based fixed-window quota before JSON parsing. If a valid `X-API-Key` is present, the owning provider is also charged to a tier quota based on the key's `read`, `write`, or `admin` permission. The tighter payment and write limiters remain in force for their routes.
+
+Configure `RATE_LIMIT_WINDOW_MS` and `RATE_LIMIT_MAX` for the shared IP quota, and `RATE_LIMIT_USER_READ_MAX`, `RATE_LIMIT_USER_WRITE_MAX`, and `RATE_LIMIT_USER_ADMIN_MAX` for provider quotas. Configure `REDIS_URL` to share atomic counters across replicas; without Redis the backend falls back to a bounded process-local store. `TRUST_PROXY_HOPS` must match the trusted proxy chain or clients may be misidentified. Responses include `X-RateLimit-*`, `RateLimit-*`, and `Retry-After` headers; CORS exposes those headers to browser clients.
+
+# Issue #882: Email Notifications
+
+`POST /api/email-notifications/price-alert` sends an admin-triggered price alert. Billing notifications are emitted for successful meter payments and generated bills, and low-balance email notifications use the meter's billing account address. `GET /api/email-notifications/manage?token=...` offers per-event controls; signed tokens are linked in delivered messages. `GET /api/email-notifications/unsubscribe?token=...` displays a confirmation page and the subsequent form POST unsubscribes from all email categories.
+
+Set `EMAIL_PROVIDER` to `resend`, `sendgrid`, or `log`, and configure the corresponding provider API key, `EMAIL_FROM`, `EMAIL_PREFERENCES_SECRET`, and `EMAIL_PREFERENCES_BASE_URL`. The log provider does not deliver mail. Delivery rates are provider/deployment dependent and must be measured from provider events; the application cannot guarantee a 95% deliverability rate by itself.
+
+# Issue #885: Grid Stability
+
+Device voltage and frequency readings are accepted over `solargrid/devices/{deviceId}/telemetry`, HTTP `POST /api/devices/:id/performance`, and GraphQL `recordDevicePerformance`. `GET /api/devices/:id/stability?days=7` returns the measured-readings stability score and historical anomalies. Anomalies are persisted and sent to device-owner webhooks with a per-device/metric 15-minute alert cooldown. Set `GRID_VOLTAGE_MIN_V`, `GRID_VOLTAGE_MAX_V`, `GRID_FREQUENCY_MIN_HZ`, and `GRID_FREQUENCY_MAX_HZ` to match the local grid standard.
 # Backend API
 
 This document describes the backend HTTP API surface.

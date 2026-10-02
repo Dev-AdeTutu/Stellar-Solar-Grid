@@ -215,6 +215,7 @@ pub enum AdminOperation {
     BulkDeactivate(Vec<String>),
     RotateAdmin(Address),
     SetGracePeriod(u64),
+    UpgradeContract(BytesN<32>, String),
 }
 
 #[contracttype]
@@ -2390,6 +2391,13 @@ impl SolarGridContract {
         if admins.len() < 3 || admins.len() > 5 || threshold == 0 || threshold > admins.len() {
             return Err(ContractError::InvalidMultisigConfiguration);
         }
+        for (index, admin) in admins.iter().enumerate() {
+            for other in admins.iter().skip(index + 1) {
+                if admin == other {
+                    return Err(ContractError::InvalidMultisigConfiguration);
+                }
+            }
+        }
         env.storage().instance().set(&MULTISIG_ADMINS, &admins);
         env.storage()
             .instance()
@@ -4008,6 +4016,36 @@ mod tests {
         assert_eq!(
             client.get_contract_version(),
             String::from_str(&env, CURRENT_CONTRACT_VERSION)
+        );
+    }
+
+    #[test]
+    fn test_contract_upgrade_proposal_requires_multiple_admin_approvals() {
+        let (env, client, admin) = setup();
+        let second_admin = Address::generate(&env);
+        let third_admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone(), second_admin, third_admin];
+        let wasm_hash = BytesN::from_array(&env, &[7; 32]);
+        let expiry = env.ledger().timestamp() + 100;
+
+        client.configure_multisig(&admins, &1);
+        assert_eq!(
+            client.try_propose_admin_operation(
+                &admin,
+                &AdminOperation::UpgradeContract(wasm_hash.clone(), String::from_str(&env, "0.2.0")),
+                &expiry,
+            ),
+            Err(Ok(ContractError::InvalidMultisigConfiguration)),
+        );
+
+        client.configure_multisig(&admins, &2);
+        assert_eq!(
+            client.try_propose_admin_operation(
+                &admin,
+                &AdminOperation::UpgradeContract(wasm_hash, String::from_str(&env, "0.2.0")),
+                &expiry,
+            ),
+            Ok(Ok(0)),
         );
     }
 

@@ -71,6 +71,7 @@ import { requestLogger } from "./lib/requestLogger.js";
 import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
+import { globalRateLimiter } from "./middleware/globalRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
@@ -137,7 +138,12 @@ const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
 const STARTED_AT = Date.now();
 
 const app = express();
-app.use(cors());
+app.use(cors({ exposedHeaders: [
+  "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset",
+  "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+  "X-RateLimit-Policy", "Retry-After",
+] }));
+app.use(globalRateLimiter);
 app.use(express.json());
 
 const pool = new Pool({
@@ -184,6 +190,7 @@ app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
+app.use("/api/email-notifications", emailNotificationsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/weather", weatherRouter);
 app.use("/api/usage-events", usageEventsRouter);
