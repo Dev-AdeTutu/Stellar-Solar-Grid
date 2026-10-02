@@ -9,9 +9,14 @@
  *   POST /api/carbon-credits/:id/purchase           — purchase a listed credit
  *   GET  /api/carbon-credits/marketplace            — open market listings
  *   GET  /api/carbon-credits/owner/:ownerId         — all credits for an owner
+ *   POST /api/carbon-credits/:id/retire-record      — retire + record in registry (#934)
+ *   GET  /api/carbon-credits/registry[/:serial]     — retirement registry
+ *   POST /api/carbon-credits/registry/:serial/verify — third-party verification (admin)
+ *   GET  /api/carbon-credits/report/:ownerId/:year  — annual sustainability report
  */
 import { Router, Request, Response } from "express";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { requireAdminKey } from "../middleware/adminAuth.js";
 import {
   issueCredit,
   retireCredit,
@@ -22,6 +27,11 @@ import {
   getMarketListings,
   getCreditStats,
   calculateCredits,
+  retireAndRecord,
+  getRetirementRegistry,
+  getRetirement,
+  verifyRetirement,
+  annualSustainabilityReport,
 } from "../lib/carbonCredits.js";
 
 export const carbonCreditsRouter = Router();
@@ -65,6 +75,59 @@ carbonCreditsRouter.post(
     }
     const credit = issueCredit({ ownerId, kwhProduced: kwh, meterId, vintage });
     res.status(201).json(credit);
+  }),
+);
+
+carbonCreditsRouter.get(
+  "/registry",
+  asyncHandler(async (req: Request, res: Response) => {
+    const ownerId = typeof req.query.ownerId === "string" ? req.query.ownerId : undefined;
+    res.json({ retirements: getRetirementRegistry(ownerId) });
+  }),
+);
+
+carbonCreditsRouter.get(
+  "/registry/:serial",
+  asyncHandler(async (req: Request, res: Response) => {
+    const record = getRetirement(Number(req.params.serial));
+    if (!record) return res.status(404).json({ error: "Retirement not found" });
+    res.json(record);
+  }),
+);
+
+carbonCreditsRouter.post(
+  "/registry/:serial/verify",
+  requireAdminKey,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { verifier } = req.body as { verifier?: string };
+    if (!verifier) return res.status(400).json({ error: "verifier is required" });
+    try {
+      res.json(verifyRetirement(Number(req.params.serial), verifier));
+    } catch (err: any) {
+      res.status(err.code === "NOT_FOUND" ? 404 : err.code === "CONFLICT" ? 409 : 400).json({ error: err.message });
+    }
+  }),
+);
+
+carbonCreditsRouter.get(
+  "/report/:ownerId/:year",
+  asyncHandler(async (req: Request, res: Response) => {
+    const year = Number(req.params.year);
+    if (!Number.isInteger(year) || year < 2000 || year > 3000) return res.status(400).json({ error: "invalid year" });
+    res.json(annualSustainabilityReport(req.params.ownerId, year));
+  }),
+);
+
+carbonCreditsRouter.post(
+  "/:id/retire-record",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { actor, beneficiary } = req.body as { actor?: string; beneficiary?: string };
+    if (!actor) return res.status(400).json({ error: "actor is required" });
+    try {
+      res.status(201).json(retireAndRecord(req.params.id, actor, beneficiary));
+    } catch (err: any) {
+      res.status(err.code === "NOT_FOUND" ? 404 : err.code === "CONFLICT" ? 409 : 400).json({ error: err.message });
+    }
   }),
 );
 

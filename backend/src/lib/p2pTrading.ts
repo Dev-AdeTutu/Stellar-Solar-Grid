@@ -237,3 +237,7 @@ export function getTradingStats(): {
     totalVolumeXlm: Number(totalVolumeXlm.toFixed(4)),
   };
 }
+
+export function getRecentMatches(limit = 50): TradeMatch[] {
+  return [...matches.values()].sort((a, b) => b.matchedAt.localeCompare(a.matchedAt)).slice(0, limit);
+}
