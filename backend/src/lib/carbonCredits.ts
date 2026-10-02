@@ -177,3 +177,80 @@ export function getCreditStats(): {
   }
   return { totalIssued, totalRetired, totalListed, totalCreditValue };
 }
+
+// ── Retirement registry, verification and annual reports (#934) ──────────────
+
+export type RetirementRecord = {
+  serial: number;
+  creditId: string;
+  ownerId: string;
+  credits: number;
+  co2Tonnes: number;
+  vintage: string;
+  registryRef: string;
+  retiredAt: string;
+  beneficiary: string | null;
+  verifiedBy: string | null;
+  verifiedAt: string | null;
+};
+
+// Append-only: records are never edited or removed, only verification fields are set once.
+const registry: RetirementRecord[] = [];
+
+/** Tonnes of CO2 offset by a quantity of credits (1 credit = 1 tonne). */
+export function carbonImpactTonnes(credits: number): number {
+  return Number(((credits * KWH_PER_CREDIT * KG_CO2_PER_KWH) / 1000).toFixed(6));
+}
+
+/** Retire a credit and record it permanently in the registry. */
+export function retireAndRecord(creditId: string, actor: string, beneficiary?: string): RetirementRecord {
+  const credit = retireCredit(creditId, actor);
+  const record: RetirementRecord = {
+    serial: registry.length + 1,
+    creditId,
+    ownerId: credit.ownerId,
+    credits: credit.creditsIssued,
+    co2Tonnes: carbonImpactTonnes(credit.creditsIssued),
+    vintage: credit.vintage,
+    registryRef: credit.registryRef,
+    retiredAt: credit.retiredAt as string,
+    beneficiary: beneficiary ?? null,
+    verifiedBy: null,
+    verifiedAt: null,
+  };
+  registry.push(record);
+  return { ...record };
+}
+
+export function getRetirementRegistry(ownerId?: string): RetirementRecord[] {
+  return registry.filter((r) => ownerId === undefined || r.ownerId === ownerId).map((r) => ({ ...r }));
+}
+
+export function getRetirement(serial: number): RetirementRecord | undefined {
+  const r = registry[serial - 1];
+  return r ? { ...r } : undefined;
+}
+
+/** Third-party verifier attests a retirement; each record can be verified once. */
+export function verifyRetirement(serial: number, verifier: string): RetirementRecord {
+  const record = registry[serial - 1];
+  if (!record) throw Object.assign(new Error("Retirement not found"), { code: "NOT_FOUND" });
+  if (record.verifiedBy) throw Object.assign(new Error("Retirement already verified"), { code: "CONFLICT" });
+  record.verifiedBy = verifier;
+  record.verifiedAt = new Date().toISOString();
+  return { ...record };
+}
+
+export function annualSustainabilityReport(ownerId: string, year: number) {
+  const rows = registry.filter((r) => r.ownerId === ownerId && new Date(r.retiredAt).getUTCFullYear() === year);
+  return {
+    ownerId,
+    year,
+    generatedAt: new Date().toISOString(),
+    retirements: rows.length,
+    verifiedRetirements: rows.filter((r) => r.verifiedBy).length,
+    totalCredits: Number(rows.reduce((s, r) => s + r.credits, 0).toFixed(6)),
+    totalCo2Tonnes: Number(rows.reduce((s, r) => s + r.co2Tonnes, 0).toFixed(6)),
+    records: rows.map((r) => ({ ...r })),
+  };
+}

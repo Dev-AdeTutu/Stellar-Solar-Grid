@@ -80,24 +80,7 @@
                   "string": "META"
                 },
                 {
-                  "map": [
-                    {
-                      "key": {
-                        "string": "k0"
-                      },
-                      "val": {
-                        "string": "vvvvvvvv"
-                      }
-                    },
-                    {
-                      "key": {
-                        "string": "k1"
-                      },
-                      "val": {
-                        "string": "vvvvvvvv"
-                      }
-                    }
-                  ]
+                  "map": []
                 }
               ]
             }
@@ -501,24 +484,7 @@
               },
               "durability": "persistent",
               "val": {
-                "map": [
-                  {
-                    "key": {
-                      "string": "k0"
-                    },
-                    "val": {
-                      "string": "vvvvvvvv"
-                    }
-                  },
-                  {
-                    "key": {
-                      "string": "k1"
-                    },
-                    "val": {
-                      "string": "vvvvvvvv"
-                    }
-                  }
-                ]
+                "map": []
               }
             }
           },

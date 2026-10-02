@@ -139,6 +139,7 @@ export const typeDefs = /* GraphQL */ `
     maintenance: [MaintenanceSchedule!]!
     performance(days: Int = 7): PerformanceSummary!
     performanceReadings(days: Int = 7): [PerformanceReading!]!
+    stability(days: Int = 7): StabilityReport!
   }
 
   type Certification {
@@ -170,6 +171,7 @@ export const typeDefs = /* GraphQL */ `
     powerW: Float
     energyKwh: Float
     voltageV: Float
+    frequencyHz: Float
     temperatureC: Float
     efficiency: Float
   }
@@ -185,6 +187,25 @@ export const typeDefs = /* GraphQL */ `
     avgEfficiency: Float
     avgTemperatureC: Float
     capacityFactor: Float
+  }
+
+  type StabilityAnomaly {
+    id: Int!
+    deviceId: ID!
+    recordedAt: String!
+    metric: String!
+    value: Float!
+    severity: String!
+    message: String!
+  }
+
+  type StabilityReport {
+    deviceId: ID!
+    from: String!
+    to: String!
+    readings: Int!
+    stabilityScore: Int
+    anomalies: [StabilityAnomaly!]!
   }
 
   input RegisterDeviceInput {
@@ -228,6 +249,7 @@ export const typeDefs = /* GraphQL */ `
     powerW: Float
     energyKwh: Float
     voltageV: Float
+    frequencyHz: Float
     temperatureC: Float
     efficiency: Float
   }

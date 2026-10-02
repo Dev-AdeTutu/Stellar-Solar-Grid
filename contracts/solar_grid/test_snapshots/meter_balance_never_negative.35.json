@@ -118,7 +118,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "2126291"
+                  "i128": "2491402"
                 }
               ]
             }
@@ -143,7 +143,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "755526"
+                  "i128": "674347"
                 },
                 {
                   "vec": [
@@ -170,7 +170,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "755526"
+                      "i128": "674347"
                     }
                   ]
                 }
@@ -197,7 +197,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "287940"
+                  "i128": "466403"
                 },
                 {
                   "vec": [
@@ -224,7 +224,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "287940"
+                      "i128": "466403"
                     }
                   ]
                 }
@@ -251,7 +251,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "565326"
+                  "i128": "6943"
                 },
                 {
                   "vec": [
@@ -278,7 +278,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "565326"
+                      "i128": "6943"
                     }
                   ]
                 }
@@ -305,7 +305,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "52074"
+                  "i128": "867367"
                 },
                 {
                   "vec": [
@@ -332,7 +332,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "52074"
+                      "i128": "867367"
                     }
                   ]
                 }
@@ -359,7 +359,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "465425"
+                  "i128": "476342"
                 },
                 {
                   "vec": [
@@ -386,7 +386,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "465425"
+                      "i128": "476342"
                     }
                   ]
                 }
@@ -413,33 +413,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "933863"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "update_usage",
-              "args": [
-                {
-                  "string": "PROP"
-                },
-                {
-                  "u64": "1"
-                },
-                {
-                  "i128": "875461"
+                  "i128": "1522164"
                 }
               ]
             }
@@ -465,7 +439,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1706043"
+                  "i128": "507698"
                 }
               ]
             }
@@ -491,7 +465,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1824251"
+                  "i128": "233488"
                 }
               ]
             }
@@ -685,26 +659,6 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "6517132746326325848"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "7270604957039011794"
                 }
               },
               "durability": "temporary",
@@ -1056,7 +1010,7 @@
                       "symbol": "day_spent"
                     },
                     "val": {
-                      "i128": "5339618"
+                      "i128": "2263350"
                     }
                   },
                   {
@@ -1085,9 +1039,7 @@
                     "key": {
                       "symbol": "grace_expires_at"
                     },
-                    "val": {
-                      "u64": "18446744073709551615"
-                    }
+                    "val": "void"
                   },
                   {
                     "key": {
@@ -1138,7 +1090,7 @@
                       "symbol": "units_used"
                     },
                     "val": {
-                      "u64": "4"
+                      "u64": "3"
                     }
                   },
                   {
@@ -1176,7 +1128,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "0"
+                "i128": "228052"
               }
             }
           },
@@ -1264,7 +1216,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "2126291"
+                "i128": "2491402"
               }
             }
           },
@@ -1291,7 +1243,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "2126291"
+                "i128": "2491402"
               }
             }
           },
@@ -1407,7 +1359,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "2126291"
+                        "i128": "2491402"
                       }
                     }
                   ]
@@ -1544,7 +1496,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "2126291"
+                      "i128": "2491402"
                     }
                   },
                   {

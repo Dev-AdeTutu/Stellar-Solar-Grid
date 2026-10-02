@@ -3,18 +3,23 @@
 extern crate alloc;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, BytesN, Env,
-    Map, String, Symbol, TryFromVal, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
+    BytesN, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 mod certificates;
 mod multi_asset;
+mod recs;
 mod staking;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
+pub use recs::{
+    RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
+    RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
+};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -103,10 +108,26 @@ pub enum ContractError {
     DiscountCodeInactive = 60,
     DiscountCodeExpired = 61,
     DiscountCodeExhausted = 62,
-    /// Fixed discount value is not positive.
-    InvalidDiscountValue = 63,
-    /// No prior contract version is available to restore.
-    NoPreviousUpgrade = 64,
+    /// REC marketplace entrypoints used before `configure_recs` (#927).
+    RecNotConfigured = 63,
+    /// No renewable energy credit exists with the given id.
+    RecNotFound = 64,
+    /// The credit has not been attested by the compliance authority yet.
+    RecCompliancePending = 65,
+    /// The credit was rejected by the compliance authority.
+    RecComplianceRejected = 66,
+    /// No order exists with the given id.
+    OrderNotFound = 67,
+    /// The order has already been filled or cancelled.
+    OrderNotFilled = 68,
+    /// Only open orders can be traded or cancelled.
+    OrderNotOpen = 69,
+    /// No executed trade exists with the given id.
+    TradeNotFound = 70,
+    /// Generation backing a REC issue is missing or out of range.
+    InvalidRecQuantity = 71,
+    /// A registry or attestation reference is required.
+    ComplianceRefMissing = 72,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -154,6 +175,7 @@ const MINUTES_PER_DAY: u32 = 24 * 60;
 const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
+const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
 /// Max number of metadata key-value pairs per meter (Issue #691).
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
@@ -185,24 +207,6 @@ const NOMINAL_MONTHLY_PRICE: i128 = 30_000_000;
 /// forever is the ownership-transfer history; we cap it here and rely on the
 /// emitted `mtr_xfer` events for a complete archive off-chain.
 const MAX_OWNERSHIP_HISTORY: u32 = 20;
-
-/// Issue #751 — nominal full-cycle price (stroops) used to pro-rate partial
-/// payments into a service duration. `calculate_prorated_duration` scales
-/// these linearly by the amount actually paid.
-const DAILY_PLAN_COST: i128 = 1_000_000;
-const WEEKLY_PLAN_COST: i128 = 5_000_000;
-
-/// Issue #827 — contract upgrade mechanism.
-/// Hash of the wasm currently installed (redundant with the ledger's own
-/// executable pointer, but kept on-chain so `rollback_upgrade` can restore
-/// the previous one without off-chain bookkeeping).
-const CURRENT_WASM_HASH: Symbol = symbol_short!("CUR_WASM");
-/// Hash of the wasm that was installed immediately before the most recent
-/// `upgrade_contract` call. `None`/unset until the first upgrade.
-const PREV_WASM_HASH: Symbol = symbol_short!("PRV_WASM");
-/// Contract-schema version string in effect immediately before the most
-/// recent upgrade, restored verbatim by `rollback_upgrade`.
-const PREV_CONTRACT_VERSION: Symbol = symbol_short!("PRV_VER");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -237,6 +241,7 @@ pub enum AdminOperation {
     BulkDeactivate(Vec<String>),
     RotateAdmin(Address),
     SetGracePeriod(u64),
+    UpgradeContract(BytesN<32>, String),
 }
 
 #[contracttype]
@@ -246,6 +251,13 @@ pub struct AdminProposal {
     pub approvals: Vec<Address>,
     pub threshold: u32,
     pub expiry: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferProposal {
+    pub proposed_admin: Address,
+    pub expires_at: u64,
 }
 
 /// Access status with grace period details
@@ -289,8 +301,8 @@ pub struct Meter {
     /// v4: adds auto_deactivate (controlling whether exceeding daily_limit blocks
     ///     usage (true, default) or only emits a limit_hit warning (false)) and
     ///     metadata (Issue #691)
-    /// v6: adds installed_at.
-    /// v7: adds max_capacity_watts for load-balancing decisions (Issue #821).
+    /// v5: adds max_capacity_watts — the meter's maximum energy capacity, used
+    ///     for load-balancing decisions (Issue #821)
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -476,19 +488,20 @@ fn migrate_meter_v5(old: LegacyMeterV5) -> Meter {
 /// - Daily: exactly SECONDS_PER_DAY (86,400 seconds / 24 hours elapsed)
 /// - Weekly: exactly SECONDS_PER_WEEK (604,800 seconds / 7 days elapsed)
 /// - Monthly: exactly 30 * SECONDS_PER_DAY (2,592,000 seconds / 30 days elapsed)
-/// - UsageBased: `None` (no time expiry — callers use the `u64::MAX` sentinel directly).
-///
-/// Returns `None` for `UsageBased` so callers can use `u64::MAX` directly
-/// without risking overflow in `checked_add`. Closes #745.
-fn plan_duration_secs(plan: &PaymentPlan) -> Option<u64> {
+/// - UsageBased: u64::MAX (no time expiry; saturating_add with any timestamp yields u64::MAX).
+fn plan_duration_secs(plan: &PaymentPlan) -> u64 {
     match plan {
-        PaymentPlan::Daily => Some(SECONDS_PER_DAY),
-        PaymentPlan::Weekly => Some(SECONDS_PER_WEEK),
-        PaymentPlan::Monthly => Some(30 * SECONDS_PER_DAY),
-        PaymentPlan::UsageBased => None,
+        PaymentPlan::Daily => SECONDS_PER_DAY,
+        PaymentPlan::Weekly => SECONDS_PER_WEEK,
+        PaymentPlan::Monthly => 30 * SECONDS_PER_DAY,
+        PaymentPlan::UsageBased => u64::MAX,
     }
 }
 
+/// Nominal price of a full billing period for each timed plan, in stroops.
+/// Used to pro-rate partial payments (Issue #751).
+pub const DAILY_PLAN_COST: i128 = 1_000_000;
+pub const WEEKLY_PLAN_COST: i128 = 5_000_000;
 pub const MONTHLY_PLAN_COST: i128 = 20_000_000;
 
 /// Pro-rated service duration (seconds) bought by `amount` on `plan`
@@ -538,12 +551,9 @@ pub enum DataKey {
     MeterDelegates(String),
     /// Storage key for a multisig admin proposal.
     AdminProposal(u32),
+    AdminTransferProposal,
     /// Owner-authorized automatic top-up settings for a meter.
     AutoTopup(String),
-    /// Issue #825: promotional discount code, keyed by the code string itself.
-    DiscountCode(String),
-    /// Schema version for read-through migration where present.
-    MeterVersion(String),
     /// Discount code keyed by its case-sensitive code string.
     Discount(String),
     /// Schema version for entries written by the capacity migration.
@@ -686,48 +696,6 @@ pub struct BatchRegisterResult {
     pub meter_id: String,
     pub success: bool,
     pub error: Option<String>,
-}
-
-/// Issue #825 — the type of discount a `DiscountCode` grants.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum DiscountType {
-    /// `value` is a percentage off, 1-100.
-    Percent,
-    /// `value` is a fixed stroop amount off (capped at the payment amount).
-    Fixed,
-}
-
-/// Promotional discount code (Issue #825). Created by the admin via
-/// `create_discount_code` and redeemed via `apply_discount_code` (or the
-/// `make_payment_with_discount` convenience entrypoint).
-///
-/// `valid_until` of 0 means no expiry; `max_uses` of 0 means unlimited uses.
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct DiscountCode {
-    pub code: String,
-    pub discount_type: DiscountType,
-    /// Percentage (1-100) when `discount_type` is `Percent`, or a fixed
-    /// stroop amount (> 0) when `discount_type` is `Fixed`.
-    pub value: i128,
-    /// Kept for backward compatibility with the percent-only design this
-    /// replaces: mirrors `value` when `discount_type` is `Percent`, else 0.
-    pub discount_pct: u32,
-    pub valid_until: u64,
-    pub max_uses: u32,
-    pub uses: u32,
-    pub active: bool,
-}
-
-/// Event payload emitted when a discount code is redeemed (Issue #825).
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct DiscountApplied {
-    pub code: String,
-    pub meter_id: String,
-    pub amount: i128,
-    pub final_cost: i128,
 }
 
 // ── Event topics (contract namespace) ────────────────────────────────────────
@@ -1888,207 +1856,6 @@ impl SolarGridContract {
         Ok(())
     }
 
-    // ── Issue #825: promotional discount codes ──────────────────────────────
-
-    /// Create a promotional discount code. Admin-only.
-    ///
-    /// `discount_type` selects whether `value` is interpreted as a
-    /// percentage (1-100) or a fixed stroop amount (> 0) taken off the
-    /// payment. `valid_until` of 0 means no expiry; `max_uses` of 0 means
-    /// unlimited redemptions.
-    ///
-    /// Emits `discount_created { code -> (discount_type, value, valid_until, max_uses) }`.
-    pub fn create_discount_code(
-        env: Env,
-        code: String,
-        discount_type: DiscountType,
-        value: i128,
-        valid_until: u64,
-        max_uses: u32,
-    ) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
-
-        match discount_type {
-            DiscountType::Percent => {
-                if value <= 0 || value > 100 {
-                    return Err(ContractError::InvalidDiscountPercent);
-                }
-            }
-            DiscountType::Fixed => {
-                if value <= 0 {
-                    return Err(ContractError::InvalidDiscountValue);
-                }
-            }
-        }
-
-        let key = DataKey::DiscountCode(code.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(ContractError::DiscountCodeAlreadyExists);
-        }
-
-        let discount_pct = match discount_type {
-            DiscountType::Percent => value as u32,
-            DiscountType::Fixed => 0,
-        };
-        let discount = DiscountCode {
-            code: code.clone(),
-            discount_type: discount_type.clone(),
-            value,
-            discount_pct,
-            valid_until,
-            max_uses,
-            uses: 0,
-            active: true,
-        };
-        env.storage().persistent().set(&key, &discount);
-
-        env.events().publish(
-            (EVT_NS, symbol_short!("disc_new"), code),
-            (discount_type, value, valid_until, max_uses),
-        );
-        Ok(())
-    }
-
-    /// Backward-compatible percent-only convenience wrapper around
-    /// [`Self::create_discount_code`].
-    pub fn admin_create_discount(
-        env: Env,
-        code: String,
-        discount_pct: u32,
-        valid_until: u64,
-        max_uses: u32,
-    ) -> Result<(), ContractError> {
-        Self::create_discount_code(
-            env,
-            code,
-            DiscountType::Percent,
-            discount_pct as i128,
-            valid_until,
-            max_uses,
-        )
-    }
-
-    /// Deactivate a discount code so it can no longer be redeemed. Admin-only.
-    /// Already-recorded redemptions are unaffected.
-    ///
-    /// Emits `discount_revoked { code }`.
-    pub fn admin_revoke_discount(env: Env, code: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
-        let key = DataKey::DiscountCode(code.clone());
-        let mut discount: DiscountCode = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .ok_or(ContractError::DiscountCodeNotFound)?;
-        discount.active = false;
-        env.storage().persistent().set(&key, &discount);
-        env.events()
-            .publish((EVT_NS, symbol_short!("disc_rvk"), code), ());
-        Ok(())
-    }
-
-    /// Look up a discount code. Panics if the code does not exist.
-    pub fn get_discount(env: Env, code: String) -> DiscountCode {
-        env.storage()
-            .persistent()
-            .get(&DataKey::DiscountCode(code))
-            .expect("discount code not found")
-    }
-
-    /// Returns `true` if `code` exists, is active, has not expired, and is
-    /// under its usage limit.
-    pub fn is_discount_valid(env: Env, code: String) -> bool {
-        let discount: Option<DiscountCode> =
-            env.storage().persistent().get(&DataKey::DiscountCode(code));
-        match discount {
-            None => false,
-            Some(d) => {
-                if !d.active {
-                    return false;
-                }
-                let now = env.ledger().timestamp();
-                if d.valid_until != 0 && now > d.valid_until {
-                    return false;
-                }
-                if d.max_uses != 0 && d.uses >= d.max_uses {
-                    return false;
-                }
-                true
-            }
-        }
-    }
-
-    /// Redeem a discount code against a payment and charge the discounted
-    /// amount via [`Self::make_payment`]. Validates the code is active, not
-    /// expired, and under its usage limit, then increments its usage
-    /// counter. Returns the final (discounted) amount actually charged.
-    ///
-    /// Emits (in addition to make_payment's events):
-    /// - `discount_applied { code -> (meter_id, amount, final_cost) }`
-    pub fn apply_discount_code(
-        env: Env,
-        meter_id: String,
-        payer: Address,
-        amount: i128,
-        plan: PaymentPlan,
-        code: String,
-    ) -> Result<i128, ContractError> {
-        if amount <= 0 {
-            return Err(ContractError::InvalidAmount);
-        }
-
-        let disc_key = DataKey::DiscountCode(code.clone());
-        let mut discount: DiscountCode = env
-            .storage()
-            .persistent()
-            .get(&disc_key)
-            .ok_or(ContractError::DiscountCodeNotFound)?;
-        if !discount.active {
-            return Err(ContractError::DiscountCodeInactive);
-        }
-        let now = env.ledger().timestamp();
-        if discount.valid_until != 0 && now > discount.valid_until {
-            return Err(ContractError::DiscountCodeExpired);
-        }
-        if discount.max_uses != 0 && discount.uses >= discount.max_uses {
-            return Err(ContractError::DiscountCodeExhausted);
-        }
-
-        let final_cost = match discount.discount_type {
-            DiscountType::Percent => {
-                amount.saturating_mul(100_i128.saturating_sub(discount.value)) / 100
-            }
-            DiscountType::Fixed => amount.saturating_sub(discount.value).max(0),
-        };
-        if final_cost <= 0 {
-            return Err(ContractError::InvalidAmount);
-        }
-
-        discount.uses = discount.uses.saturating_add(1);
-        env.storage().persistent().set(&disc_key, &discount);
-
-        Self::make_payment(env.clone(), meter_id.clone(), payer, final_cost, plan, None)?;
-
-        env.events().publish(
-            (EVT_NS, symbol_short!("disc_appl"), code),
-            (meter_id, amount, final_cost),
-        );
-
-        Ok(final_cost)
-    }
-
-    /// Backward-compatible alias for [`Self::apply_discount_code`].
-    pub fn make_payment_with_discount(
-        env: Env,
-        meter_id: String,
-        payer: Address,
-        amount: i128,
-        plan: PaymentPlan,
-        code: String,
-    ) -> Result<i128, ContractError> {
-        Self::apply_discount_code(env, meter_id, payer, amount, plan, code)
-    }
-
     /// Enable delegated auto top-up for a meter.
     ///
     /// The owner must first approve the contract as a token spender for the
@@ -2514,9 +2281,11 @@ impl SolarGridContract {
 
         // Calculate expiration
         let now = env.ledger().timestamp();
-        let expires_at = match plan_duration_secs(&plan) {
-            None => u64::MAX,
-            Some(validity_secs) => meter.expires_at.saturating_add(validity_secs),
+        let validity_secs = plan_duration_secs(&plan);
+        let expires_at = if validity_secs == u64::MAX {
+            u64::MAX
+        } else {
+            meter.expires_at.saturating_add(validity_secs)
         };
 
         // Track lifetime payments per (meter, delegate)
@@ -2650,11 +2419,57 @@ impl SolarGridContract {
         Ok(())
     }
 
+    /// Start a seven-day, explicitly accepted transfer of contract ownership.
+    pub fn propose_admin_transfer(env: Env, proposed_admin: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let proposal = AdminTransferProposal {
+            proposed_admin: proposed_admin.clone(),
+            expires_at: env.ledger().timestamp().saturating_add(ADMIN_TRANSFER_TTL),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminTransferProposal, &proposal);
+        env.events().publish(
+            (EVT_NS, symbol_short!("AdmTrPrp")),
+            (proposed_admin, proposal.expires_at),
+        );
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer before its seven-day expiry.
+    pub fn accept_admin_transfer(env: Env) -> Result<(), ContractError> {
+        let key = DataKey::AdminTransferProposal;
+        let proposal: AdminTransferProposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expires_at {
+            return Err(ContractError::ProposalExpired);
+        }
+        proposal.proposed_admin.require_auth();
+        let previous_admin = Self::get_admin(&env)?;
+        env.storage().instance().set(&ADMIN, &proposal.proposed_admin);
+        env.storage().persistent().remove(&key);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "AdminTransferred")),
+            (previous_admin, proposal.proposed_admin),
+        );
+        Ok(())
+    }
+
     /// Configure the M-of-N admin policy. The current admin must authorize this once.
     pub fn configure_multisig(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "configure_multisig", "contract")?;
         if admins.len() < 3 || admins.len() > 5 || threshold == 0 || threshold > admins.len() {
             return Err(ContractError::InvalidMultisigConfiguration);
+        }
+        for (index, admin) in admins.iter().enumerate() {
+            for other in admins.iter().skip(index + 1) {
+                if admin == other {
+                    return Err(ContractError::InvalidMultisigConfiguration);
+                }
+            }
         }
         env.storage().instance().set(&MULTISIG_ADMINS, &admins);
         env.storage()
@@ -2694,6 +2509,16 @@ impl SolarGridContract {
         }
         if expiry <= env.ledger().timestamp() {
             return Err(ContractError::ProposalExpired);
+        }
+        if matches!(operation, AdminOperation::UpgradeContract(_, _))
+            && env
+                .storage()
+                .instance()
+                .get::<_, u32>(&MULTISIG_THRESHOLD)
+                .unwrap_or(0)
+                < 2
+        {
+            return Err(ContractError::InvalidMultisigConfiguration);
         }
         let id: u32 = env.storage().instance().get(&PROPOSAL_COUNT).unwrap_or(0);
         env.storage().instance().set(&PROPOSAL_COUNT, &(id + 1));
@@ -2809,6 +2634,10 @@ impl SolarGridContract {
                     return Err(ContractError::InsufficientBalance);
                 }
                 client.transfer(&env.current_contract_address(), &admin, &amount);
+            }
+            AdminOperation::UpgradeContract(wasm_hash, version) => {
+                env.deployer().update_current_contract_wasm(wasm_hash);
+                env.storage().instance().set(&CONTRACT_VERSION, &version);
             }
         }
         env.storage().persistent().remove(&key);
@@ -3607,6 +3436,129 @@ impl SolarGridContract {
         env.storage().instance().get(&EMRG_WD)
     }
 
+    // ── Promotional discount codes (Closes #687) ─────────────────────────────
+
+    /// Create a new promotional discount code. Admin-only.
+    ///
+    /// `discount_pct` must be in `1..=100`. `expires_at` of 0 means the code
+    /// never expires; `max_uses` of 0 means unlimited uses.
+    pub fn admin_create_discount(
+        env: Env,
+        code: String,
+        discount_pct: u32,
+        expires_at: u64,
+        max_uses: u32,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        if discount_pct == 0 || discount_pct > 100 {
+            return Err(ContractError::InvalidDiscountPercent);
+        }
+        let key = DataKey::Discount(code.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(ContractError::DiscountCodeAlreadyExists);
+        }
+        let discount = Discount {
+            discount_pct,
+            expires_at,
+            max_uses,
+            uses: 0,
+            active: true,
+        };
+        env.storage().persistent().set(&key, &discount);
+        env.events().publish(
+            (EVT_NS, symbol_short!("disc_new"), code),
+            (discount_pct, expires_at, max_uses),
+        );
+        Ok(())
+    }
+
+    /// Look up a discount code's full record. Returns `DiscountCodeNotFound`
+    /// if it doesn't exist.
+    pub fn get_discount(env: Env, code: String) -> Result<Discount, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Discount(code))
+            .ok_or(ContractError::DiscountCodeNotFound)
+    }
+
+    /// Returns whether a discount code currently exists, is active, has not
+    /// expired, and has not exhausted its max uses. Unknown codes are not valid.
+    pub fn is_discount_valid(env: Env, code: String) -> bool {
+        let discount: Discount = match env.storage().persistent().get(&DataKey::Discount(code)) {
+            Some(d) => d,
+            None => return false,
+        };
+        if !discount.active {
+            return false;
+        }
+        if discount.expires_at != 0 && env.ledger().timestamp() >= discount.expires_at {
+            return false;
+        }
+        if discount.max_uses != 0 && discount.uses >= discount.max_uses {
+            return false;
+        }
+        true
+    }
+
+    /// Revoke a discount code, admin-only. It remains on record (for
+    /// auditing/uses history) but is immediately rejected by `is_discount_valid`
+    /// and `make_payment_with_discount`.
+    pub fn admin_revoke_discount(env: Env, code: String) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let key = DataKey::Discount(code.clone());
+        let mut discount: Discount = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::DiscountCodeNotFound)?;
+        discount.active = false;
+        env.storage().persistent().set(&key, &discount);
+        env.events()
+            .publish((EVT_NS, symbol_short!("disc_rvk"), code), ());
+        Ok(())
+    }
+
+    /// Make a payment with a percent-off discount code applied. Behaves like
+    /// [`SolarGridContract::make_payment`] (no memo) but charges
+    /// `amount - amount * discount_pct / 100` and records one use against the
+    /// code. Returns the amount actually charged.
+    pub fn make_payment_with_discount(
+        env: Env,
+        meter_id: String,
+        payer: Address,
+        amount: i128,
+        plan: PaymentPlan,
+        code: String,
+    ) -> Result<i128, ContractError> {
+        if amount <= 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let key = DataKey::Discount(code.clone());
+        let mut discount: Discount = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::DiscountCodeNotFound)?;
+        if !discount.active {
+            return Err(ContractError::DiscountCodeInactive);
+        }
+        if discount.expires_at != 0 && env.ledger().timestamp() >= discount.expires_at {
+            return Err(ContractError::DiscountCodeExpired);
+        }
+        if discount.max_uses != 0 && discount.uses >= discount.max_uses {
+            return Err(ContractError::DiscountCodeExhausted);
+        }
+
+        let discounted_amount =
+            amount - (amount.saturating_mul(discount.discount_pct as i128) / 100);
+
+        discount.uses += 1;
+        env.storage().persistent().set(&key, &discount);
+
+        Self::make_payment(env, meter_id, payer, discounted_amount, plan, None)?;
+        Ok(discounted_amount)
+    }
+
     /// Manually expire a meter before its natural expiry. Admin-only.
     /// Sets `expires_at` to the current ledger timestamp and `active` to false.
     /// Useful for policy violations or testing expiry flows.
@@ -3627,182 +3579,6 @@ impl SolarGridContract {
             meter_id,
         );
         Ok(())
-    }
-
-    // ── Issue #827: contract upgrade mechanism ───────────────────────────────
-
-    /// Upgrade the contract to a new Wasm implementation. Admin-only.
-    ///
-    /// `new_wasm_hash` must already be present on-chain (uploaded via the
-    /// Soroban `Deployer::upload_contract_wasm` mechanism, e.g. by
-    /// `stellar contract upload` from the CLI) before calling this. The new
-    /// code takes effect only after this invocation successfully commits —
-    /// there is no separate activation step.
-    ///
-    /// The previously-installed Wasm hash and contract version string are
-    /// recorded so a bad upgrade can be undone with [`Self::rollback_upgrade`].
-    /// Only the single most recent upgrade can be rolled back; a second
-    /// consecutive `upgrade_contract` call overwrites the rollback target.
-    ///
-    /// Existing meter records use lazy, read-through schema migration (see
-    /// `get_meter_or_error`), so most upgrades that add fields to `Meter`
-    /// need no explicit migration step — each record is upgraded to the
-    /// current schema the next time it is read. For an upgrade that should
-    /// eagerly migrate every stored meter instead of waiting on reads
-    /// (e.g. to avoid a slightly more expensive first read post-upgrade),
-    /// call [`Self::migrate_all_meters`] once per page of the meter index
-    /// after this returns.
-    ///
-    /// Emits `contract_upgraded { -> (old_version, new_version, new_wasm_hash) }`.
-    pub fn upgrade_contract(
-        env: Env,
-        new_wasm_hash: BytesN<32>,
-        new_version: String,
-    ) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
-
-        let old_version = Self::get_contract_version(env.clone());
-
-        // Only remember a rollback target if we actually had a wasm hash on
-        // record; the very first upgrade_contract call after deployment has
-        // nothing prior to roll back to for the wasm hash, but we still keep
-        // the previous *version string* so rollback_upgrade can restore it.
-        if let Some(current_hash) = env
-            .storage()
-            .instance()
-            .get::<Symbol, BytesN<32>>(&CURRENT_WASM_HASH)
-        {
-            env.storage().instance().set(&PREV_WASM_HASH, &current_hash);
-        }
-        env.storage()
-            .instance()
-            .set(&PREV_CONTRACT_VERSION, &old_version);
-
-        env.storage()
-            .instance()
-            .set(&CURRENT_WASM_HASH, &new_wasm_hash);
-        env.storage()
-            .instance()
-            .set(&CONTRACT_VERSION, &new_version);
-
-        // In production (WASM) actually replace the bytecode. Skipped in
-        // tests because the test Env does not hold real WASM blobs — the
-        // storage-based version/hash tracking above is what tests verify.
-        #[cfg(not(test))]
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash.clone());
-
-        env.events().publish(
-            (EVT_NS, symbol_short!("upgraded")),
-            (old_version, new_version, new_wasm_hash),
-        );
-        Ok(())
-    }
-
-    /// Roll back to the Wasm hash and version string in effect immediately
-    /// before the most recent [`Self::upgrade_contract`] call. Admin-only.
-    ///
-    /// Returns `NoPreviousUpgrade` if `upgrade_contract` has never been
-    /// called (nothing recorded to roll back to), or if a rollback already
-    /// consumed the recorded target.
-    ///
-    /// Emits `upgrade_rolled_back { -> (restored_version, restored_wasm_hash) }`.
-    pub fn rollback_upgrade(env: Env) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
-
-        let prev_hash: BytesN<32> = env
-            .storage()
-            .instance()
-            .get(&PREV_WASM_HASH)
-            .ok_or(ContractError::NoPreviousUpgrade)?;
-        let prev_version: String = env
-            .storage()
-            .instance()
-            .get(&PREV_CONTRACT_VERSION)
-            .ok_or(ContractError::NoPreviousUpgrade)?;
-
-        env.storage().instance().set(&CURRENT_WASM_HASH, &prev_hash);
-        env.storage()
-            .instance()
-            .set(&CONTRACT_VERSION, &prev_version);
-        // A rollback target is single-use: clear it so a second rollback
-        // call correctly reports NoPreviousUpgrade rather than repeating.
-        env.storage().instance().remove(&PREV_WASM_HASH);
-        env.storage().instance().remove(&PREV_CONTRACT_VERSION);
-
-        // In production (WASM) actually replace the bytecode. Skipped in
-        // tests because the test Env does not hold real WASM blobs.
-        #[cfg(not(test))]
-        env.deployer()
-            .update_current_contract_wasm(prev_hash.clone());
-
-        env.events().publish(
-            (EVT_NS, symbol_short!("rollback")),
-            (prev_version, prev_hash),
-        );
-        Ok(())
-    }
-
-    /// The Wasm hash installed by the most recent `upgrade_contract` call,
-    /// or `None` if the contract has never been upgraded through this
-    /// mechanism (e.g. it is still running its originally-deployed code).
-    pub fn get_current_wasm_hash(env: Env) -> Option<BytesN<32>> {
-        env.storage().instance().get(&CURRENT_WASM_HASH)
-    }
-
-    /// The Wasm hash `rollback_upgrade` would restore, if any.
-    pub fn get_previous_wasm_hash(env: Env) -> Option<BytesN<32>> {
-        env.storage().instance().get(&PREV_WASM_HASH)
-    }
-
-    /// Eagerly migrate a page of the meter index to the current schema,
-    /// rather than waiting for each meter to be migrated lazily on its next
-    /// read (see `get_meter_or_error`). Admin-only. Intended to be called
-    /// once per page (see `get_all_meters_paginated` for the same paging
-    /// convention) after an `upgrade_contract` call that changed the
-    /// `Meter` schema.
-    ///
-    /// Returns the number of meters in the requested page that were still
-    /// on a legacy schema and were migrated (meters already on the current
-    /// schema, and out-of-range offsets, are silently skipped).
-    pub fn migrate_all_meters(env: Env, offset: u32, limit: u32) -> Result<u32, ContractError> {
-        Self::require_admin(&env)?;
-
-        let effective_limit = limit.min(100);
-        let meter_ids: Vec<String> = env
-            .storage()
-            .instance()
-            .get(&METER_LIST)
-            .unwrap_or_else(|| vec![&env]);
-
-        let total = meter_ids.len();
-        if offset >= total {
-            return Ok(0);
-        }
-        let start = offset as usize;
-        let end = ((offset + effective_limit).min(total)) as usize;
-
-        let mut migrated: u32 = 0;
-        for i in start..end {
-            if let Some(meter_id) = meter_ids.get(i as u32) {
-                let key = DataKey::Meter(meter_id.clone());
-                let raw: Option<Val> = env.storage().persistent().get(&key);
-                let is_current = raw
-                    .and_then(|value| Map::<Symbol, Val>::try_from_val(&env, &value).ok())
-                    .map(|fields| fields.contains_key(Symbol::new(&env, "installed_at")))
-                    .unwrap_or(false);
-                // Current schema entries include `installed_at` (v6).
-                if is_current {
-                    continue;
-                }
-                // Reading through the legacy migration path upgrades and
-                // writes back the record if it exists in an older schema.
-                if Self::get_meter_or_error(&env, &key).is_ok() {
-                    migrated = migrated.saturating_add(1);
-                }
-            }
-        }
-        Ok(migrated)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
@@ -4229,11 +4005,12 @@ mod tests {
         env: &Env,
         events: &soroban_sdk::testutils::ContractEvents,
     ) -> alloc::vec::Vec<((), soroban_sdk::Vec<Val>, Val)> {
+        use soroban_sdk::xdr::ContractEventBody;
         events
             .events()
             .iter()
             .filter_map(|e| {
-                let soroban_sdk::xdr::ContractEventBody::V0(ref v0) = e.body;
+                let ContractEventBody::V0(ref v0) = e.body;
                 let mut topics: soroban_sdk::Vec<Val> = soroban_sdk::Vec::new(env);
                 for sc_val in v0.topics.iter() {
                     if let Ok(v) = Val::try_from_val(env, sc_val) {
@@ -4260,12 +4037,6 @@ mod tests {
     }
 
     /// Helper: allowlist + register a meter in one call.
-    ///
-    /// Builds `meter_id` against `client.env` — the same `Env` the client
-    /// calls run against — rather than a fresh `Env::default()`. A `String`
-    /// (or any other host object) created under one `Env` is not valid
-    /// input to a contract invoked through a different `Env`; the host
-    /// rejects it as a "mis-tagged object reference".
     fn allowlist_and_register(
         client: &SolarGridContractClient,
         meter_id: impl ToString,
@@ -4336,6 +4107,36 @@ mod tests {
     }
 
     #[test]
+    fn test_contract_upgrade_proposal_requires_multiple_admin_approvals() {
+        let (env, client, admin) = setup();
+        let second_admin = Address::generate(&env);
+        let third_admin = Address::generate(&env);
+        let admins = soroban_sdk::vec![&env, admin.clone(), second_admin, third_admin];
+        let wasm_hash = BytesN::from_array(&env, &[7; 32]);
+        let expiry = env.ledger().timestamp() + 100;
+
+        client.configure_multisig(&admins, &1);
+        assert_eq!(
+            client.try_propose_admin_operation(
+                &admin,
+                &AdminOperation::UpgradeContract(wasm_hash.clone(), String::from_str(&env, "0.2.0")),
+                &expiry,
+            ),
+            Err(Ok(ContractError::InvalidMultisigConfiguration)),
+        );
+
+        client.configure_multisig(&admins, &2);
+        assert_eq!(
+            client.try_propose_admin_operation(
+                &admin,
+                &AdminOperation::UpgradeContract(wasm_hash, String::from_str(&env, "0.2.0")),
+                &expiry,
+            ),
+            Ok(Ok(0)),
+        );
+    }
+
+    #[test]
     fn test_register_and_pay() {
         let (env, client, _admin, token_address) = setup_with_token();
         let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
@@ -4360,8 +4161,6 @@ mod tests {
         assert!(client.check_access(&meter_id));
         assert_eq!(token_client.balance(&user), 0);
 
-        // Disable the grace period so balance hitting 0 deactivates immediately.
-        client.set_grace_period(&0_u64);
         client.update_usage(&meter_id, &100_u64, &5_000_000_i128);
         assert!(!client.check_access(&meter_id));
     }
@@ -4576,8 +4375,6 @@ mod tests {
         assert_eq!(meter.units_used, 50);
         assert!(meter.active);
 
-        // Disable the grace period so balance hitting 0 deactivates immediately.
-        client.set_grace_period(&0_u64);
         client.update_usage(&meter_id, &60_u64, &6_000_000_i128);
         assert_eq!(client.get_meter_balance(&meter_id), 0);
         let meter = client.get_meter(&meter_id);
@@ -4617,8 +4414,6 @@ mod tests {
         token_admin_client.mint(&user, &100_i128);
         client.make_payment(&meter_id, &user, &100_i128, &PaymentPlan::UsageBased, &None);
 
-        // Disable the grace period so balance hitting 0 deactivates immediately.
-        client.set_grace_period(&0_u64);
         client.update_usage(&meter_id, &1_u64, &i128::MAX);
         assert_eq!(client.get_meter_balance(&meter_id), 0);
         let meter = client.get_meter(&meter_id);
@@ -4648,8 +4443,6 @@ mod tests {
         );
         assert!(client.check_access(&meter_id));
 
-        // Disable the grace period so balance hitting 0 deactivates immediately.
-        client.set_grace_period(&0_u64);
         client.update_usage(&meter_id, &10_u64, &2_000_000_i128);
         assert!(!client.check_access(&meter_id));
 
@@ -4918,8 +4711,6 @@ mod tests {
             &None,
         );
 
-        // Disable the grace period so balance hitting 0 deactivates immediately.
-        client.set_grace_period(&0_u64);
         client.update_usage(&meter_id, &1_u64, &5_000_000_i128);
         assert_eq!(
             client.get_meter_balance(&meter_id),
@@ -4974,6 +4765,59 @@ mod tests {
                         .unwrap_or(false)
             });
         assert!(found, "meter registered event not emitted");
+    }
+
+    #[test]
+    fn test_admin_transfer_propose_accept_and_emit_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let proposed_admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let contract_id = env.register(SolarGridContract, (admin.clone(), token_address));
+        let client = SolarGridContractClient::new(&env, &contract_id);
+
+        client.propose_admin_transfer(&proposed_admin);
+        let proposal: AdminTransferProposal = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::AdminTransferProposal)
+                .unwrap()
+        });
+        assert_eq!(proposal.proposed_admin, proposed_admin);
+        assert_eq!(proposal.expires_at, env.ledger().timestamp() + ADMIN_TRANSFER_TTL);
+
+        client.accept_admin_transfer();
+        let all_events = env.events().all();
+        let stored_admin: Address = env.as_contract(&contract_id, || {
+            env.storage().instance().get(&ADMIN).unwrap()
+        });
+        assert_eq!(stored_admin, proposed_admin);
+
+        let emitted = events_as_tuples(&env, &all_events).iter().any(|(_, topics, _)| {
+            topics.len() >= 2
+                && topics.get(0).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
+                && topics
+                    .get(1)
+                    .map(|v| Symbol::try_from_val(&env, &v).ok() == Some(Symbol::new(&env, "AdminTransferred")))
+                    .unwrap_or(false)
+        });
+        assert!(emitted, "AdminTransferred event not emitted: {:?}", all_events.events());
+    }
+
+    #[test]
+    fn test_admin_transfer_expires_after_seven_days() {
+        let (env, client, _admin) = setup();
+        let proposed_admin = Address::generate(&env);
+        client.propose_admin_transfer(&proposed_admin);
+        env.ledger().set_timestamp(ADMIN_TRANSFER_TTL);
+        assert_eq!(
+            client.try_accept_admin_transfer(),
+            Err(Ok(ContractError::ProposalExpired))
+        );
     }
 
     #[test]
@@ -5045,9 +4889,6 @@ mod tests {
         token_admin_client.mint(&user, &500_i128);
         client.make_payment(&meter_id, &user, &500_i128, &PaymentPlan::UsageBased, &None);
 
-        // Disable the grace period so balance hitting 0 deactivates immediately
-        // and the mtr_deact event is emitted within this invocation.
-        client.set_grace_period(&0_u64);
         client.update_usage(&meter_id, &10_u64, &500_i128);
 
         let events = env.events().all();
@@ -5137,7 +4978,6 @@ mod tests {
         client.allowlist_add(&new_owner);
         client.transfer_meter_ownership(&meter_id, &new_owner);
 
-        // transfer_meter_ownership publishes (old_owner, new_owner) as a tuple.
         let events = env.events().all();
         let found = events_as_tuples(&env, &events).iter().any(|(_, topics, data)| {
             topics.len() >= 3
@@ -5600,8 +5440,6 @@ mod tests {
         register_and_fund(&env, &client, &token_address, &m1, 1_000_i128);
         register_and_fund(&env, &client, &token_address, &m2, 5_000_i128);
 
-        // Disable the grace period so balance hitting 0 deactivates immediately.
-        client.set_grace_period(&0_u64);
         client.batch_update_usage(&vec![
             &env,
             (m1.clone(), 1_u64, 1_000_i128),
@@ -5657,9 +5495,6 @@ mod tests {
 
     #[test]
     fn test_batch_update_usage_rejects_oversized_batch() {
-        // The contract rejects batches larger than 200.  Build 201 entries
-        // programmatically to trigger the guard without registering them —
-        // the limit is checked before any meter lookup.
         let (env, client, _admin, token_address) = setup_with_token();
         setup_oracle(&env, &client);
         let meter_id = String::from_str(&env, "OVER");
@@ -7724,115 +7559,6 @@ mod tests {
             client.try_batch_register_meters(&batch),
             Err(Ok(ContractError::BatchTooLarge))
         );
-    }
-
-    // ── Issue #827: contract upgrade mechanism ──────────────────────────────
-
-    #[test]
-    fn test_upgrade_contract_updates_version_and_wasm_hash() {
-        let (env, client, _admin) = setup();
-        let new_hash = BytesN::from_array(&env, &[7u8; 32]);
-        let new_version = String::from_str(&env, "2.0.0");
-
-        client.upgrade_contract(&new_hash, &new_version);
-
-        assert_eq!(client.get_contract_version(), new_version);
-        assert_eq!(client.get_current_wasm_hash(), Some(new_hash));
-    }
-
-    #[test]
-    fn test_upgrade_contract_requires_admin() {
-        let (env, client, admin) = setup();
-        let stranger = Address::generate(&env);
-        let new_hash = BytesN::from_array(&env, &[1u8; 32]);
-        let new_version = String::from_str(&env, "2.0.0");
-
-        // The client under test always mocks auth as whichever address the
-        // contract asks to authenticate, so directly asserting a rejection
-        // here would require an auth-unmocked env; instead confirm the
-        // recorded admin is the one whose auth was required.
-        client.upgrade_contract(&new_hash, &new_version);
-        let _ = (admin, stranger);
-    }
-
-    #[test]
-    fn test_rollback_upgrade_without_prior_upgrade_fails() {
-        let (_env, client, _admin) = setup();
-        let result = client.try_rollback_upgrade();
-        assert_eq!(result, Err(Ok(ContractError::NoPreviousUpgrade)));
-    }
-
-    #[test]
-    fn test_rollback_upgrade_restores_previous_version_and_hash() {
-        let (env, client, _admin) = setup();
-        let original_version = client.get_contract_version();
-
-        let v2_hash = BytesN::from_array(&env, &[2u8; 32]);
-        let v2_version = String::from_str(&env, "2.0.0");
-        client.upgrade_contract(&v2_hash, &v2_version);
-        assert_eq!(client.get_contract_version(), v2_version);
-        assert_eq!(client.get_current_wasm_hash(), Some(v2_hash.clone()));
-
-        let v3_hash = BytesN::from_array(&env, &[3u8; 32]);
-        let v3_version = String::from_str(&env, "3.0.0");
-        client.upgrade_contract(&v3_hash, &v3_version);
-        assert_eq!(client.get_previous_wasm_hash(), Some(v2_hash.clone()));
-
-        // Roll back the v2 -> v3 upgrade: should restore v2's hash/version,
-        // not the original pre-upgrade state (only the single most recent
-        // upgrade is remembered).
-        client.rollback_upgrade();
-        assert_eq!(client.get_contract_version(), v2_version);
-        assert_eq!(client.get_current_wasm_hash(), Some(v2_hash));
-
-        // The rollback target is single-use.
-        let result = client.try_rollback_upgrade();
-        assert_eq!(result, Err(Ok(ContractError::NoPreviousUpgrade)));
-        let _ = original_version;
-    }
-
-    #[test]
-    fn test_migrate_all_meters_upgrades_legacy_entries() {
-        let (env, client, _admin) = setup();
-        let user = Address::generate(&env);
-        let meter_id = String::from_str(&env, "MIG_ALL_1");
-        allowlist_and_register(&client, &meter_id, &user);
-
-        // Force the stored entry back to the v0 (legacy) schema, mirroring
-        // how `test_migrate_meter_upgrades_legacy_entry` exercises the
-        // lazy, read-through migration path directly.
-        env.as_contract(&client.address, || {
-            let key = DataKey::Meter(meter_id.clone());
-            let current: Meter = env.storage().persistent().get(&key).unwrap();
-            let legacy = LegacyMeter {
-                owner: current.owner.clone(),
-                active: current.active,
-                balance: 0,
-                units_used: current.units_used,
-                plan: current.plan.clone(),
-                last_payment: current.last_payment,
-                expires_at: current.expires_at,
-            };
-            env.storage().persistent().set(&key, &legacy);
-            // Reset the version key so get_meter_or_error treats this as a
-            // v0 LegacyMeter entry rather than a current Meter.
-            env.storage()
-                .persistent()
-                .remove(&DataKey::MeterVersion(meter_id.clone()));
-            env.storage()
-                .persistent()
-                .remove(&DataKey::MeterSchemaVer(meter_id.clone()));
-        });
-
-        let migrated = client.migrate_all_meters(&0, &100);
-        assert_eq!(migrated, 1);
-
-        let meter = client.get_meter(&meter_id);
-        assert_eq!(meter.version, 7);
-
-        // A second pass over the same page finds nothing left to migrate.
-        let migrated_again = client.migrate_all_meters(&0, &100);
-        assert_eq!(migrated_again, 0);
     }
 }
 

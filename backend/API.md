@@ -1,3 +1,18 @@
+# Issue #886: Global Rate Limiting
+
+Every request is charged to an IP-based fixed-window quota before JSON parsing. If a valid `X-API-Key` is present, the owning provider is also charged to a tier quota based on the key's `read`, `write`, or `admin` permission. The tighter payment and write limiters remain in force for their routes.
+
+Configure `RATE_LIMIT_WINDOW_MS` and `RATE_LIMIT_MAX` for the shared IP quota, and `RATE_LIMIT_USER_READ_MAX`, `RATE_LIMIT_USER_WRITE_MAX`, and `RATE_LIMIT_USER_ADMIN_MAX` for provider quotas. Configure `REDIS_URL` to share atomic counters across replicas; without Redis the backend falls back to a bounded process-local store. `TRUST_PROXY_HOPS` must match the trusted proxy chain or clients may be misidentified. Responses include `X-RateLimit-*`, `RateLimit-*`, and `Retry-After` headers; CORS exposes those headers to browser clients.
+
+# Issue #882: Email Notifications
+
+`POST /api/email-notifications/price-alert` sends an admin-triggered price alert. Billing notifications are emitted for successful meter payments and generated bills, and low-balance email notifications use the meter's billing account address. `GET /api/email-notifications/manage?token=...` offers per-event controls; signed tokens are linked in delivered messages. `GET /api/email-notifications/unsubscribe?token=...` displays a confirmation page and the subsequent form POST unsubscribes from all email categories.
+
+Set `EMAIL_PROVIDER` to `resend`, `sendgrid`, or `log`, and configure the corresponding provider API key, `EMAIL_FROM`, `EMAIL_PREFERENCES_SECRET`, and `EMAIL_PREFERENCES_BASE_URL`. The log provider does not deliver mail. Delivery rates are provider/deployment dependent and must be measured from provider events; the application cannot guarantee a 95% deliverability rate by itself.
+
+# Issue #885: Grid Stability
+
+Device voltage and frequency readings are accepted over `solargrid/devices/{deviceId}/telemetry`, HTTP `POST /api/devices/:id/performance`, and GraphQL `recordDevicePerformance`. `GET /api/devices/:id/stability?days=7` returns the measured-readings stability score and historical anomalies. Anomalies are persisted and sent to device-owner webhooks with a per-device/metric 15-minute alert cooldown. Set `GRID_VOLTAGE_MIN_V`, `GRID_VOLTAGE_MAX_V`, `GRID_FREQUENCY_MIN_HZ`, and `GRID_FREQUENCY_MAX_HZ` to match the local grid standard.
 # Backend API
 
 This document describes the backend HTTP API surface.
@@ -278,6 +293,49 @@ an `ETag`, so send `If-None-Match` to get a `304` when nothing has changed. See 
   "updatedAt": "2026-09-27T10:00:00.000Z"
 }
 ```
+
+### Live energy flow (#870)
+
+- `GET /api/widgets/energy?meterId=<id>&range=5m|hourly|daily` returns up to 12 five-minute,
+  24 hourly, or 7 daily production/consumption buckets.
+- `WS /api/widgets/live?meterId=<id>&range=5m|hourly|daily` sends an initial snapshot and
+  refreshes every five seconds. The frontend reconnects with capped exponential backoff and
+  polls the HTTP route while disconnected.
+- Consumption comes from meter usage events. Production comes from active linked solar-panel
+  device telemetry (`energyKwh`, or power integrated over the bucket).
+
+## Energy Trading Simulator (#929)
+
+Practice-only cash and energy balances are stored separately from on-chain accounts. The
+simulator verifies that the supplied Stellar wallet owns its meter before account reads/trades.
+The market feed defaults to `energy-charts.info` for bidding zone `DE-LU`; set
+`ENERGY_MARKET_DATA_URL`, `ENERGY_MARKET_BIDDING_ZONE`, and
+`MARKET_PRICE_FALLBACK_EUR_KWH` to configure the feed and offline quote.
+
+- `GET /api/simulator/market?hours=24` returns historical/current EUR-per-kWh quotes and the
+  configured practice fee rate.
+- `GET /api/simulator/account?meterId=<id>&stellarAddress=<G...>` returns the virtual account
+  and recent practice trades.
+- `POST /api/simulator/trade` accepts `{ meterId, stellarAddress, side, quantityKwh }`.
+- `GET /api/simulator/leaderboard?limit=20` returns anonymized portfolio rankings.
+
+Accounts start with `SIMULATOR_STARTING_CREDITS` (default 1,000); the default virtual trade fee
+is 0.5%. Simulator transactions never call the Stellar contract.
+
+## Energy Theft Detection (#931)
+
+The backend scans newly recorded usage at `THEFT_SCAN_INTERVAL_MS` (default one minute) and
+compares readings with a robust per-meter median/MAD baseline. Alerts are persisted once per
+usage event and sent to registered provider webhooks immediately after detection. The default
+threshold is intentionally conservative; the monthly report tracks investigated false positives
+so providers can validate the under-5% target against their own metering population.
+
+All theft routes require the existing admin session or `X-Admin-Key` credential:
+
+- `GET /api/theft/alerts?status=open&limit=50&offset=0`
+- `GET /api/theft/alerts/:id/investigation`
+- `PATCH /api/theft/alerts/:id/investigation` with `{ status, assignedTo?, note?, actor? }`
+- `GET /api/theft/reports/monthly?month=YYYY-MM` generates and stores the selected monthly report.
 
 ## Monthly Bills (#902)
 

@@ -24,7 +24,11 @@ function features(timestamp: string): number[] {
   ];
 }
 
-function solve(matrix: number[][], values: number[]): number[] {
+/**
+ * Gauss-Jordan elimination for a square system with partial pivoting.
+ * Exported so other ridge models in this package reuse one solver.
+ */
+export function solveLinearSystem(matrix: number[][], values: number[]): number[] {
   const size = values.length;
   const augmented = matrix.map((row, index) => [...row, values[index]]);
   for (let column = 0; column < size; column++) {
@@ -64,7 +68,7 @@ function fit(samples: HourlyEnergySample[]): number[] {
     }
   }
   for (let i = 1; i < FEATURE_COUNT; i++) xtx[i][i] += RIDGE_LAMBDA;
-  return solve(xtx, xty);
+  return solveLinearSystem(xtx, xty);
 }
 
 function predictWith(coefficients: number[], timestamp: string): number {

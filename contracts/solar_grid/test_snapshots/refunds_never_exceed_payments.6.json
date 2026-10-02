@@ -80,7 +80,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "816574"
+                  "i128": "974968"
                 }
               ]
             }
@@ -105,7 +105,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "816574"
+                  "i128": "974968"
                 },
                 {
                   "vec": [
@@ -132,7 +132,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "816574"
+                      "i128": "974968"
                     }
                   ]
                 }
@@ -156,7 +156,7 @@
                   "string": "RFND"
                 },
                 {
-                  "i128": "378471"
+                  "i128": "458031"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -184,7 +184,7 @@
                   "string": "RFND"
                 },
                 {
-                  "i128": "239307"
+                  "i128": "13424"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -199,8 +199,34 @@
         }
       ]
     ],
-    [],
-    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "function_name": "refund_payment",
+              "args": [
+                {
+                  "string": "RFND"
+                },
+                {
+                  "i128": "338253"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                },
+                {
+                  "string": "prop"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
     [],
     [
       [
@@ -215,7 +241,7 @@
                   "string": "RFND"
                 },
                 {
-                  "i128": "191331"
+                  "i128": "16597"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -230,7 +256,6 @@
         }
       ]
     ],
-    [],
     [],
     []
   ],
@@ -294,7 +319,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "115220454072064130"
+                  "nonce": "1033654523790656264"
                 }
               },
               "durability": "temporary",
@@ -314,7 +339,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "1033654523790656264"
+                  "nonce": "1194852393571756375"
                 }
               },
               "durability": "temporary",
@@ -355,6 +380,26 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "6277191135259896685"
                 }
               },
               "durability": "temporary",
@@ -755,6 +800,74 @@
               "key": {
                 "vec": [
                   {
+                    "symbol": "AuditLog"
+                  },
+                  {
+                    "u64": "5"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "symbol": "action_type"
+                    },
+                    "val": {
+                      "string": "refund_payment"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "admin_address"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "affected_entity"
+                    },
+                    "val": {
+                      "string": "contract"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "id"
+                    },
+                    "val": {
+                      "u64": "5"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "timestamp"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
                     "symbol": "Meter"
                   },
                   {
@@ -912,7 +1025,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "7465"
+                "i128": "148663"
               }
             }
           },
@@ -1000,7 +1113,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "816574"
+                "i128": "974968"
               }
             }
           },
@@ -1030,7 +1143,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "809109"
+                "i128": "826305"
               }
             }
           },
@@ -1057,7 +1170,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "7465"
+                "i128": "148663"
               }
             }
           },
@@ -1105,7 +1218,7 @@
                         "symbol": "AUD_CNT"
                       },
                       "val": {
-                        "u64": "5"
+                        "u64": "6"
                       }
                     },
                     {
@@ -1157,7 +1270,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "816574"
+                        "i128": "974968"
                       }
                     }
                   ]
@@ -1214,7 +1327,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "7465"
+                      "i128": "148663"
                     }
                   },
                   {
@@ -1266,7 +1379,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "809109"
+                      "i128": "826305"
                     }
                   },
                   {

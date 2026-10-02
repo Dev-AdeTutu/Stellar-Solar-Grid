@@ -138,7 +138,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "DiscountCode"
+                    "symbol": "Discount"
                   },
                   {
                     "string": "WELCOME20"
@@ -158,14 +158,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "code"
-                    },
-                    "val": {
-                      "string": "WELCOME20"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "discount_pct"
                     },
                     "val": {
@@ -174,14 +166,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "discount_type"
+                      "symbol": "expires_at"
                     },
                     "val": {
-                      "vec": [
-                        {
-                          "symbol": "Percent"
-                        }
-                      ]
+                      "u64": "0"
                     }
                   },
                   {
@@ -198,22 +186,6 @@
                     },
                     "val": {
                       "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "valid_until"
-                    },
-                    "val": {
-                      "u64": "0"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "value"
-                    },
-                    "val": {
-                      "i128": "20"
                     }
                   }
                 ]

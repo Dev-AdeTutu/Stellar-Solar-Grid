@@ -23,7 +23,7 @@ import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { db as usageDb } from "./usageEvents.js";
 import { createTextPdf } from "./pdf.js";
-import { sendEmail } from "./mailer.js";
+import { sendNotificationEmail } from "./emailNotifications.js";
 import { logger } from "./logger.js";
 import { getMemberDiscountPercent } from "./communities.js";
 
@@ -383,8 +383,9 @@ export async function emailBill(bill: Bill): Promise<boolean> {
 <p>Your bill is attached as a PDF.</p>`;
 
   try {
-    const result = await sendEmail({
+    const result = await sendNotificationEmail({
       to: account.email,
+      event: "billing",
       subject: `Your SolarGrid bill ${bill.bill_number} — ${xlm(bill.total)} due`,
       text,
       html,
@@ -400,6 +401,49 @@ export async function emailBill(bill: Bill): Promise<boolean> {
     logger.error("Failed to email bill", { billId: bill.id, error: message });
     return false;
   }
+}
+
+export async function emailLowBalance(input: { meterId: string; balance: number; threshold: number }): Promise<void> {
+  try {
+    const account = getBillingAccount(input.meterId);
+    if (!account?.email) return;
+    await sendNotificationEmail({
+      to: account.email,
+      event: "low_balance",
+      subject: `Low balance alert for meter ${input.meterId}`,
+      text: `Meter ${input.meterId} has a balance of ${input.balance}, below the alert threshold of ${input.threshold}.`,
+      html: `<h1>Low balance alert</h1><p>Meter ${escapeHtml(input.meterId)} has a balance of ${input.balance}, below the alert threshold of ${input.threshold}.</p>`,
+    });
+  } catch (error) {
+    logger.warn("Low-balance email delivery failed", { meterId: input.meterId, error });
+  }
+}
+
+export async function emailTrade(input: { meterId: string; payer: string; amountXlm: number; transactionHash: string }): Promise<void> {
+  try {
+    const account = getBillingAccount(input.meterId);
+    if (!account?.email) return;
+    await sendNotificationEmail({
+      to: account.email,
+      event: "trades",
+      subject: `SolarGrid payment recorded for meter ${input.meterId}`,
+      text: `A payment of ${input.amountXlm} XLM was recorded for meter ${input.meterId}. Payer: ${input.payer}. Transaction: ${input.transactionHash}`,
+      html: `<h1>Payment recorded</h1><p>A payment of ${input.amountXlm} XLM was recorded for meter ${escapeHtml(input.meterId)}.</p><p>Transaction: ${escapeHtml(input.transactionHash)}</p>`,
+    });
+  } catch (error) {
+    logger.warn("Trade email delivery failed", { meterId: input.meterId, error });
+  }
+}
+
+export async function emailPriceAlert(input: { email: string; title: string; message: string }): Promise<boolean> {
+  const result = await sendNotificationEmail({
+    to: input.email,
+    event: "price_alerts",
+    subject: input.title,
+    text: input.message,
+    html: `<h1>${escapeHtml(input.title)}</h1><p>${escapeHtml(input.message)}</p>`,
+  });
+  return result.delivered;
 }
 
 function escapeHtml(v: string): string {

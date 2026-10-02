@@ -218,6 +218,22 @@ Query functions:
 Implemented in `solar_grid/src/staking.rs`. See `docs/STAKING_SECURITY_REVIEW.md`
 for the security review.
 
+## Admin Transfer (#820)
+
+The administrator role uses a two-step handoff so a proposed address must
+explicitly accept control:
+
+- `propose_admin_transfer(new_admin)` is authorized by the current admin and
+  creates or replaces a pending proposal that expires seven days after creation.
+- `accept_admin_transfer()` requires authorization from the proposed address.
+  It rejects missing or expired proposals, changes the administrator, removes
+  the pending proposal, and records the action in the admin audit log.
+- The contract emits `AdminTransferred` with `(old_admin, new_admin)` after
+  acceptance. `AdminTransferProposed` records the proposed address and expiry.
+
+The transfer flow is covered by `test_admin_transfer_propose_accept_and_emit_event`
+and `test_admin_transfer_expires_after_seven_days`.
+
 Admin setup:
 
 - `configure_staking(stake_token, reward_token, reward_rate, cooldown_secs)`: `reward_rate`

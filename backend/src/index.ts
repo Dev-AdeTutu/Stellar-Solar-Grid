@@ -1,6 +1,7 @@
 import "dotenv/config";
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
@@ -36,6 +37,7 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { loadBalancingRouter } from "./routes/loadBalancing.js";
 import { twoFactorRouter } from "./routes/twoFactor.js";
 import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
+import { orderBookRouter, attachOrderBookWebSocket } from "./routes/orderBook.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
@@ -61,8 +63,16 @@ import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
+import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
+import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
+import { recsRouter } from "./routes/recs.js";
+import { portfolioRouter } from "./routes/portfolio.js";
+import { vppRouter } from "./routes/vpp.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
+import { startResilienceMonitor } from "./lib/gridResilience.js";
+import { gridResilienceRouter } from "./routes/gridResilience.js";
+import { privacyRouter } from "./routes/privacy.js";
 import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { logger } from "./lib/logger.js";
@@ -71,6 +81,7 @@ import { requestLogger } from "./lib/requestLogger.js";
 import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
 import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
+import { globalRateLimiter } from "./middleware/globalRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
 import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
@@ -98,6 +109,7 @@ import { startPricingScheduler } from "./lib/dynamicPricing.js";
 import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
+import { startTheftMonitor } from "./lib/theftDetection.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -137,7 +149,12 @@ const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
 const STARTED_AT = Date.now();
 
 const app = express();
-app.use(cors());
+app.use(cors({ exposedHeaders: [
+  "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset",
+  "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+  "X-RateLimit-Policy", "Retry-After",
+] }));
+app.use(globalRateLimiter);
 app.use(express.json());
 
 const pool = new Pool({
@@ -184,6 +201,7 @@ app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
+app.use("/api/email-notifications", emailNotificationsRouter);
 app.use("/api/solar", solarRouter);
 app.use("/api/weather", weatherRouter);
 app.use("/api/usage-events", usageEventsRouter);
@@ -196,6 +214,7 @@ app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 // #901–#904: widgets, billing, competitions, smart home
 app.use("/api/widgets", widgetsRouter);
+app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/communities", communitiesRouter);
@@ -216,8 +235,15 @@ startPricingScheduler();
 app.use("/api/carbon-credits", carbonCreditsRouter);
 // #879: P2P energy trading
 app.use("/api/p2p", p2pTradingRouter);
+// #935: order book
+app.use("/api/orderbook", orderBookRouter);
 // #880: admin dashboard
 app.use("/api/admin/dashboard", adminDashboardRouter);
+// #941: grid resilience scoring
+app.use("/api/grid", gridResilienceRouter);
+startResilienceMonitor();
+// #939: energy data privacy controls
+app.use("/api/privacy", writeLimiter, privacyRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -289,9 +315,13 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 attachTradingWebSocket(httpServer);
+attachOrderBookWebSocket(httpServer);
 const port = Number(process.env.PORT) || 3000;
-app.listen(port, () => {
+const httpServer = createServer(app);
+attachWidgetLiveUpdates(httpServer);
+httpServer.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
+  startTheftMonitor();
   startEventIndexer();
   startRecommendationWorker();
 });
@@ -300,3 +330,15 @@ export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);
+
+// #928: AI energy consumption pattern analysis
+app.use("/api/analytics/patterns", consumptionAnalyticsRouter);
+
+// #927: Renewable Energy Credit marketplace
+app.use("/api/recs", recsRouter);
+
+// #926: Energy portfolio management
+app.use("/api/portfolio", portfolioRouter);
+
+// #925: Virtual power plant aggregation
+app.use("/api/vpp", vppRouter);

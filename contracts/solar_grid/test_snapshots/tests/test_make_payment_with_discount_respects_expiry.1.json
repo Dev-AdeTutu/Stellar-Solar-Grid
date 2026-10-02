@@ -397,7 +397,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "DiscountCode"
+                    "symbol": "Discount"
                   },
                   {
                     "string": "EXPIRED"
@@ -417,14 +417,6 @@
                   },
                   {
                     "key": {
-                      "symbol": "code"
-                    },
-                    "val": {
-                      "string": "EXPIRED"
-                    }
-                  },
-                  {
-                    "key": {
                       "symbol": "discount_pct"
                     },
                     "val": {
@@ -433,14 +425,10 @@
                   },
                   {
                     "key": {
-                      "symbol": "discount_type"
+                      "symbol": "expires_at"
                     },
                     "val": {
-                      "vec": [
-                        {
-                          "symbol": "Percent"
-                        }
-                      ]
+                      "u64": "1000"
                     }
                   },
                   {
@@ -457,22 +445,6 @@
                     },
                     "val": {
                       "u32": 0
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "valid_until"
-                    },
-                    "val": {
-                      "u64": "1000"
-                    }
-                  },
-                  {
-                    "key": {
-                      "symbol": "value"
-                    },
-                    "val": {
-                      "i128": "10"
                     }
                   }
                 ]

@@ -6,7 +6,8 @@
     <string name="widget_xlm_balance">XLM balance</string>
     <string name="widget_today_units">Today: %.1f units</string>
     <string name="widget_last_7_days">Last 7 days</string>
-    <string name="widget_top_up">Top up</string>
+    <string name="widget_top_up">Buy</string>
+    <string name="widget_sell">Sell</string>
     <string name="widget_active">Active</string>
     <string name="widget_inactive">Inactive</string>
     <string name="widget_less_than_day">&lt; 1 day left</string>

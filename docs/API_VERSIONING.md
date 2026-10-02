@@ -1,6 +1,6 @@
 # API Versioning Strategy
 
-Closes #679.
+//Closes #679.
 
 ## Scheme
 

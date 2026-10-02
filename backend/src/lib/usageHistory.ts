@@ -158,3 +158,9 @@ export function getUsageHistory(
     };
   });
 }
+
+export function deleteUsageHistory(meterId: string): number {
+  return pool.withConnection(
+    (database) => database.prepare("DELETE FROM usage_history WHERE meter_id = ?").run(meterId).changes,
+  );
+}

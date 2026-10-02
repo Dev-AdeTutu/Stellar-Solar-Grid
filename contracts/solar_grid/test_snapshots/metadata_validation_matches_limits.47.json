@@ -80,7 +80,40 @@
                   "string": "META"
                 },
                 {
-                  "map": []
+                  "map": [
+                    {
+                      "key": {
+                        "string": "k0"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k1"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k2"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k3"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -484,7 +517,40 @@
               },
               "durability": "persistent",
               "val": {
-                "map": []
+                "map": [
+                  {
+                    "key": {
+                      "string": "k0"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k1"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k2"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k3"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  }
+                ]
               }
             }
           },
