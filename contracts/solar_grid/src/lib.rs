@@ -9,12 +9,17 @@ use soroban_sdk::{
 
 mod certificates;
 mod multi_asset;
+mod recs;
 mod staking;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
+pub use recs::{
+    RecCompliance, RecConfig, RecIndex, RecMarketState, RecOrder, RecOrderStatus, RecSide, RecTrade,
+    RenewableEnergyCredit, BPS_SCALE, MAX_FEE_BPS, MAX_REC_PAGE, MAX_REC_QUANTITY, PRICE_SCALE,
+};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 
 // ── Error types ───────────────────────────────────────────────────────────────
@@ -103,6 +108,26 @@ pub enum ContractError {
     DiscountCodeInactive = 60,
     DiscountCodeExpired = 61,
     DiscountCodeExhausted = 62,
+    /// REC marketplace entrypoints used before `configure_recs` (#927).
+    RecNotConfigured = 63,
+    /// No renewable energy credit exists with the given id.
+    RecNotFound = 64,
+    /// The credit has not been attested by the compliance authority yet.
+    RecCompliancePending = 65,
+    /// The credit was rejected by the compliance authority.
+    RecComplianceRejected = 66,
+    /// No order exists with the given id.
+    OrderNotFound = 67,
+    /// The order has already been filled or cancelled.
+    OrderNotFilled = 68,
+    /// Only open orders can be traded or cancelled.
+    OrderNotOpen = 69,
+    /// No executed trade exists with the given id.
+    TradeNotFound = 70,
+    /// Generation backing a REC issue is missing or out of range.
+    InvalidRecQuantity = 71,
+    /// A registry or attestation reference is required.
+    ComplianceRefMissing = 72,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────

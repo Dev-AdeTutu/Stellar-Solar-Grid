@@ -8,6 +8,7 @@ use soroban_sdk::{testutils::Address as _, token, Address, Env, String};
 pub struct Fixture {
     pub env: Env,
     pub client: SolarGridContractClient<'static>,
+    pub contract_id: Address,
     pub admin: Address,
     pub token: Address,
 }
@@ -26,6 +27,7 @@ impl Fixture {
         Self {
             env,
             client,
+            contract_id,
             admin,
             token,
         }

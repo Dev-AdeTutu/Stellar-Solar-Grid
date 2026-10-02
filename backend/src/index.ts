@@ -62,6 +62,11 @@ import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
+import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
+import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
+import { recsRouter } from "./routes/recs.js";
+import { portfolioRouter } from "./routes/portfolio.js";
+import { vppRouter } from "./routes/vpp.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startResilienceMonitor } from "./lib/gridResilience.js";
@@ -321,3 +326,15 @@ export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);
+
+// #928: AI energy consumption pattern analysis
+app.use("/api/analytics/patterns", consumptionAnalyticsRouter);
+
+// #927: Renewable Energy Credit marketplace
+app.use("/api/recs", recsRouter);
+
+// #926: Energy portfolio management
+app.use("/api/portfolio", portfolioRouter);
+
+// #925: Virtual power plant aggregation
+app.use("/api/vpp", vppRouter);
