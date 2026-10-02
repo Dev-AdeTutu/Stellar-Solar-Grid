@@ -36,6 +36,7 @@ import { clientErrorsRouter } from "./routes/clientErrors.js";
 import { loadBalancingRouter } from "./routes/loadBalancing.js";
 import { twoFactorRouter } from "./routes/twoFactor.js";
 import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
+import { orderBookRouter, attachOrderBookWebSocket } from "./routes/orderBook.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
@@ -216,6 +217,8 @@ startPricingScheduler();
 app.use("/api/carbon-credits", carbonCreditsRouter);
 // #879: P2P energy trading
 app.use("/api/p2p", p2pTradingRouter);
+// #935: order book
+app.use("/api/orderbook", orderBookRouter);
 // #880: admin dashboard
 app.use("/api/admin/dashboard", adminDashboardRouter);
 
@@ -289,6 +292,7 @@ const httpServer = app.listen(PORT, () => {
   }
 });
 attachTradingWebSocket(httpServer);
+attachOrderBookWebSocket(httpServer);
 const port = Number(process.env.PORT) || 3000;
 app.listen(port, () => {
   console.log(`Backend listening on port ${port}`);
