@@ -150,6 +150,7 @@ const MINUTES_PER_DAY: u32 = 24 * 60;
 const MULTISIG_ADMINS: Symbol = symbol_short!("MS_ADM");
 const MULTISIG_THRESHOLD: Symbol = symbol_short!("MS_THR");
 const PROPOSAL_COUNT: Symbol = symbol_short!("MS_CNT");
+const ADMIN_TRANSFER_TTL: u64 = 7 * SECONDS_PER_DAY;
 /// Max number of metadata key-value pairs per meter (Issue #691).
 const MAX_METADATA_PAIRS: u32 = 10;
 /// Max characters per metadata value (Issue #691).
@@ -225,6 +226,13 @@ pub struct AdminProposal {
     pub approvals: Vec<Address>,
     pub threshold: u32,
     pub expiry: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdminTransferProposal {
+    pub proposed_admin: Address,
+    pub expires_at: u64,
 }
 
 /// Access status with grace period details
@@ -518,6 +526,7 @@ pub enum DataKey {
     MeterDelegates(String),
     /// Storage key for a multisig admin proposal.
     AdminProposal(u32),
+    AdminTransferProposal,
     /// Owner-authorized automatic top-up settings for a meter.
     AutoTopup(String),
     /// Discount code keyed by its case-sensitive code string.
@@ -4678,6 +4687,58 @@ mod tests {
                         .unwrap_or(false)
             });
         assert!(found, "meter registered event not emitted");
+    }
+
+    #[test]
+    fn test_admin_transfer_propose_accept_and_emit_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let proposed_admin = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let contract_id = env.register(SolarGridContract, (admin.clone(), token_address));
+        let client = SolarGridContractClient::new(&env, &contract_id);
+
+        client.propose_admin_transfer(&proposed_admin);
+        let proposal: AdminTransferProposal = env.as_contract(&contract_id, || {
+            env.storage()
+                .persistent()
+                .get(&DataKey::AdminTransferProposal)
+                .unwrap()
+        });
+        assert_eq!(proposal.proposed_admin, proposed_admin);
+        assert_eq!(proposal.expires_at, env.ledger().timestamp() + ADMIN_TRANSFER_TTL);
+
+        client.accept_admin_transfer();
+        let stored_admin: Address = env.as_contract(&contract_id, || {
+            env.storage().instance().get(&ADMIN).unwrap()
+        });
+        assert_eq!(stored_admin, proposed_admin);
+
+        let emitted = events_as_tuples(&env, &env.events().all()).iter().any(|(_, topics, _)| {
+            topics.len() >= 2
+                && topics.get(0).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
+                && topics
+                    .get(1)
+                    .map(|v| Symbol::try_from_val(&env, &v).ok() == Some(Symbol::new(&env, "AdminTransferred")))
+                    .unwrap_or(false)
+        });
+        assert!(emitted, "AdminTransferred event not emitted");
+    }
+
+    #[test]
+    fn test_admin_transfer_expires_after_seven_days() {
+        let (env, client, _admin) = setup();
+        let proposed_admin = Address::generate(&env);
+        client.propose_admin_transfer(&proposed_admin);
+        env.ledger().set_timestamp(ADMIN_TRANSFER_TTL);
+        assert_eq!(
+            client.try_accept_admin_transfer(),
+            Err(Ok(ContractError::ProposalExpired))
+        );
     }
 
     #[test]
