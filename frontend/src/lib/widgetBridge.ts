@@ -74,6 +74,7 @@ export function onAppUrlOpen(listener: (url: string) => void): () => void {
  * Map a widget deep link to an in-app route:
  *   solargrid://meter/<id>        → /dashboard/user?meter=<id>
  *   solargrid://pay?meter=<id>    → /pay?meter=<id>
+ *   solargrid://trade?meter=<id>&side=buy|sell → /pay?meter=<id>&side=<side>
  *   solargrid://dashboard         → /dashboard/user
  */
 export function routeForWidgetUrl(url: string): string | null {
@@ -95,6 +96,10 @@ export function routeForWidgetUrl(url: string): string | null {
     }
     case "pay":
       return meter ? `/pay?meter=${encodeURIComponent(meter)}` : "/pay";
+    case "trade": {
+      const side = parsed.searchParams.get("side") === "sell" ? "sell" : "buy";
+      return meter ? `/pay?meter=${encodeURIComponent(meter)}&side=${side}` : `/pay?side=${side}`;
+    }
     case "dashboard":
       return "/dashboard/user";
     default:

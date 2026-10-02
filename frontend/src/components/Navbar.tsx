@@ -27,6 +27,8 @@ export default function Navbar() {
     { href: "/communities", label: t("communities") },
     { href: "/competitions", label: t("competitions") },
     { href: "/smart-home", label: t("smartHome") },
+    { href: "/backtest", label: "Backtest" },
+    { href: "/widget", label: "Widget" },
   ];
 
   useEffect(() => {

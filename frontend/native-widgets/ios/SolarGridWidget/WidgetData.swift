@@ -7,6 +7,19 @@
 
 import Foundation
 
+struct PriceAlert: Codable, Equatable {
+    let id: String
+    let direction: String
+    let price: Double
+    let triggered: Bool
+}
+
+struct WalletTransaction: Codable, Equatable {
+    let type: String
+    let amount: Double
+    let timestamp: String
+}
+
 struct MeterSummary: Codable, Equatable {
     let meterId: String
     let active: Bool
@@ -14,6 +27,9 @@ struct MeterSummary: Codable, Equatable {
     let todayUnits: Double
     let last7DaysUnits: [Double]
     let daysRemaining: Double?
+    let priceXlmPerKwh: Double?
+    let alerts: [PriceAlert]?
+    let recentTransactions: [WalletTransaction]?
     let updatedAt: String
 
     var updatedDate: Date? {
@@ -29,6 +45,9 @@ struct MeterSummary: Codable, Equatable {
         todayUnits: 3.2,
         last7DaysUnits: [4.1, 3.9, 5.0, 4.4, 3.8, 4.0, 3.2],
         daysRemaining: 9.5,
+        priceXlmPerKwh: 0.5,
+        alerts: [],
+        recentTransactions: [],
         updatedAt: "2026-01-01T00:00:00.000Z"
     )
 }

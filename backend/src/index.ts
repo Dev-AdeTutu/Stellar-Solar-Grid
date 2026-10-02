@@ -203,6 +203,7 @@ app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
 // #901–#904: widgets, billing, competitions, smart home
 app.use("/api/widgets", widgetsRouter);
+app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/communities", communitiesRouter);
