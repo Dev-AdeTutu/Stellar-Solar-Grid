@@ -72,7 +72,10 @@ export default function PayPage() {
     if (linkedMeter) setMeterId(linkedMeter);
     if (linkedAmount && Number(linkedAmount) > 0) {
       setAmount(String(Number(linkedAmount)));
-      setPlan("Usage");
+      const linkedPlan = params.get("plan");
+      setPlan(linkedPlan === "Daily" || linkedPlan === "Weekly" || linkedPlan === "Monthly" || linkedPlan === "Usage"
+        ? linkedPlan
+        : "Usage");
     }
     const bill = params.get("bill");
     if (bill) setMemo((m) => m || `Bill ${bill.slice(0, 8)}`);

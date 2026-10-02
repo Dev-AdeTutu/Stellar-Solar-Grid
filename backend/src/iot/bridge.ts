@@ -21,6 +21,7 @@ import {
 } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
 import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
+import { emailLowBalance } from "../lib/billing.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
 import {
   adminInvoke,
@@ -58,6 +59,24 @@ export function sendRelayCommand(meterId: string, command: "ON" | "OFF", source:
     { qos: 1 },
     (err) => { if (err) logger.error({ meterId, err }, `Failed to publish ${command} command`); },
   );
+  return true;
+}
+
+export function handleDeviceTelemetryTopic(topic: string, payload: Buffer): boolean {
+  const segments = topic.split("/");
+  if (
+    segments.length !== 4 ||
+    segments[0] !== "solargrid" ||
+    segments[1] !== "devices" ||
+    segments[3] !== "telemetry"
+  ) {
+    return false;
+  }
+  try {
+    handleDeviceTelemetry(segments[2], payload);
+  } catch (err) {
+    logger.error("Device telemetry handling failed", { topic, err });
+  }
   return true;
 }
 const FLUSH_INTERVAL_MS = Number(process.env.BRIDGE_FLUSH_INTERVAL_MS ?? process.env.BATCH_FLUSH_MS ?? 5_000);
@@ -209,10 +228,6 @@ async function checkAndNotifyLowBalance(meterId: string) {
   // after this module was first loaded.
   const webhookUrl = process.env.PROVIDER_WEBHOOK_URL;
   const urls = getWebhookUrls();
-  // Nothing to notify: neither the legacy single-URL env var nor any
-  // provider registered via the webhook registry.
-  if (!webhookUrl && urls.size === 0) return;
-
   try {
     const result = await contractQuery("get_meter", [
       StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
@@ -258,6 +273,7 @@ async function checkAndNotifyLowBalance(meterId: string) {
           weeklyTypicalStroops,
         });
       }
+      await emailLowBalance({ meterId, balance, threshold: dynamicThreshold });
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
       };
@@ -511,14 +527,7 @@ function startMqttBridge() {
       handleHeartbeatMessage(segments[2], payload);
       return;
     }
-    if (segments[1] === "devices" && segments[3] === "telemetry") {
-      try {
-        handleDeviceTelemetry(segments[2], payload);
-      } catch (err) {
-        logger.error("Device telemetry handling failed", { topic, err });
-      }
-      return;
-    }
+    if (handleDeviceTelemetryTopic(topic, payload)) return;
     try {
       // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
       // missed ack) before they're persisted/submitted a second time.

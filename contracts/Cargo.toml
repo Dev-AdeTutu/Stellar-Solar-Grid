@@ -1,5 +1,5 @@
 [workspace]
-members = ["solar_grid"]
+members = ["solar_grid", "multisig_wallet"]
 resolver = "2"
 
 [profile.release]
