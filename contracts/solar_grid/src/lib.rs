@@ -4,7 +4,7 @@ extern crate alloc;
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, vec, Address, Env,
-    Map, String, Symbol, TryFromVal, Val, Vec,
+    BytesN, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
 mod certificates;
@@ -2419,6 +2419,45 @@ impl SolarGridContract {
         Ok(())
     }
 
+    /// Start a seven-day, explicitly accepted transfer of contract ownership.
+    pub fn propose_admin_transfer(env: Env, proposed_admin: Address) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let proposal = AdminTransferProposal {
+            proposed_admin: proposed_admin.clone(),
+            expires_at: env.ledger().timestamp().saturating_add(ADMIN_TRANSFER_TTL),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::AdminTransferProposal, &proposal);
+        env.events().publish(
+            (EVT_NS, symbol_short!("AdmTrPrp")),
+            (proposed_admin, proposal.expires_at),
+        );
+        Ok(())
+    }
+
+    /// Accept a pending admin transfer before its seven-day expiry.
+    pub fn accept_admin_transfer(env: Env) -> Result<(), ContractError> {
+        let key = DataKey::AdminTransferProposal;
+        let proposal: AdminTransferProposal = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::ProposalNotFound)?;
+        if env.ledger().timestamp() >= proposal.expires_at {
+            return Err(ContractError::ProposalExpired);
+        }
+        proposal.proposed_admin.require_auth();
+        let previous_admin = Self::get_admin(&env)?;
+        env.storage().instance().set(&ADMIN, &proposal.proposed_admin);
+        env.storage().persistent().remove(&key);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "AdminTransferred")),
+            (previous_admin, proposal.proposed_admin),
+        );
+        Ok(())
+    }
+
     /// Configure the M-of-N admin policy. The current admin must authorize this once.
     pub fn configure_multisig(env: Env, admins: Vec<Address>, threshold: u32) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "configure_multisig", "contract")?;
@@ -2470,6 +2509,16 @@ impl SolarGridContract {
         }
         if expiry <= env.ledger().timestamp() {
             return Err(ContractError::ProposalExpired);
+        }
+        if matches!(operation, AdminOperation::UpgradeContract(_, _))
+            && env
+                .storage()
+                .instance()
+                .get::<_, u32>(&MULTISIG_THRESHOLD)
+                .unwrap_or(0)
+                < 2
+        {
+            return Err(ContractError::InvalidMultisigConfiguration);
         }
         let id: u32 = env.storage().instance().get(&PROPOSAL_COUNT).unwrap_or(0);
         env.storage().instance().set(&PROPOSAL_COUNT, &(id + 1));
@@ -2585,6 +2634,10 @@ impl SolarGridContract {
                     return Err(ContractError::InsufficientBalance);
                 }
                 client.transfer(&env.current_contract_address(), &admin, &amount);
+            }
+            AdminOperation::UpgradeContract(wasm_hash, version) => {
+                env.deployer().update_current_contract_wasm(wasm_hash);
+                env.storage().instance().set(&CONTRACT_VERSION, &version);
             }
         }
         env.storage().persistent().remove(&key);
@@ -4738,12 +4791,13 @@ mod tests {
         assert_eq!(proposal.expires_at, env.ledger().timestamp() + ADMIN_TRANSFER_TTL);
 
         client.accept_admin_transfer();
+        let all_events = env.events().all();
         let stored_admin: Address = env.as_contract(&contract_id, || {
             env.storage().instance().get(&ADMIN).unwrap()
         });
         assert_eq!(stored_admin, proposed_admin);
 
-        let emitted = events_as_tuples(&env, &env.events().all()).iter().any(|(_, topics, _)| {
+        let emitted = events_as_tuples(&env, &all_events).iter().any(|(_, topics, _)| {
             topics.len() >= 2
                 && topics.get(0).map(|v| sym_eq(&env, &v, EVT_NS)).unwrap_or(false)
                 && topics
@@ -4751,7 +4805,7 @@ mod tests {
                     .map(|v| Symbol::try_from_val(&env, &v).ok() == Some(Symbol::new(&env, "AdminTransferred")))
                     .unwrap_or(false)
         });
-        assert!(emitted, "AdminTransferred event not emitted");
+        assert!(emitted, "AdminTransferred event not emitted: {:?}", all_events.events());
     }
 
     #[test]
