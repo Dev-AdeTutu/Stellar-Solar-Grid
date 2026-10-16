@@ -28,10 +28,14 @@ export default function Navbar() {
     { href: "/bills", label: t("bills") },
     { href: "/communities", label: t("communities") },
     { href: "/competitions", label: t("competitions") },
+    { href: "/achievements", label: "Achievements" },
     { href: "/simulator", label: "Practice trading" },
     { href: "/smart-home", label: t("smartHome") },
     { href: "/backtest", label: "Backtest" },
     { href: "/widget", label: "Widget" },
+    { href: "/market-analytics", label: "Market Analytics" },
+    { href: "/asset-info", label: "Asset Info" },
+    { href: "/sms-preferences", label: "SMS Alerts" },
   ];
 
   useEffect(() => {
