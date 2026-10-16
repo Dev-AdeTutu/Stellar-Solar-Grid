@@ -44,20 +44,22 @@ socialRouter.get("/profiles/:address/achievements", (req, res) => {
 
 /**
  * PUT /api/social/profiles/:address
- * Body: { displayName?, bio?, avatarUrl?, meterIds?, privacy?: { showOnLeaderboard?, showActivity?, publicProfile? } }
+ * Body: { displayName?, bio?, avatarUrl?, meterIds?, region?, privacy?: { showOnLeaderboard?, showActivity?, publicProfile? } }
  */
 socialRouter.put("/profiles/:address", (req, res) => {
   const { address } = req.params;
   if (!isAddress(address)) return res.status(400).json({ error: "Invalid Stellar address" });
-  const { displayName, bio, avatarUrl, meterIds, privacy } = req.body ?? {};
+  const { displayName, bio, avatarUrl, meterIds, region, privacy } = req.body ?? {};
   if (displayName !== undefined && typeof displayName !== "string") return res.status(400).json({ error: "displayName must be a string" });
   if (bio !== undefined && typeof bio !== "string") return res.status(400).json({ error: "bio must be a string" });
   if (avatarUrl !== undefined && avatarUrl !== null && !/^https?:\/\//.test(String(avatarUrl)))
     return res.status(400).json({ error: "avatarUrl must be an http(s) URL" });
   if (meterIds !== undefined && (!Array.isArray(meterIds) || !meterIds.every((m) => typeof m === "string")))
     return res.status(400).json({ error: "meterIds must be an array of strings" });
+  if (region !== undefined && region !== null && (typeof region !== "string" || region.length > 32))
+    return res.status(400).json({ error: "region must be a string of at most 32 characters" });
   if (privacy !== undefined && (typeof privacy !== "object" ||
       !Object.values(privacy).every((v) => typeof v === "boolean")))
     return res.status(400).json({ error: "privacy values must be booleans" });
-  res.json(upsertProfile(address, { displayName, bio, avatarUrl, meterIds, privacy }));
+  res.json(upsertProfile(address, { displayName, bio, avatarUrl, meterIds, region, privacy }));
 });

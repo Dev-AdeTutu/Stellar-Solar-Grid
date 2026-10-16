@@ -241,3 +241,8 @@ export function getTradingStats(): {
 export function getRecentMatches(limit = 50): TradeMatch[] {
   return [...matches.values()].sort((a, b) => b.matchedAt.localeCompare(a.matchedAt)).slice(0, limit);
 }
+
+/** Every recorded match, oldest first — used for market analytics price history (#999). */
+export function getAllMatches(): TradeMatch[] {
+  return [...matches.values()].sort((a, b) => a.matchedAt.localeCompare(b.matchedAt));
+}

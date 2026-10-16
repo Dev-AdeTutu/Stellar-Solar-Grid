@@ -25,6 +25,11 @@ import { webhookRouter } from "./routes/webhooks.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
+import { achievementsRouter, leaderboardsRouter } from "./routes/gamification.js";
+import { smsPreferencesRouter, smsNotificationsRouter } from "./routes/smsNotifications.js";
+import { meterDepreciationRouter } from "./routes/meterDepreciation.js";
+import { startDepreciationMonitor } from "./lib/meterDepreciation.js";
+import { marketTradeAnalyticsRouter } from "./routes/marketTradeAnalytics.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
@@ -173,6 +178,9 @@ app.use("/api/webhooks", webhookRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/social", socialRouter);
 startLeaderboardScheduler();
+// #996: energy consumption gamification (achievements, leaderboards)
+app.use("/api/achievements", achievementsRouter);
+app.use("/api/leaderboards", leaderboardsRouter);
 const firmwareByMeter = new Map<string, MeterFirmware>();
 
 const LATEST_FIRMWARE_VERSION = process.env.LATEST_FIRMWARE_VERSION || '1.0.0';
@@ -187,6 +195,9 @@ app.use("/api/keys", writeLimiter, apiKeysRouter);
 app.use("/api/meters", meterHealthRouter);
 app.use("/api/meters", predictionRouter);
 startHealthMonitor();
+// #998: meter lifespan & depreciation tracking
+app.use("/api/meters", meterDepreciationRouter);
+startDepreciationMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
@@ -198,6 +209,9 @@ app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
 app.use("/api/sms-config", smsConfigRouter);
+// #997: SMS notifications for non-smartphone users
+app.use("/api/users", smsPreferencesRouter);
+app.use("/api/sms-notifications", writeLimiter, smsNotificationsRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
@@ -237,6 +251,8 @@ app.use("/api/carbon-credits", carbonCreditsRouter);
 app.use("/api/p2p", p2pTradingRouter);
 // #935: order book
 app.use("/api/orderbook", orderBookRouter);
+// #999: P2P energy trading market analytics
+app.use("/api/market/analytics", marketTradeAnalyticsRouter);
 // #880: admin dashboard
 app.use("/api/admin/dashboard", adminDashboardRouter);
 // #941: grid resilience scoring
