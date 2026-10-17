@@ -251,7 +251,6 @@ export class StellarService {
   }
 
   private rememberQueryResult(key: string, value: unknown): void {
-=======
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
       const oldestKey = this.queryCache.keys().next().value;
       if (oldestKey !== undefined) this.queryCache.delete(oldestKey);

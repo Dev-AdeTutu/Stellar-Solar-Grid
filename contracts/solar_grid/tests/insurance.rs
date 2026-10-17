@@ -32,13 +32,14 @@ fn purchase_and_file_insurance_claim() {
     assert_eq!(policy.expiry, 87_400);
     assert!(policy.active);
     assert!(s.client.is_meter_insured(&meter));
-    assert_eq!(s.token.balance(&provider), 500_000);
+    assert_eq!(s.token_client().balance(&provider), 500_000);
 
     let reason = String::from_str(&s.env, "Lightning strike surge damage");
     let claim_id = s
         .client
         .file_insurance_claim(&meter, &2_000_000, &reason);
     assert_eq!(claim_id, 1);
+    assert!(s.env.events().all().events().len() > 0);
 
     let claims = s.client.get_meter_claims(&meter);
     assert_eq!(claims.len(), 1);
@@ -46,7 +47,6 @@ fn purchase_and_file_insurance_claim() {
     assert_eq!(claim.id, 1);
     assert_eq!(claim.amount, 2_000_000);
     assert_eq!(claim.status, ClaimStatus::Pending);
-    assert!(!s.env.events().all().is_empty());
 }
 
 #[test]

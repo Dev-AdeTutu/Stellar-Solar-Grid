@@ -68,6 +68,7 @@ export default function PayPage() {
   const [txHash, setTxHash] = useState<string | null>(null);
   // Issue #981: family/household account sharing — track whether the
   // connected wallet is an authorized delegate for the entered meter.
+  const [paymentMode, setPaymentMode] = useState<"standard" | "installment">("standard");
   const [isDelegate, setIsDelegate] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
   const [delegateChecked, setDelegateChecked] = useState(false);
@@ -151,7 +152,7 @@ export default function PayPage() {
         const delegates = await getDelegates(trimmed);
         if (cancelled) return;
         const match = delegates.find(
-          (d) => d.delegated_address === address && d.permissions !== "view-only"
+          (d) => d.delegated_address === address && (d.permissions as string) !== "view-only" && (d.permissions as string) !== "view"
         );
         const expired = match?.expiry ? match.expiry <= Math.floor(Date.now() / 1000) : false;
         setIsOwner(delegates.some((d) => d.delegated_address === address && d.permissions === "admin"));
@@ -352,9 +353,35 @@ export default function PayPage() {
             </div>
           )}
 
+          {/* Payment Mode Selector */}
+          <div className="mb-6 flex rounded-lg border border-white/10 bg-solar-accent p-1">
+            <button
+              type="button"
+              onClick={() => setPaymentMode("standard")}
+              className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
+                paymentMode === "standard"
+                  ? "bg-solar-yellow text-solar-dark font-semibold"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              Standard Top-up
+            </button>
+            <button
+              type="button"
+              onClick={() => setPaymentMode("installment")}
+              className={`flex-1 rounded-md py-2 text-sm font-medium transition ${
+                paymentMode === "installment"
+                  ? "bg-solar-yellow text-solar-dark font-semibold"
+                  : "text-gray-400 hover:text-white"
+              }`}
+            >
+              Installment Plan
+            </button>
+          </div>
+
           {paymentMode === "installment" ? (
             <div className="space-y-6">
-              <InstallmentCalculator meterId={meterId} />
+              <InstallmentCalculator walletAddress={address} />
               {address && <InstallmentTracker address={address} />}
             </div>
           ) : !address ? (

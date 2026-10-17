@@ -22,11 +22,10 @@ fn delegate_can_pay_until_removed() {
             .try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::Unauthorized))
     );
-    fx.client.add_delegate(&meter, &delegate);
-    assert_eq!(
-        fx.client.get_delegates(&meter),
-        vec![&fx.env, delegate.clone()]
-    );
+    fx.client.add_delegate(&meter, &delegate, &solar_grid::DELEGATE_PERM_PAY, &0);
+    let delegates = fx.client.get_delegates(&meter);
+    assert_eq!(delegates.len(), 1);
+    assert_eq!(delegates.get(0).unwrap().delegated_address, delegate);
 
     fx.client
         .make_delegated_payment(&meter, &delegate, &300, &PaymentPlan::Daily, &None);
@@ -49,7 +48,7 @@ fn delegated_payment_validates_amount_and_pause() {
     let fx = Fixture::new();
     let (meter, _owner) = fx.register("DLG2");
     let delegate = Address::generate(&fx.env);
-    fx.client.add_delegate(&meter, &delegate);
+    fx.client.add_delegate(&meter, &delegate, &solar_grid::DELEGATE_PERM_PAY, &0);
     assert_eq!(
         fx.client
             .try_make_delegated_payment(&meter, &delegate, &0, &PaymentPlan::Daily, &None),
@@ -356,7 +355,7 @@ fn missed_installment_defaults_after_grace_window() {
 
     // Skip the due date and the grace window without paying.
     fx.advance(DAY * 2 + 1);
-    fx.client.process_due_installments();
+    fx.client.process_due_installments(&vec![&fx.env, plan_id]);
     assert_eq!(
         fx.client.get_installment_plan(&plan_id).status,
         InstallmentStatus::Defaulted

@@ -141,6 +141,3 @@ router.delete(
 );
 
 export default router;
-</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>

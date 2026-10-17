@@ -80,7 +80,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "980299"
+                  "i128": "383857"
                 }
               ]
             }
@@ -105,7 +105,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "980299"
+                  "i128": "383857"
                 },
                 {
                   "vec": [
@@ -132,7 +132,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "980299"
+                      "i128": "383857"
                     }
                   ]
                 }
@@ -156,7 +156,7 @@
                   "string": "RFND"
                 },
                 {
-                  "i128": "148763"
+                  "i128": "160041"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -171,6 +171,10 @@
         }
       ]
     ],
+    [],
+    [],
+    [],
+    [],
     [],
     []
   ],
@@ -585,9 +589,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -646,7 +666,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -676,7 +696,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "831536"
+                "i128": "223816"
               }
             }
           },
@@ -703,7 +723,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -764,7 +784,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "980299"
+                "i128": "383857"
               }
             }
           },
@@ -794,7 +814,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "148763"
+                "i128": "160041"
               }
             }
           },
@@ -821,7 +841,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "831536"
+                "i128": "223816"
               }
             }
           },
@@ -921,7 +941,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "980299"
+                        "i128": "383857"
                       }
                     }
                   ]
@@ -978,7 +998,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "831536"
+                      "i128": "223816"
                     }
                   },
                   {
@@ -1030,7 +1050,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "148763"
+                      "i128": "160041"
                     }
                   },
                   {

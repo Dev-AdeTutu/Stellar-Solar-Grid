@@ -17,12 +17,16 @@ import {
   emailBill,
   getBill,
   getBillingAccount,
+  getBillingCycle,
+  getMeterBillingHistory,
   isValidPeriod,
   listBills,
   markBillPaid,
   previousPeriod,
   readBillPdf,
+  renewBillingCycle,
   runBillingCycle,
+  setupBillingCycle,
   upsertBillingAccount,
 } from "../lib/billing.js";
 
@@ -68,6 +72,38 @@ billingRouter.post(
 billingRouter.get("/meters/:meterId/bills", (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit ?? 24) || 24, 1), 120);
   res.json({ meterId: req.params.meterId, bills: listBills(req.params.meterId, limit) });
+});
+
+/** GET /api/billing/meters/:meterId/billing-history — billing cycle and invoice history (#971) */
+billingRouter.get("/meters/:meterId/billing-history", (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 24) || 24, 1), 120);
+  res.json(getMeterBillingHistory(req.params.meterId, limit));
+});
+
+/** GET /api/billing/meters/:meterId/billing-cycle — active billing cycle info (#971) */
+billingRouter.get("/meters/:meterId/billing-cycle", (req, res) => {
+  const cycle = getBillingCycle(req.params.meterId);
+  if (!cycle) return res.status(404).json({ error: "Billing cycle not found" });
+  res.json(cycle);
+});
+
+/** POST /api/billing/meters/:meterId/billing-cycle — configure billing cycle (#971) */
+billingRouter.post("/meters/:meterId/billing-cycle", (req, res) => {
+  const { cycleDurationDays, autoRenew, startDate } = req.body ?? {};
+  const cycle = setupBillingCycle({
+    meterId: req.params.meterId,
+    cycleDurationDays: typeof cycleDurationDays === "number" ? cycleDurationDays : undefined,
+    autoRenew: typeof autoRenew === "boolean" ? autoRenew : undefined,
+    startDate: typeof startDate === "string" ? startDate : undefined,
+  });
+  res.json(cycle);
+});
+
+/** POST /api/billing/meters/:meterId/billing-cycle/renew — manual renewal (#971) */
+billingRouter.post("/meters/:meterId/billing-cycle/renew", (req, res) => {
+  const cycle = renewBillingCycle(req.params.meterId);
+  if (!cycle) return res.status(404).json({ error: "Billing cycle not found" });
+  res.json(cycle);
 });
 
 billingRouter.get("/bills/:billId", (req, res) => {

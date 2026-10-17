@@ -647,4 +647,14 @@ export function consumePaymentConfirmation(
   pruneExpired();
 
   const key = hashToken(token);
-  const confirmation = pendingConfirm
+  const confirmation = pendingConfirmations.get(key);
+  if (!confirmation) return null;
+
+  pendingConfirmations.delete(key);
+
+  if (confirmation.expiresAt <= Date.now()) return null;
+  if (confirmation.ownerAddress !== ownerAddress) return null;
+
+  return confirmation;
+}
+

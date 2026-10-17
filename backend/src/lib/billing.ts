@@ -26,8 +26,7 @@ import { createTextPdf } from "./pdf.js";
 import { sendNotificationEmail } from "./emailNotifications.js";
 import { logger } from "./logger.js";
 import { getMemberDiscountPercent } from "./communities.js";
-import { stellarService } from "./stellarService.js";
-import { adminInvoke } from "./adminInvoke.js";
+import { stellarService, adminInvoke } from "./stellar.js";
 
 const DB_PATH = process.env.BILLING_DB_PATH ?? path.resolve(process.cwd(), "data", "billing.sqlite");
 const PDF_DIR = process.env.BILLING_PDF_DIR ?? path.resolve(process.cwd(), "data", "bills");
@@ -129,6 +128,17 @@ function db(): Database.Database {
       );
       CREATE INDEX IF NOT EXISTS idx_bills_meter_period ON bills (meter_id, period DESC);
       CREATE INDEX IF NOT EXISTS idx_bills_period ON bills (period);
+      CREATE TABLE IF NOT EXISTS billing_cycles (
+        meter_id TEXT PRIMARY KEY,
+        billing_cycle_start TEXT NOT NULL,
+        next_billing_date TEXT NOT NULL,
+        cycle_duration_days INTEGER NOT NULL DEFAULT 30,
+        auto_renew INTEGER NOT NULL DEFAULT 1,
+        last_reminder_sent TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_billing_cycles_next_date ON billing_cycles (next_billing_date);
     `);
     const billColumns = new Set(
       (_db.pragma("table_info(bills)") as Array<{ name: string }>).map((column) => column.name),
@@ -562,21 +572,162 @@ export function markBillPaid(id: string, txHash: string | null, now = new Date()
   return getBill(id);
 }
 
+// ── Billing Cycles (#971) ────────────────────────────────────────────────────
+
+export type BillingCycleRecord = {
+  meter_id: string;
+  billing_cycle_start: string;
+  next_billing_date: string;
+  cycle_duration_days: number;
+  auto_renew: number;
+  last_reminder_sent: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type SetupBillingCycleInput = {
+  meterId: string;
+  cycleDurationDays?: number;
+  autoRenew?: boolean;
+  startDate?: string;
+};
+
+export function setupBillingCycle(input: SetupBillingCycleInput, now = new Date()): BillingCycleRecord {
+  const duration = input.cycleDurationDays && input.cycleDurationDays > 0 ? input.cycleDurationDays : 30;
+  const start = input.startDate ? new Date(input.startDate) : now;
+  const next = new Date(start.getTime() + duration * 86_400_000);
+  const autoRenew = input.autoRenew !== false ? 1 : 0;
+  const nowIso = now.toISOString();
+
+  db()
+    .prepare(
+      `INSERT INTO billing_cycles (meter_id, billing_cycle_start, next_billing_date, cycle_duration_days, auto_renew, last_reminder_sent, created_at, updated_at)
+       VALUES (@meterId, @start, @next, @duration, @autoRenew, NULL, @nowIso, @nowIso)
+       ON CONFLICT (meter_id) DO UPDATE SET
+         billing_cycle_start = excluded.billing_cycle_start,
+         next_billing_date = excluded.next_billing_date,
+         cycle_duration_days = excluded.cycle_duration_days,
+         auto_renew = excluded.auto_renew,
+         updated_at = excluded.updated_at`,
+    )
+    .run({
+      meterId: input.meterId,
+      start: start.toISOString(),
+      next: next.toISOString(),
+      duration,
+      autoRenew,
+      nowIso,
+    });
+
+  return getBillingCycle(input.meterId)!;
+}
+
+export function getBillingCycle(meterId: string): BillingCycleRecord | undefined {
+  return db().prepare("SELECT * FROM billing_cycles WHERE meter_id = ?").get(meterId) as
+    | BillingCycleRecord
+    | undefined;
+}
+
+export function renewBillingCycle(meterId: string, now = new Date()): BillingCycleRecord | undefined {
+  const cycle = getBillingCycle(meterId);
+  if (!cycle) return undefined;
+  const newStart = cycle.next_billing_date;
+  const newNext = new Date(new Date(cycle.next_billing_date).getTime() + cycle.cycle_duration_days * 86_400_000).toISOString();
+  db()
+    .prepare(
+      `UPDATE billing_cycles
+       SET billing_cycle_start = ?, next_billing_date = ?, updated_at = ?
+       WHERE meter_id = ?`,
+    )
+    .run(newStart, newNext, now.toISOString(), meterId);
+  return getBillingCycle(meterId);
+}
+
+export async function checkUpcomingBillingCycles(now = new Date()): Promise<{ remindersSent: number; invoicesGenerated: number }> {
+  const cycles = db().prepare("SELECT * FROM billing_cycles").all() as BillingCycleRecord[];
+  let remindersSent = 0;
+  let invoicesGenerated = 0;
+
+  for (const cycle of cycles) {
+    const nextDate = new Date(cycle.next_billing_date);
+    const msDiff = nextDate.getTime() - now.getTime();
+    const daysDiff = Math.ceil(msDiff / 86_400_000);
+
+    // 1. Reminders: 7 days, 3 days, 1 day before
+    if ([7, 3, 1].includes(daysDiff)) {
+      const reminderTag = `${daysDiff}-days:${now.toISOString().slice(0, 10)}`;
+      if (cycle.last_reminder_sent !== reminderTag) {
+        const account = getBillingAccount(cycle.meter_id);
+        if (account?.email) {
+          try {
+            await sendNotificationEmail({
+              to: account.email,
+              event: "billing",
+              subject: `Upcoming billing reminder for meter ${cycle.meter_id}`,
+              text: `Your upcoming billing cycle for meter ${cycle.meter_id} starts on ${cycle.next_billing_date.slice(0, 10)} (${daysDiff} day(s) remaining).`,
+              html: `<p>Your upcoming billing cycle for meter <strong>${escapeHtml(cycle.meter_id)}</strong> starts on ${cycle.next_billing_date.slice(0, 10)} (<strong>${daysDiff}</strong> day(s) remaining).</p>`,
+            });
+            remindersSent++;
+            db()
+              .prepare("UPDATE billing_cycles SET last_reminder_sent = ? WHERE meter_id = ?")
+              .run(reminderTag, cycle.meter_id);
+          } catch (err) {
+            logger.warn("Failed to send billing reminder", { meterId: cycle.meter_id, error: err });
+          }
+        }
+      }
+    }
+
+    // 2. Billing date reached or passed -> auto-generate invoice
+    if (now.getTime() >= nextDate.getTime()) {
+      const period = previousPeriod(now);
+      const { bill, created } = generateBill(cycle.meter_id, period, now);
+      if (created) {
+        invoicesGenerated++;
+        if (bill.total > 0) {
+          void emailBill(bill);
+        }
+      }
+      if (cycle.auto_renew) {
+        renewBillingCycle(cycle.meter_id, now);
+      }
+    }
+  }
+
+  return { remindersSent, invoicesGenerated };
+}
+
+export function getMeterBillingHistory(meterId: string, limit = 24): {
+  meterId: string;
+  billingCycle: BillingCycleRecord | null;
+  bills: Bill[];
+} {
+  return {
+    meterId,
+    billingCycle: getBillingCycle(meterId) ?? null,
+    bills: listBills(meterId, limit),
+  };
+}
+
 // ── Scheduler ────────────────────────────────────────────────────────────────
 
 let schedulerTimer: NodeJS.Timeout | undefined;
 let running = false;
 
 /**
- * Checks hourly; on the 1st of the month (UTC) runs the cycle for the
- * previous month. The unique (meter_id, period) constraint makes repeated
- * checks on the same day — or a restart mid-run — safe.
+ * Checks hourly for upcoming billing cycles and reminders (#971).
+ * On the 1st of the month (UTC), also runs the full billing cycle for the
+ * previous month.
  */
 export async function billingTick(now = new Date()): Promise<BillingRunResult | null> {
-  if (now.getUTCDate() !== 1 || running) return null;
+  if (running) return null;
   running = true;
   try {
-    return await runBillingCycle(previousPeriod(now), now);
+    await checkUpcomingBillingCycles(now);
+    if (now.getUTCDate() === 1) {
+      return await runBillingCycle(previousPeriod(now), now);
+    }
+    return null;
   } catch (err) {
     logger.error("Billing cycle failed", { error: err instanceof Error ? err.message : String(err) });
     return null;

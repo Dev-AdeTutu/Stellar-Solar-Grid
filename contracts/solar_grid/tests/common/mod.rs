@@ -13,6 +13,8 @@ pub struct Fixture {
     pub token: Address,
 }
 
+pub type TestSetup = Fixture;
+
 impl Fixture {
     /// Deploy through the constructor with every authorization mocked.
     pub fn new() -> Self {
@@ -59,6 +61,18 @@ impl Fixture {
         self.client.allowlist_add(&owner);
         self.client.register_meter(&id, &owner);
         (id, owner)
+    }
+
+    pub fn allowlisted_user(&self) -> Address {
+        let user = Address::generate(&self.env);
+        self.client.allowlist_add(&user);
+        user
+    }
+
+    pub fn register_meter(&self, owner: &Address, meter_id: &str) -> String {
+        let id = self.id(meter_id);
+        self.client.register_meter(&id, owner);
+        id
     }
 
     /// Register `meter_id`, mint `amount` to the owner and pay it in.

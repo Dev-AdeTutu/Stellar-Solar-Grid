@@ -99,7 +99,6 @@ async function fetchAppliances(meterId: string, range: Range): Promise<Appliance
 
 const formatTrend = (pct: number | null) =>
   pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
-=======
 
 function StatTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (

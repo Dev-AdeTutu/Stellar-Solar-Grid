@@ -12,8 +12,9 @@ certs/
 *.wasm
 .DS_Store
 logs/
-data/*.db
-data/*.sqlite
+**/*.db
+**/*.sqlite
+**/data/bills/
 data/archive/
 
 # Test snapshots

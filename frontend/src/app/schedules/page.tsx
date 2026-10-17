@@ -90,6 +90,7 @@ export default function SchedulesPage() {
     setSubmitting(true);
     try {
       const schedule: Schedule = {
+        meter_id: meterId.trim(),
         circuit_id: circuitId.trim(),
         days: daysToBitmask(days),
         start_time: clockToMinutes(startTime),

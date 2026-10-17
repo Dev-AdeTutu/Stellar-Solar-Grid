@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'jest';
 import { buildSep7PaymentUri } from './sep7';
 
 describe('buildSep7PaymentUri', () => {

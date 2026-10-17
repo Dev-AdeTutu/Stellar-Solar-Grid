@@ -19,7 +19,12 @@ function parsePayload(raw: string): MeterQrPayload {
   return value;
 }
 
-export default function MeterQrScanner() {
+export interface MeterQrScannerProps {
+  onRegistered?: (meterId: string) => void;
+  onScan?: (meterId: string) => void;
+}
+
+export default function MeterQrScanner({ onRegistered, onScan }: MeterQrScannerProps = {}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [payload, setPayload] = useState<MeterQrPayload | null>(null);
   const [manual, setManual] = useState("");
@@ -41,7 +46,10 @@ export default function MeterQrScanner() {
         while (active) {
           const found = await detector.detect(videoRef.current);
           if (found[0]?.rawValue) {
-            setPayload(parsePayload(found[0].rawValue));
+            const parsed = parsePayload(found[0].rawValue);
+            setPayload(parsed);
+            onScan?.(parsed.meter_id);
+            onRegistered?.(parsed.meter_id);
             setError("");
             setScanning(false);
             break;
@@ -57,11 +65,14 @@ export default function MeterQrScanner() {
       active = false;
       stream?.getTracks().forEach((track) => track.stop());
     };
-  }, [scanning]);
+  }, [scanning, onRegistered, onScan]);
 
   function applyManual() {
     try {
-      setPayload(parsePayload(manual));
+      const parsed = parsePayload(manual);
+      setPayload(parsed);
+      onScan?.(parsed.meter_id);
+      onRegistered?.(parsed.meter_id);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Invalid QR payload");
