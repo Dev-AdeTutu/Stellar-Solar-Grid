@@ -1,4 +1,4 @@
-import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, fetchDelegates, addMeterDelegate, removeMeterDelegate, makeDelegatedPayment, contractInvoke, type MeterData, type Delegate } from "@/lib/contract";
+import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, fetchDelegates, addMeterDelegate, removeMeterDelegate, makeDelegatedPayment as contractMakeDelegatedPayment, contractInvoke, type MeterData, type Delegate } from "@/lib/contract";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData, Delegate };
@@ -23,11 +23,35 @@ export async function getMetersPaginated(offset: number, limit: number): Promise
   return fetchMetersPaginated(offset, limit);
 }
 
+import { env } from "@/lib/env";
+
+export interface PowerQualityReading {
+  voltage: number;
+  frequency: number;
+  thd: number;
+  timestamp: string;
+}
+
+export interface PowerQualityResponse {
+  meterId: string;
+  current: PowerQualityReading | null;
+  issues: any[];
+  history: PowerQualityReading[];
+  pagination?: any;
+  thresholds?: any;
+}
+
 export async function getPowerQuality(
   meterId: string,
   days?: number,
 ): Promise<PowerQualityResponse> {
-  return getMeterPowerQuality(meterId, days);
+  const backendUrl = env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001";
+  const url = `${backendUrl}/api/meters/${meterId}/power-quality${days ? `?days=${days}` : ""}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch power quality: ${res.statusText}`);
+  }
+  return res.json();
 }
 
 export async function transferOwnership(
@@ -72,8 +96,8 @@ export async function addDelegate(
   sourceAddress: string,
   meterId: string,
   delegate: string,
-  permissions: string,
-  expiry: number,
+  permissions: "view" | "pay" | "admin",
+  expiry: bigint,
 ): Promise<string> {
   return addMeterDelegate(sourceAddress, meterId, delegate, permissions, expiry);
 }
@@ -93,19 +117,45 @@ export async function makeDelegatedPayment(
   amountXlm: number,
   plan: "Daily" | "Weekly" | "Monthly" | "Usage",
   memo?: string,
+): Promise<string>;
+export async function makeDelegatedPayment(
+  sourceAddress: string,
+  meterId: string,
+  amountXlm: number,
+  plan: "Daily" | "Weekly" | "Monthly" | "Usage",
+  memo?: string,
+): Promise<string>;
+export async function makeDelegatedPayment(
+  sourceAddress: string,
+  meterId: string,
+  delegateOrAmount: string | number,
+  amountOrPlan: number | ("Daily" | "Weekly" | "Monthly" | "Usage"),
+  planOrMemo?: ("Daily" | "Weekly" | "Monthly" | "Usage") | string,
+  memo?: string,
 ): Promise<string> {
+  let delegate: string;
+  let amountXlm: number;
+  let plan: "Daily" | "Weekly" | "Monthly" | "Usage";
+  let memoStr: string | undefined;
+
+  if (typeof delegateOrAmount === "string") {
+    delegate = delegateOrAmount;
+    amountXlm = amountOrPlan as number;
+    plan = planOrMemo as ("Daily" | "Weekly" | "Monthly" | "Usage");
+    memoStr = memo;
+  } else {
+    delegate = sourceAddress;
+    amountXlm = delegateOrAmount;
+    plan = amountOrPlan as ("Daily" | "Weekly" | "Monthly" | "Usage");
+    memoStr = planOrMemo as string | undefined;
+  }
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
-  const trimmedMemo = memo?.trim();
-  const memoScVal =
-    trimmedMemo && trimmedMemo.length > 0
-      ? StellarSdk.nativeToScVal(trimmedMemo, { type: "string" })
-      : StellarSdk.xdr.ScVal.scvVoid();
-  return makeDelegatedPayment(
+  return contractMakeDelegatedPayment(
     sourceAddress,
     meterId,
     delegate,
     amountStroops,
     plan,
-    memoScVal,
+    memoStr ?? "",
   );
 }

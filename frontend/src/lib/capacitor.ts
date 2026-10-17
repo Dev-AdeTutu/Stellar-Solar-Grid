@@ -65,7 +65,7 @@ export const getNetworkStatus = async (): Promise<ConnectionStatus | null> => {
 
 export const addNetworkListener = (callback: (status: ConnectionStatus) => void) => {
   const listener = Network.addListener('networkStatusChange', callback);
-  return () => listener.remove();
+  return () => { try { (listener as any).remove?.(); } catch {} };
 };
 
 // Secure storage (Preferences)

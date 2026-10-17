@@ -136,6 +136,46 @@ pub enum ContractError {
     ComplianceRefMissing = 72,
     /// No lease agreement exists with the supplied id.
     LeaseNotFound = 73,
+    /// The admin-configurable grid export rate has not been set (Issue #990).
+    ExportRateNotSet = 74,
+    /// Billing cycle not found for the meter (Issue #971).
+    BillingCycleNotFound = 75,
+    /// No schedule exists for the meter.
+    ScheduleNotFound = 76,
+    /// A Schedule configuration is invalid.
+    InvalidSchedule = 77,
+    /// An emergency override until timestamp is not in the future.
+    InvalidOverrideWindow = 78,
+    /// A delegate permission bitmask was zero or otherwise invalid (#981).
+    InvalidDelegatePermissions = 79,
+    /// A delegate expiry timestamp is already in the past (#981).
+    InvalidDelegateExpiry = 80,
+    /// Seasonal rate configuration is invalid (#992).
+    InvalidSeasonalRate = 81,
+    /// Solar farm not found (#984).
+    SolarFarmNotFound = 82,
+    /// Solar farm already exists (#984).
+    SolarFarmAlreadyExists = 83,
+    /// Insufficient shares (#984).
+    InsufficientShares = 84,
+    /// Invalid share amount (#984).
+    InvalidShareAmount = 85,
+    /// Insurance policy not found (#1002).
+    InsurancePolicyNotFound = 86,
+    /// Insurance policy is expired or inactive (#1002).
+    InsurancePolicyExpired = 87,
+    /// Claim amount exceeds coverage (#1002).
+    ClaimExceedsCoverage = 88,
+    /// No installment plan exists with the given id (#987).
+    InstallmentPlanNotFound = 89,
+    /// Installment plan parameters are invalid (#987).
+    InvalidInstallmentPlan = 90,
+    /// The next installment is not due yet (#987).
+    InstallmentNotDue = 91,
+    /// The installment plan has defaulted (#987).
+    InstallmentPlanDefaulted = 92,
+    /// The installment plan has already been completed (#987).
+    InstallmentPlanCompleted = 93,
 }
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -199,6 +239,8 @@ const MAX_METADATA_VALUE_LEN: u32 = 100;
 const EXPORT_RATE: Symbol = symbol_short!("EXP_RATE");
 /// Maximum page size for `get_export_history` (Issue #990).
 const MAX_EXPORT_PAGE: u32 = 100;
+/// Dynamic pricing configuration key (Issue #973).
+const DYNAMIC_PRICING: Symbol = symbol_short!("DYN_PRC");
 
 /// An announced emergency withdrawal can only be executed once this many
 /// seconds have elapsed since it was announced (#686).
@@ -250,6 +292,7 @@ pub struct PricingSchedule {
     pub weekday: Vec<PricingWindow>,
     pub weekend: Vec<PricingWindow>,
 }
+
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -640,6 +683,103 @@ pub enum DataKey {
     SubscriptionTierCount,
     Subscription(Address),
     GiftHistory(Address),
+    /// Grid export history for a meter (Issue #990).
+    GridExportHistory(String),
+    /// Cumulative grid export credit paid to a meter (Issue #990).
+    GridExportCredit(String),
+    /// Billing cycle management per meter (Issue #971).
+    BillingCycle(String),
+    /// Solar farm by ID (Issue #984).
+    SolarFarm(String),
+    /// List of all solar farm IDs (Issue #984).
+    SolarFarmList,
+    /// Shares held by an address in a solar farm (Issue #984).
+    ShareholderShares(String, Address),
+    /// Installment plan by id (#987).
+    InstallmentPlan(u64),
+    /// List of installment plans belonging to a payer (#987).
+    PayerInstallments(Address),
+}
+
+/// Lifecycle state of an installment payment plan (#987).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstallmentStatus {
+    Active,
+    Completed,
+    Defaulted,
+}
+
+/// A scheduled installment payment plan for a large meter purchase or upgrade (#987).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstallmentPlan {
+    pub payer: Address,
+    pub meter_id: String,
+    pub total: i128,
+    pub paid: i128,
+    pub remaining: i128,
+    pub installments: u32,
+    pub installment_amount: i128,
+    pub next_due: u64,
+    pub grace_secs: u64,
+    pub status: InstallmentStatus,
+}
+
+/// Generation record for a community solar farm (Issue #984).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenerationRecord {
+    pub timestamp: u64,
+    pub generation_kwh: i128,
+}
+
+/// Community solar farm definition (Issue #984).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolarFarm {
+    pub id: String,
+    pub capacity_watts: u64,
+    pub shareholders: Map<Address, i128>,
+    pub generation_data: Vec<GenerationRecord>,
+    pub total_generation: i128,
+    pub total_shares: i128,
+    pub share_price: i128,
+}
+
+/// A single grid export credited to a meter (Issue #990).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridExport {
+    pub meter_id: String,
+    pub kwh: u64,
+    pub credit: i128,
+    pub rate: i128,
+    pub timestamp: u64,
+}
+
+/// Billing cycle tracking for automated billing management (Issue #971).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BillingCycle {
+    pub meter_id: String,
+    pub billing_cycle_start: u64,
+    pub next_billing_date: u64,
+    pub cycle_duration_days: u32,
+    pub auto_renew: bool,
+    pub is_active: bool,
+}
+
+/// Dynamic pricing engine with multiplier rules (Issue #973).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DynamicPricing {
+    pub base_price: i128,
+    pub multiplier_bps: u32,
+    pub min_price: i128,
+    pub max_price: i128,
+    pub last_updated: u64,
+    pub next_update: u64,
 }
 
 #[contracttype]
@@ -1775,6 +1915,14 @@ impl SolarGridContract {
         true
     }
 
+    pub(crate) fn require_not_paused(env: &Env) -> Result<(), ContractError> {
+        if Self::pause_is_active(env) {
+            Err(ContractError::ContractPaused)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Guard against a misconfigured zero unit price before any cost math runs
     /// (Issue #733). A zero unit price could divide by zero in billing and
     /// panic the contract, so usage-taking functions refuse to run until a
@@ -2908,6 +3056,268 @@ impl SolarGridContract {
             .unwrap_or(DEFAULT_UNIT_PRICE)
     }
 
+    // ── Grid Export (Issue #990) ───────────────────────────────────────────
+    pub fn set_export_rate(env: Env, rate: i128) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "set_export_rate", "contract")?;
+        if rate <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        let old: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
+        env.storage().instance().set(&EXPORT_RATE, &rate);
+        env.events()
+            .publish((EVT_NS, symbol_short!("exp_rate")), (old, rate));
+        Ok(())
+    }
+
+    /// Return the configured grid export credit rate (stroops per kWh), or 0
+    /// when the admin has not configured one yet (Issue #990).
+    pub fn get_export_rate(env: Env) -> i128 {
+        env.storage().instance().get(&EXPORT_RATE).unwrap_or(0)
+    }
+
+    /// Record a grid export for a meter and credit its owner (Issue #990).
+    pub fn record_grid_export(
+        env: Env,
+        meter_id: String,
+        kwh: u64,
+    ) -> Result<i128, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if kwh == 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let oracle: Option<Address> = env.storage().instance().get(&ORACLE);
+        let admin = Self::get_admin(&env)?;
+        match oracle {
+            Some(o) => o.require_auth(),
+            None => admin.require_auth(),
+        }
+
+        let rate: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
+        if rate <= 0 {
+            return Err(ContractError::ExportRateNotSet);
+        }
+
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        let now = env.ledger().timestamp();
+        let credit = i128::from(kwh).saturating_mul(rate);
+
+        meter.export_kwh = meter.export_kwh.saturating_add(kwh);
+        env.storage().persistent().set(&key, &meter);
+
+        // Credit the meter owner's prepaid balance.
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&bal_key, &balance.saturating_add(credit));
+
+        // Track cumulative export credit for the meter.
+        let credit_key = DataKey::GridExportCredit(meter_id.clone());
+        let total_credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&credit_key, &total_credit.saturating_add(credit));
+
+        // Append to the meter's export history.
+        let history_key = DataKey::GridExportHistory(meter_id.clone());
+        let mut history: Vec<GridExport> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| vec![&env]);
+        history.push_back(GridExport {
+            meter_id: meter_id.clone(),
+            kwh,
+            credit,
+            rate,
+            timestamp: now,
+        });
+        env.storage().persistent().set(&history_key, &history);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("grid_exp"), meter_id),
+            (kwh, credit, rate, now),
+        );
+        Ok(credit)
+    }
+
+    /// Paginated grid export history for a meter (Issue #990).
+    pub fn get_export_history(
+        env: Env,
+        meter_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<GridExport>, ContractError> {
+        Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        let limit = limit.min(MAX_EXPORT_PAGE);
+        let history: Vec<GridExport> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GridExportHistory(meter_id))
+            .unwrap_or_else(|| vec![&env]);
+        let total = history.len();
+        if offset >= total {
+            return Ok(vec![&env]);
+        }
+        let end = (offset + limit).min(total);
+        let mut page: Vec<GridExport> = vec![&env];
+        for i in offset..end {
+            if let Some(entry) = history.get(i) {
+                page.push_back(entry);
+            }
+        }
+        Ok(page)
+    }
+
+    /// Return (import_kwh, export_kwh) totals for a meter (Issue #990).
+    pub fn get_export_totals(env: Env, meter_id: String) -> Result<(u64, u64), ContractError> {
+        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
+        Ok((meter.import_kwh, meter.export_kwh))
+    }
+
+    /// Cumulative grid export credit paid to a meter (Issue #990).
+    pub fn get_export_credit(env: Env, meter_id: String) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GridExportCredit(meter_id))
+            .unwrap_or(0)
+    }
+
+    // ── Automated Billing Cycle Management (Issue #971) ─────────────────
+    pub fn set_billing_cycle(
+        env: Env,
+        meter_id: String,
+        cycle_duration_days: u32,
+        auto_renew: bool,
+    ) -> Result<BillingCycle, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        meter.owner.require_auth();
+
+        if cycle_duration_days == 0 || cycle_duration_days > 365 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+
+        let now = env.ledger().timestamp();
+        let next_billing = now.saturating_add((cycle_duration_days as u64).saturating_mul(SECONDS_PER_DAY));
+
+        let cycle = BillingCycle {
+            meter_id: meter_id.clone(),
+            billing_cycle_start: now,
+            next_billing_date: next_billing,
+            cycle_duration_days,
+            auto_renew,
+            is_active: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::BillingCycle(meter_id.clone()), &cycle);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("bill_cyc"), meter_id),
+            (now, next_billing, auto_renew),
+        );
+
+        Ok(cycle)
+    }
+
+    pub fn get_billing_cycle(env: Env, meter_id: String) -> Result<BillingCycle, ContractError> {
+        Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::BillingCycle(meter_id))
+            .ok_or(ContractError::BillingCycleNotFound)
+    }
+
+    pub fn renew_billing_cycle(env: Env, meter_id: String) -> Result<BillingCycle, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        let mut cycle: BillingCycle = env
+            .storage()
+            .persistent()
+            .get(&DataKey::BillingCycle(meter_id.clone()))
+            .ok_or(ContractError::BillingCycleNotFound)?;
+
+        let now = env.ledger().timestamp();
+        cycle.billing_cycle_start = cycle.next_billing_date;
+        cycle.next_billing_date = cycle
+            .billing_cycle_start
+            .saturating_add((cycle.cycle_duration_days as u64).saturating_mul(SECONDS_PER_DAY));
+        if cycle.next_billing_date <= now {
+            cycle.next_billing_date = now.saturating_add((cycle.cycle_duration_days as u64).saturating_mul(SECONDS_PER_DAY));
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::BillingCycle(meter_id.clone()), &cycle);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("bill_rnw"), meter_id),
+            (cycle.billing_cycle_start, cycle.next_billing_date),
+        );
+
+        Ok(cycle)
+    }
+
+    // ── Dynamic Pricing Based on Demand (Issue #973) ─────────────────────
+    pub fn update_pricing_multiplier(env: Env, multiplier_bps: u32) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "update_pricing_multiplier", "contract")?;
+        if multiplier_bps == 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        let mut pricing = Self::get_dynamic_pricing_internal(&env);
+        pricing.multiplier_bps = multiplier_bps;
+        pricing.last_updated = env.ledger().timestamp();
+        pricing.next_update = pricing.last_updated + 3600;
+        env.storage().instance().set(&DYNAMIC_PRICING, &pricing);
+        env.events().publish(
+            (EVT_NS, symbol_short!("prc_upd")),
+            (multiplier_bps, pricing.last_updated),
+        );
+        Ok(())
+    }
+
+    pub fn get_current_price(env: Env) -> i128 {
+        let base = Self::rate_at(&env, env.ledger().timestamp());
+        let pricing = Self::get_dynamic_pricing_internal(&env);
+        if pricing.multiplier_bps > 0 {
+            let multiplier = pricing.multiplier_bps as i128;
+            return (base.saturating_mul(multiplier) / 10_000)
+                .max(pricing.min_price)
+                .min(if pricing.max_price > 0 { pricing.max_price } else { i128::MAX });
+        }
+        base
+    }
+
+    fn get_dynamic_pricing_internal(env: &Env) -> DynamicPricing {
+        env.storage()
+            .instance()
+            .get(&DYNAMIC_PRICING)
+            .unwrap_or(DynamicPricing {
+                base_price: 100,
+                multiplier_bps: 10_000,
+                min_price: 1,
+                max_price: 1_000_000,
+                last_updated: 0,
+                next_update: 0,
+            })
+    }
+
+    pub fn get_dynamic_pricing(env: Env) -> Option<DynamicPricing> {
+        env.storage().instance().get(&DYNAMIC_PRICING)
+    }
+
+
     /// Configure seasonal pricing bands (Issue #992). Admin-only.
     ///
     /// Rates must be non-overlapping, in ascending order, and each
@@ -2929,7 +3339,7 @@ impl SolarGridContract {
         }
         env.storage().instance().set(&DataKey::SeasonalRates, &rates);
         env.events()
-            .publish((EVT_NS, symbol_short!("season_set")), rates.len());
+            .publish((EVT_NS, Symbol::new(&env, "season_set")), rates.len());
         Ok(())
     }
 
@@ -4321,7 +4731,7 @@ impl SolarGridContract {
     pub fn create_solar_farm(
         env: Env,
         farm_id: String,
-        capacity_watts: u32,
+        capacity_watts: u64,
         share_price: i128,
     ) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "create_solar_farm", "contract")?;
@@ -4477,6 +4887,182 @@ impl SolarGridContract {
     pub fn get_total_generation(env: Env, farm_id: String) -> Result<i128, ContractError> {
         Ok(Self::get_solar_farm(env, farm_id)?.total_generation)
     }
+
+    // ── Issue #987: installment payment plans ────────────────────────────────
+
+    pub fn create_installment_plan(
+        env: Env,
+        meter_id: String,
+        payer: Address,
+        total: i128,
+        installments: u32,
+        grace_secs: u64,
+    ) -> Result<u64, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractFrozen);
+        }
+        if total <= 0 || installments == 0 || installments > MAX_INSTALLMENTS {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+        payer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let plan_id: u64 = env.storage().instance().get(&PLAN_COUNT).unwrap_or(0);
+        env.storage().instance().set(&PLAN_COUNT, &(plan_id + 1));
+
+        let installment_amount = total / i128::from(installments);
+        if installment_amount <= 0 {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+        let now = env.ledger().timestamp();
+        let plan = InstallmentPlan {
+            payer: payer.clone(),
+            meter_id: meter_id.clone(),
+            total,
+            paid: 0,
+            remaining: total,
+            installments,
+            installment_amount,
+            next_due: now.saturating_add(grace_secs),
+            grace_secs,
+            status: InstallmentStatus::Active,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::InstallmentPlan(plan_id), &plan);
+
+        let list_key = DataKey::PayerInstallments(payer.clone());
+        let mut list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&list_key)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(plan_id);
+        env.storage().persistent().set(&list_key, &list);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("inst_new"), plan_id),
+            (payer, meter_id, total, installments, installment_amount),
+        );
+        Ok(plan_id)
+    }
+
+    pub fn pay_installment(env: Env, plan_id: u64) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractFrozen);
+        }
+        let key = DataKey::InstallmentPlan(plan_id);
+        let mut plan: InstallmentPlan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::InstallmentPlanNotFound)?;
+        match plan.status {
+            InstallmentStatus::Active => {}
+            InstallmentStatus::Completed => return Err(ContractError::InstallmentPlanCompleted),
+            InstallmentStatus::Defaulted => return Err(ContractError::InstallmentPlanDefaulted),
+        }
+        plan.payer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let now = env.ledger().timestamp();
+        if now < plan.next_due {
+            return Err(ContractError::InstallmentNotDue);
+        }
+
+        let amount = if plan.remaining <= plan.installment_amount {
+            plan.remaining
+        } else {
+            plan.installment_amount
+        };
+        if amount <= 0 {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+
+        let token_address = Self::get_token_address(&env)?;
+
+        plan.paid = plan.paid.saturating_add(amount);
+        plan.remaining = plan.remaining.saturating_sub(amount);
+        plan.next_due = plan.next_due.saturating_add(plan.grace_secs);
+        if plan.remaining == 0 {
+            plan.status = InstallmentStatus::Completed;
+        }
+        env.storage().persistent().set(&key, &plan);
+
+        // Credit the meter's balance
+        let bal_key = DataKey::MeterBalance(plan.meter_id.clone());
+        let bal: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage().persistent().set(&bal_key, &bal.saturating_add(amount));
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&plan.payer, env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("inst_paid"), plan_id),
+            (plan.payer.clone(), amount, plan.paid, plan.remaining),
+        );
+        Ok(())
+    }
+
+    pub fn process_due_installments(
+        env: Env,
+        plan_ids: Vec<u64>,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env)?;
+        let now = env.ledger().timestamp();
+        for plan_id in plan_ids.iter() {
+            let key = DataKey::InstallmentPlan(plan_id);
+            let mut plan: InstallmentPlan = match env.storage().persistent().get(&key) {
+                Some(p) => p,
+                None => continue,
+            };
+            if plan.status != InstallmentStatus::Active {
+                continue;
+            }
+            if now > plan.next_due.saturating_add(plan.grace_secs) {
+                plan.status = InstallmentStatus::Defaulted;
+                let missed_amount = plan.remaining;
+                let next_due = plan.next_due;
+                env.storage().persistent().set(&key, &plan);
+                env.events().publish(
+                    (EVT_NS, symbol_short!("inst_dflt"), plan_id),
+                    (plan.payer.clone(), missed_amount, next_due),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_installment_plan(env: Env, plan_id: u64) -> Result<InstallmentPlan, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InstallmentPlan(plan_id))
+            .ok_or(ContractError::InstallmentPlanNotFound)
+    }
+
+    pub fn get_payer_installments(env: Env, payer: Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PayerInstallments(payer))
+            .unwrap_or_else(|| vec![&env])
+    }
+
     /// Migrate a v0 (LegacyMeter) entry to the current schema. Admin-only.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "migrate_meter", "contract")?;
@@ -8254,6 +8840,45 @@ mod tests {
             client.try_batch_register_meters(&batch),
             Err(Ok(ContractError::BatchTooLarge))
         );
+    }
+
+    #[test]
+    fn test_dynamic_pricing_lifecycle() {
+        let (env, client, _admin) = setup();
+        let now = 1_000_000_u64;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        client.update_pricing_multiplier(&15000);
+        let config = client.get_dynamic_pricing().unwrap();
+        assert_eq!(config.multiplier_bps, 15000);
+
+        let price = client.get_current_price();
+        assert!(price > 0);
+    }
+
+    #[test]
+    fn test_billing_cycle_lifecycle() {
+        let (env, client, _admin) = setup();
+        let meter_id = String::from_str(&env, "CYCLE-MTR-1");
+        let owner = Address::generate(&env);
+        client.allowlist_add(&owner);
+        client.register_meter(&meter_id, &owner);
+
+        let now = 1_000_000_u64;
+        env.ledger().with_mut(|l| l.timestamp = now);
+
+        client.set_billing_cycle(&meter_id, &30, &true);
+        let cycle = client.get_billing_cycle(&meter_id);
+        assert_eq!(cycle.billing_cycle_start, now);
+        assert_eq!(cycle.next_billing_date, now + 30 * 86_400);
+        assert_eq!(cycle.cycle_duration_days, 30);
+        assert_eq!(cycle.auto_renew, true);
+
+        env.ledger().with_mut(|l| l.timestamp = now + 30 * 86_400);
+        client.renew_billing_cycle(&meter_id);
+        let renewed = client.get_billing_cycle(&meter_id);
+        assert_eq!(renewed.billing_cycle_start, now + 30 * 86_400);
+        assert_eq!(renewed.next_billing_date, now + 60 * 86_400);
     }
 }
 

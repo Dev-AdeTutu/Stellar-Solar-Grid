@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import * as paymentService from '@/services/paymentService';
 
 /**
  * InstallmentTracker
@@ -31,9 +32,11 @@ export interface InstallmentPlan {
 
 export interface InstallmentTrackerProps {
   /** Address of the payer whose plans should be loaded. */
-  payer: string;
+  payer?: string;
+  /** Alias for payer address. */
+  address?: string;
   /** Contract client exposing getPayerInstallments, getInstallmentPlan, payInstallment. */
-  contract: {
+  contract?: {
     getPayerInstallments: (payer: string) => Promise<Array<number | string>>;
     getInstallmentPlan: (planId: number | string) => Promise<InstallmentPlan>;
     payInstallment: (planId: number | string) => Promise<unknown>;
@@ -294,12 +297,28 @@ const styles: Record<string, React.CSSProperties> = {
   },
 };
 
+const defaultContract = {
+  getPayerInstallments: async (p: string) => {
+    const plans = await paymentService.getPayerInstallments(p);
+    return plans.map((pl) => String(pl.id));
+  },
+  getInstallmentPlan: async (id: number | string) => {
+    return (await paymentService.getInstallmentPlan(String(id))) as unknown as InstallmentPlan;
+  },
+  payInstallment: async (id: number | string) => {
+    return paymentService.payInstallment(String(id));
+  },
+};
+
 export const InstallmentTracker: React.FC<InstallmentTrackerProps> = ({
-  payer,
-  contract,
+  payer: payerProp,
+  address,
+  contract: contractProp,
   onPaymentSuccess,
   onError,
 }) => {
+  const payer = payerProp ?? address;
+  const contract = contractProp ?? defaultContract;
   const [plans, setPlans] = useState<InstallmentPlan[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);

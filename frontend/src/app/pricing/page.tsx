@@ -116,9 +116,10 @@ export default function PricingPage() {
                 {current.tier}
               </span>
             </div>
-            <p className="text-xs opacity-60">
-              Updated {new Date(current.timestamp).toLocaleTimeString()}
-            </p>
+            <div className="flex items-center justify-between text-xs opacity-60">
+              <span>Updated {new Date(current.timestamp).toLocaleTimeString()}</span>
+              <span>Next update in ~15 mins ({new Date(new Date(current.timestamp).getTime() + 15 * 60 * 1000).toLocaleTimeString()})</span>
+            </div>
             <div className="grid grid-cols-3 gap-4 mt-4">
               <StatCard label="Supply" value={`${current.supplyKwh} kWh`} />
               <StatCard label="Demand" value={`${current.demandKwh} kWh`} />

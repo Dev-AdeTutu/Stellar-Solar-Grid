@@ -135,6 +135,9 @@ export interface WorkOrder {
   meterId: string;
   type: string;
   status: string;
+  title?: string;
+  description?: string;
+  address?: string;
   notes?: string;
   photoUrl?: string;
   createdAt: string;

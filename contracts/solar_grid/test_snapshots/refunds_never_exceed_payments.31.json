@@ -80,7 +80,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "86352"
+                  "i128": "169207"
                 }
               ]
             }
@@ -105,7 +105,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "86352"
+                  "i128": "169207"
                 },
                 {
                   "vec": [
@@ -132,7 +132,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "86352"
+                      "i128": "169207"
                     }
                   ]
                 }
@@ -143,7 +143,6 @@
         }
       ]
     ],
-    [],
     [],
     [],
     [],
@@ -472,9 +471,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -533,7 +548,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -563,7 +578,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "86352"
+                "i128": "169207"
               }
             }
           },
@@ -590,7 +605,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -651,7 +666,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "86352"
+                "i128": "169207"
               }
             }
           },
@@ -678,7 +693,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "86352"
+                "i128": "169207"
               }
             }
           },
@@ -778,7 +793,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "86352"
+                        "i128": "169207"
                       }
                     }
                   ]
@@ -835,7 +850,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "86352"
+                      "i128": "169207"
                     }
                   },
                   {

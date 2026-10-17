@@ -65,6 +65,12 @@ export default function CarbonCreditsPage() {
   const [listQty, setListQty] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // Issue #972: Carbon Footprint Calculator state
+  const [calcMeterId, setCalcMeterId] = useState("");
+  const [calcRegion, setCalcRegion] = useState("Default");
+  const [footprint, setFootprint] = useState<any>(null);
+  const [loadingFootprint, setLoadingFootprint] = useState(false);
+
   const load = useCallback(async () => {
     try {
       const [s, m] = await Promise.all([
@@ -184,6 +190,31 @@ export default function CarbonCreditsPage() {
     }
   }
 
+  async function fetchFootprint() {
+    if (!calcMeterId.trim()) {
+      return showToast({ title: "Enter a meter ID", variant: "error" });
+    }
+    setLoadingFootprint(true);
+    try {
+      const res = await fetch(
+        `${API}/api/meters/${encodeURIComponent(calcMeterId.trim())}/carbon-footprint?region=${encodeURIComponent(calcRegion)}`,
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Failed to calculate carbon footprint");
+      setFootprint(data);
+    } catch (e) {
+      showToast({ title: "Calculation failed", description: (e as Error).message, variant: "error" });
+    } finally {
+      setLoadingFootprint(false);
+    }
+  }
+
+  function handleCopyBadgeSvg() {
+    if (!footprint?.badge?.svgBadge) return;
+    navigator.clipboard.writeText(footprint.badge.svgBadge);
+    showToast({ title: "Badge SVG copied to clipboard", description: "Paste it anywhere to share your solar impact!" });
+  }
+
   return (
     <>
       <Navbar />
@@ -269,6 +300,118 @@ export default function CarbonCreditsPage() {
             </div>
           </section>
         </div>
+
+        {/* Issue #972: Carbon Footprint Calculator */}
+        <section aria-label="Carbon Footprint Calculator" className="rounded-xl border border-emerald-500/30 bg-emerald-950/10 p-6 mb-8">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+            <div>
+              <h2 className="text-xl font-bold flex items-center gap-2">
+                <span>🌱</span> Carbon Footprint Calculator
+              </h2>
+              <p className="text-xs opacity-70">
+                Calculate CO2 emissions avoided by solar generation versus regional fossil grid power.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3 mb-6">
+            <input
+              type="text"
+              value={calcMeterId}
+              onChange={(e) => setCalcMeterId(e.target.value)}
+              placeholder="Enter Meter ID (e.g. MTR_001)"
+              className="flex-1 min-w-[200px] rounded-lg border border-white/20 bg-transparent px-3 py-2 text-sm"
+            />
+            <select
+              value={calcRegion}
+              onChange={(e) => setCalcRegion(e.target.value)}
+              className="rounded-lg border border-white/20 bg-black/40 px-3 py-2 text-sm text-white"
+            >
+              <option value="Default">Default Grid (0.500 kg/kWh)</option>
+              <option value="US">US Grid (0.385 kg/kWh)</option>
+              <option value="EU">EU Grid (0.250 kg/kWh)</option>
+              <option value="CA">California / Clean (0.210 kg/kWh)</option>
+              <option value="Coal">Coal-Heavy Grid (0.850 kg/kWh)</option>
+            </select>
+            <button
+              onClick={fetchFootprint}
+              disabled={loadingFootprint}
+              className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-5 py-2 text-sm disabled:opacity-50"
+            >
+              {loadingFootprint ? "Calculating..." : "Calculate Footprint"}
+            </button>
+          </div>
+
+          {footprint && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Lifetime */}
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-emerald-400 mb-2">
+                    Lifetime Savings ({footprint.lifetime.kwh} kWh)
+                  </div>
+                  <div className="text-2xl font-bold tabular-nums mb-2">
+                    {footprint.lifetime.kgCo2Saved} <span className="text-sm font-normal opacity-70">kg CO2</span>
+                  </div>
+                  <div className="text-xs opacity-80 space-y-1">
+                    <div>🌳 <strong>{footprint.lifetime.treesEquivalent}</strong> tree-years equivalent</div>
+                    <div>🚗 <strong>{footprint.lifetime.carMilesOffset}</strong> car miles offset</div>
+                  </div>
+                </div>
+
+                {/* Monthly */}
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-emerald-400 mb-2">
+                    Monthly Savings (Past 30 Days)
+                  </div>
+                  <div className="text-2xl font-bold tabular-nums mb-2">
+                    {footprint.monthly.kgCo2Saved} <span className="text-sm font-normal opacity-70">kg CO2</span>
+                  </div>
+                  <div className="text-xs opacity-80 space-y-1">
+                    <div>🌳 <strong>{footprint.monthly.treesEquivalent}</strong> tree-years equivalent</div>
+                    <div>🚗 <strong>{footprint.monthly.carMilesOffset}</strong> car miles offset</div>
+                  </div>
+                </div>
+
+                {/* Yearly */}
+                <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs font-semibold uppercase tracking-wider text-emerald-400 mb-2">
+                    Yearly Savings (Past 365 Days)
+                  </div>
+                  <div className="text-2xl font-bold tabular-nums mb-2">
+                    {footprint.yearly.kgCo2Saved} <span className="text-sm font-normal opacity-70">kg CO2</span>
+                  </div>
+                  <div className="text-xs opacity-80 space-y-1">
+                    <div>🌳 <strong>{footprint.yearly.treesEquivalent}</strong> tree-years equivalent</div>
+                    <div>🚗 <strong>{footprint.yearly.carMilesOffset}</strong> car miles offset</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Shareable Badge */}
+              {footprint.badge && (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-xl border border-emerald-500/20 bg-emerald-950/20">
+                  <div className="flex items-center gap-4">
+                    <div
+                      className="shrink-0"
+                      dangerouslySetInnerHTML={{ __html: footprint.badge.svgBadge }}
+                    />
+                    <div>
+                      <div className="font-semibold">{footprint.badge.label}</div>
+                      <div className="text-xs opacity-70">{footprint.badge.description}</div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCopyBadgeSvg}
+                    className="shrink-0 rounded-lg border border-white/20 bg-white/10 hover:bg-white/20 px-3 py-1.5 text-xs font-medium"
+                  >
+                    Copy Badge SVG
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         {myCredits.length > 0 && (
           <section aria-label="My credits" className="mb-8">

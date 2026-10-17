@@ -33,6 +33,9 @@ import {
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
 import { getBatteryStats } from "../lib/batteryStats.js";
+import { getMeterBillingHistory } from "../lib/billing.js";
+import { getMeterCarbonFootprint } from "../lib/carbonFootprint.js";
+import { getBenchmarkComparison } from "../lib/meterBenchmark.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -919,6 +922,23 @@ export function createMeterRouter(stellar: StellarService) {
     } catch (err: any) {
       res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
     }
+  });
+
+  /** GET /api/meters/:id/billing-history — automated billing cycle & bill history (#971) */
+  meterRouter.get("/:id/billing-history", (req, res) => {
+    const limit = Math.min(Math.max(Number(req.query.limit ?? 24) || 24, 1), 120);
+    res.json(getMeterBillingHistory(req.params.id, limit));
+  });
+
+  /** GET /api/meters/:id/carbon-footprint — carbon emissions savings and badge (#972) */
+  meterRouter.get("/:id/carbon-footprint", (req, res) => {
+    const region = typeof req.query.region === "string" ? req.query.region : "Default";
+    res.json(getMeterCarbonFootprint(req.params.id, region));
+  });
+
+  /** GET /api/meters/:id/benchmark — performance scoring and peer comparison (#974) */
+  meterRouter.get("/:id/benchmark", (req, res) => {
+    res.json(getBenchmarkComparison(req.params.id));
   });
 
   /** GET /api/meters/:id/events — paginated on-chain events for a single meter */

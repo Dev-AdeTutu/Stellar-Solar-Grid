@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { env } from '@/config/env';
+import { env } from '@/lib/env';
 
 interface MaintenanceWindow {
   id: string;
@@ -52,7 +52,7 @@ function formatRelative(value: string): string {
   return `in ${diffDays} day${diffDays === 1 ? '' : 's'}`;
 }
 
-export default function MaintenanceBanner({
+export function MaintenanceBanner({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 }: MaintenanceBannerProps) {
   const [activeWindow, setActiveWindow] = useState<MaintenanceWindow | null>(null);

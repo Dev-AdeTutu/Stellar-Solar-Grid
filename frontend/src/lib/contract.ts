@@ -309,6 +309,9 @@ export function removeDelegate(
   ]);
 }
 
+export const addMeterDelegate = addDelegate;
+export const removeMeterDelegate = removeDelegate;
+
 /** Make a payment on `meterId` using a delegate's pay permission. */
 export function makeDelegatedPayment(
   sourceAddress: string,
@@ -347,3 +350,111 @@ export async function fetchCurrentSeason(): Promise<SeasonalRate> {
   const retval = await client.query("get_current_season", []);
   return StellarSdk.scValToNative(retval) as SeasonalRate;
 }
+
+// ── Scheduled energy usage (#1001) ──────────────────────────────────────────
+
+export interface Schedule {
+  meter_id?: string;
+  circuit_id: string;
+  days: number;
+  start_time: number;
+  end_time: number;
+  enabled: boolean;
+}
+
+export async function getCircuitSchedule(meterId: string, circuitId: string): Promise<Schedule> {
+  const retval = await client.query("get_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as Schedule;
+}
+
+export async function circuitShouldBeOn(meterId: string, circuitId: string, timestamp: bigint): Promise<boolean> {
+  const retval = await client.query("circuit_should_be_on", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(timestamp, { type: "u64" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as boolean;
+}
+
+export function setCircuitSchedule(
+  sourceAddress: string,
+  meterId: string,
+  schedule: Schedule,
+): Promise<string>;
+export function setCircuitSchedule(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+  days: number,
+  startTime: number,
+  endTime: number,
+  enabled: boolean,
+): Promise<string>;
+export function setCircuitSchedule(
+  sourceAddress: string,
+  meterId: string,
+  circuitIdOrSchedule: string | Schedule,
+  days?: number,
+  startTime?: number,
+  endTime?: number,
+  enabled?: boolean,
+): Promise<string> {
+  let circuitId: string;
+  let d: number;
+  let st: number;
+  let et: number;
+  let en: boolean;
+
+  if (typeof circuitIdOrSchedule === "object") {
+    circuitId = circuitIdOrSchedule.circuit_id;
+    d = circuitIdOrSchedule.days;
+    st = circuitIdOrSchedule.start_time;
+    et = circuitIdOrSchedule.end_time;
+    en = circuitIdOrSchedule.enabled;
+  } else {
+    circuitId = circuitIdOrSchedule;
+    d = days!;
+    st = startTime!;
+    et = endTime!;
+    en = enabled!;
+  }
+
+  return contractInvoke(sourceAddress, "set_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(d, { type: "u32" }),
+    StellarSdk.nativeToScVal(st, { type: "u32" }),
+    StellarSdk.nativeToScVal(et, { type: "u32" }),
+    StellarSdk.nativeToScVal(en, { type: "bool" }),
+  ]);
+}
+
+export function overrideCircuit(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+  forceState: boolean,
+  untilTimestamp: bigint,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "override_circuit", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(forceState, { type: "bool" }),
+    StellarSdk.nativeToScVal(untilTimestamp, { type: "u64" }),
+  ]);
+}
+
+export function clearCircuitOverride(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "clear_circuit_override", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "symbol" }),
+  ]);
+}
+

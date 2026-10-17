@@ -55,8 +55,6 @@ export default function MeterHealthPage() {
   const [data, setData] = useState<{ summary: Record<Status, number>; meters: MeterHealth[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedMeter, setSelectedMeter] = useState<string | null>(null);
-
-  const [selectedMeter, setSelectedMeter] = useState<string | null>(null);
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [logsError, setLogsError] = useState<string | null>(null);
   const [running, setRunning] = useState<DiagnosticCommand | null>(null);

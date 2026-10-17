@@ -51,6 +51,7 @@ export interface InstallmentScheduleEntry {
 
 /** An installment payment plan for a meter purchase or upgrade (Issue #987). */
 export interface InstallmentPlan {
+  id?: string;
   planId: string;
   meterId: string;
   payer: string;
@@ -71,11 +72,12 @@ export interface InstallmentPlan {
 }
 
 export interface CreateInstallmentPlanRequest {
-  meterId: string;
-  payer: string;
-  total: string;
+  meterId?: string;
+  payer?: string;
+  walletAddress?: string | null;
+  total: string | number;
   installments: number;
-  graceSecs: number;
+  graceSecs?: number;
 }
 
 export interface ProcessDueInstallmentsResponse {
@@ -97,10 +99,17 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 export async function createInstallmentPlan(
   params: CreateInstallmentPlanRequest,
 ): Promise<InstallmentPlan> {
+  const payload = {
+    meterId: params.meterId ?? "default",
+    payer: params.payer ?? params.walletAddress ?? "",
+    total: String(params.total),
+    installments: params.installments,
+    graceSecs: params.graceSecs ?? 86400 * 3,
+  };
   return requestJson<InstallmentPlan>(`${BACKEND_URL}/api/installments`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
+    body: JSON.stringify(payload),
   });
 }
 
