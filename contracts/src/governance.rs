@@ -19,6 +19,10 @@ pub enum GovKey {
     NextProposalId,
     /// Voting weight recorded for (proposal_id, voter).
     Vote(u64, Address),
+    /// Meter whose ownership shares govern a proposal (proposal_id -> meter_id).
+    ProposalMeter(u64),
+    /// Ownership share in basis points for (meter_id, owner).
+    OwnershipShare(u64, Address),
 }
 
 /// A parameter change proposal.
@@ -42,6 +46,9 @@ pub struct Proposal {
     /// Minimum total weight required for the proposal to be valid.
     pub quorum: i128,
     pub executed: bool,
+    /// Meter whose co-owners vote on this proposal, if any. When set, voting
+    /// weight is derived from ownership share rather than caller-supplied stake.
+    pub meter_id: Option<u64>,
 }
 
 #[contracterror]
@@ -57,6 +64,7 @@ pub enum GovError {
     AlreadyVoted = 7,
     NoVotingWeight = 8,
     InvalidPeriod = 9,
+    NotMeterOwner = 10,
 }
 
 /// Emitted when a new proposal is created.
@@ -160,6 +168,7 @@ pub fn propose_parameter_change(
         votes_against: 0,
         quorum,
         executed: false,
+        meter_id: None,
     };
     save_proposal(env, &proposal);
 
@@ -178,10 +187,91 @@ pub fn propose_parameter_change(
     Ok(id)
 }
 
+/// Create a parameter change proposal whose voting weight is derived from
+/// co-ownership shares of `meter_id`.
+///
+/// Only addresses holding a non-zero ownership share of the meter may vote.
+/// Each voter's weight equals their ownership share in basis points.
+pub fn propose_meter_parameter_change(
+    env: &Env,
+    proposer: Address,
+    meter_id: u64,
+    param: Symbol,
+    new_value: i128,
+    quorum: i128,
+    voting_period: u64,
+    expiry: u64,
+) -> Result<u64, GovError> {
+    let id = propose_parameter_change(
+        env,
+        proposer,
+        param,
+        new_value,
+        quorum,
+        voting_period,
+        expiry,
+    )?;
+
+    env.storage()
+        .persistent()
+        .set(&GovKey::ProposalMeter(id), &meter_id);
+
+    let mut proposal = load_proposal(env, id)?;
+    proposal.meter_id = Some(meter_id);
+    save_proposal(env, &proposal);
+
+    Ok(id)
+}
+
+/// Record an ownership share (in basis points) for `owner` on `meter_id`.
+///
+/// This is the source of truth used to derive voting weight for meter
+/// proposals. Callers are responsible for ensuring shares sum to 10_000.
+pub fn set_ownership_share(env: &Env, meter_id: u64, owner: Address, share_bps: i128) {
+    env.storage()
+        .persistent()
+        .set(&GovKey::OwnershipShare(meter_id, owner), &share_bps);
+}
+
+/// Returns the ownership share in basis points for `owner` on `meter_id`,
+/// or `0` if the address is not a co-owner.
+pub fn get_ownership_share(env: &Env, meter_id: u64, owner: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&GovKey::OwnershipShare(meter_id, owner))
+        .unwrap_or(0)
+}
+
+/// Returns the voting weight for `voter` on proposal `id`.
+///
+/// For meter proposals the weight is the voter's ownership share in basis
+/// points; for all other proposals the caller-supplied `stake_weight` is
+/// returned unchanged.
+pub fn voting_weight_for(
+    env: &Env,
+    id: u64,
+    voter: Address,
+    stake_weight: i128,
+) -> Result<i128, GovError> {
+    let proposal = load_proposal(env, id)?;
+    match proposal.meter_id {
+        Some(meter_id) => {
+            let share = get_ownership_share(env, meter_id, voter);
+            if share <= 0 {
+                return Err(GovError::NotMeterOwner);
+            }
+            Ok(share)
+        }
+        None => Ok(stake_weight),
+    }
+}
+
 /// Cast a vote on an open proposal.
 ///
-/// `weight` is the caller's voting power, derived from stake or meter
-/// ownership by the caller (or an oracle). It must be positive.
+/// For meter proposals `weight` is ignored and the voter's ownership share is
+/// used instead. For all other proposals `weight` is the caller's voting
+/// power, derived from stake by the caller (or an oracle). It must be
+/// positive.
 pub fn vote_on_proposal(
     env: &Env,
     voter: Address,
@@ -191,10 +281,6 @@ pub fn vote_on_proposal(
 ) -> Result<(), GovError> {
     voter.require_auth();
 
-    if weight <= 0 {
-        return Err(GovError::NoVotingWeight);
-    }
-
     let mut proposal = load_proposal(env, id)?;
     let now = env.ledger().timestamp();
 
@@ -203,6 +289,11 @@ pub fn vote_on_proposal(
     }
     if now >= proposal.expires_at {
         return Err(GovError::ProposalExpired);
+    }
+
+    let weight = voting_weight_for(env, id, voter.clone(), weight)?;
+    if weight <= 0 {
+        return Err(GovError::NoVotingWeight);
     }
 
     let vote_key = GovKey::Vote(id, voter.clone());

@@ -327,6 +327,52 @@ export function makeDelegatedPayment(
   ]);
 }
 
+// ── Meter co-ownership (#1061) ──────────────────────────────────────────────
+
+export interface MeterShareholder {
+  address: string;
+  /** Ownership share in basis points (1/100 of a percent); all shares sum to 10_000. */
+  share_bps: number;
+}
+
+/** List the co-owners of `meterId` and their ownership shares. */
+export async function fetchMeterShareholders(meterId: string): Promise<MeterShareholder[]> {
+  const retval = await client.query("get_meter_shareholders", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as MeterShareholder[];
+}
+
+/** Owner-only: add `shareholder` as a co-owner of `meterId` with `shareBps` basis points. */
+export function addMeterShareholder(
+  sourceAddress: string,
+  meterId: string,
+  shareholder: string,
+  shareBps: number,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "add_meter_shareholder", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(shareholder),
+    StellarSdk.nativeToScVal(shareBps, { type: "u32" }),
+  ]);
+}
+
+/** Transfer `shareBps` basis points of `meterId` from `from` to `to`. */
+export function transferMeterShare(
+  sourceAddress: string,
+  meterId: string,
+  from: string,
+  to: string,
+  shareBps: number,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "transfer_meter_share", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(from),
+    addrVal(to),
+    StellarSdk.nativeToScVal(shareBps, { type: "u32" }),
+  ]);
+}
+
 // ── Seasonal pricing plans (#992) ───────────────────────────────────────────
 
 export interface SeasonalRate {

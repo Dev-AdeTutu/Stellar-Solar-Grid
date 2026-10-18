@@ -118,6 +118,10 @@ import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
 import { workOrdersRouter } from "./routes/workOrders.js";
 import { surveysRouter } from "./routes/surveys.js";
+// #1064: Regulatory sandbox mode
+import { sandboxRouter } from "./routes/sandbox.js";
+import { sandboxMiddleware } from "./middleware/sandbox.js";
+import { isSandboxEnabled, isFeatureEnabled } from "./lib/sandbox.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -273,6 +277,16 @@ app.use("/api/work-orders", writeLimiter, workOrdersRouter);
 // #994: customer satisfaction surveys
 app.use("/api/surveys", writeLimiter, surveysRouter);
 
+// #1064: Regulatory sandbox mode. The sandbox middleware tags every request
+// with its sandbox context so downstream compliance flows can isolate
+// sandbox traffic from production. Sandbox routes are only mounted when the
+// sandbox environment is explicitly enabled.
+app.use(sandboxMiddleware);
+if (isSandboxEnabled()) {
+  app.use("/api/sandbox", writeLimiter, sandboxRouter);
+  logger.info("Regulatory sandbox mode enabled");
+}
+
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);
 startMaintenanceScheduler();
@@ -398,4 +412,14 @@ app.use("/api/providers", providersBrandingRouter);
 // #1004: Blockchain Transaction History Explorer
 import { transactionsRouter } from "./routes/transactions.js";
 app.use("/api/transactions", transactionsRouter);
+
+// #1064: Experimental features gated behind sandbox feature flags. These are
+// only reachable when the corresponding flag is enabled, so production
+// compliance flows are unaffected by default.
+if (isFeatureEnabled("experimentalTrading")) {
+  app.use("/api/sandbox/experimental/trading", tradingRouter);
+}
+if (isFeatureEnabled("experimentalPricing")) {
+  app.use("/api/sandbox/experimental/pricing", pricingRouter);
+}
 

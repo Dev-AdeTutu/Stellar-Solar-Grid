@@ -485,4 +485,324 @@ mod additional_tests {
         let base = client.compute_cost(&1_000_i128);
         assert_eq!(base, 1_000_i128);
     }
+
+    // ------------------------------------------------------------------
+    // Co-ownership tests
+    // ------------------------------------------------------------------
+
+    fn setup_co_owned_meter(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        token_address: &Address,
+        meter_id: &String,
+        owner: &Address,
+    ) {
+        setup_meter_with_payment(env, client, token_address, meter_id, owner);
+    }
+
+    #[test]
+    fn test_multiple_addresses_own_shares_of_single_meter() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO1");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &3_000_u32);
+        client.set_ownership_share(&meter_id, &owner, &co2, &2_000_u32);
+
+        let shares = client.get_ownership_shares(&meter_id);
+        assert_eq!(shares.len(), 2);
+        assert_eq!(client.get_ownership_share(&meter_id, &co1), 3_000_u32);
+        assert_eq!(client.get_ownership_share(&meter_id, &co2), 2_000_u32);
+    }
+
+    #[test]
+    fn test_ownership_shares_cannot_exceed_total() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO2");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &6_000_u32);
+
+        // Adding another 6_000 would exceed 10_000 (100%) and must be rejected.
+        let result = client.try_set_ownership_share(&meter_id, &owner, &co2, &6_000_u32);
+        assert_eq!(result, Err(Ok(Error::InvalidShare)));
+    }
+
+    #[test]
+    fn test_unauthorized_share_transfer_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO3");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &2_000_u32);
+
+        let attacker = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let result = client.try_transfer_ownership_share(
+            &meter_id,
+            &attacker,
+            &co1,
+            &recipient,
+            &1_000_u32,
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_transfer_ownership_share_moves_balance() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO4");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &4_000_u32);
+
+        client.transfer_ownership_share(&meter_id, &co1, &co1, &co2, &1_500_u32);
+
+        assert_eq!(client.get_ownership_share(&meter_id, &co1), 2_500_u32);
+        assert_eq!(client.get_ownership_share(&meter_id, &co2), 1_500_u32);
+    }
+
+    #[test]
+    fn test_transfer_more_than_owned_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO5");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &1_000_u32);
+
+        let result = client.try_transfer_ownership_share(
+            &meter_id,
+            &co1,
+            &co1,
+            &co2,
+            &2_000_u32,
+        );
+        assert_eq!(result, Err(Ok(Error::InvalidShare)));
+    }
+
+    #[test]
+    fn test_proportional_cost_sharing() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO6");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &6_000_u32);
+        client.set_ownership_share(&meter_id, &owner, &co2, &4_000_u32);
+
+        // 10_000 total cost split 60/40.
+        assert_eq!(client.compute_owner_cost(&meter_id, &co1, &10_000_i128), 6_000_i128);
+        assert_eq!(client.compute_owner_cost(&meter_id, &co2, &10_000_i128), 4_000_i128);
+    }
+
+    #[test]
+    fn test_proportional_revenue_sharing() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO7");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &2_500_u32);
+        client.set_ownership_share(&meter_id, &owner, &co2, &7_500_u32);
+
+        // 10_000 total export revenue split 25/75.
+        assert_eq!(client.compute_owner_revenue(&meter_id, &co1, &10_000_i128), 2_500_i128);
+        assert_eq!(client.compute_owner_revenue(&meter_id, &co2, &10_000_i128), 7_500_i128);
+    }
+
+    #[test]
+    fn test_voting_weight_matches_ownership_percentage() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-CO8");
+        let owner = Address::generate(&env);
+        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
+
+        let co1 = Address::generate(&env);
+        let co2 = Address::generate(&env);
+        client.set_ownership_share(&meter_id, &owner, &co1, &3_000_u32);
+        client.set_ownership_share(&meter_id, &owner, &co2, &7_000_u32);
+
+        assert_eq!(client.get_voting_weight(&meter_id, &co1), 3_000_u32);
+        assert_eq!(client.get_voting_weight(&meter_id, &co2), 7_000_u32);
+    }
+
+    // ------------------------------------------------------------------
+    // Derivatives tests
+    // ------------------------------------------------------------------
+
+    fn setup_derivatives(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        token_address: &Address,
+        admin: &Address,
+    ) {
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        let writer = Address::generate(env);
+        token_admin_client.mint(writer, &100_000_000_i128);
+        client.set_derivatives_writer(&admin, &writer);
+    }
+
+    #[test]
+    fn test_create_future_and_settle_at_expiry() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &10_000_000_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let future_id = client.create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
+        assert!(client.get_future(&future_id).is_some());
+
+        // Settlement before expiry must fail.
+        let early = client.try_settle_future(&future_id);
+        assert!(early.is_err());
+
+        env.ledger().set_timestamp(expiry + 1);
+        client.settle_future(&future_id);
+
+        let future = client.get_future(&future_id).unwrap();
+        assert!(future.settled);
+    }
+
+    #[test]
+    fn test_call_option_exercise() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &10_000_000_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let option_id = client.create_option(
+            &buyer,
+            &OptionType::Call,
+            &1_000_i128,
+            &expiry,
+            &1_000_000_i128,
+        );
+
+        // Exercise before expiry succeeds.
+        client.exercise_option(&option_id);
+        let option = client.get_option(&option_id).unwrap();
+        assert!(option.exercised);
+    }
+
+    #[test]
+    fn test_put_option_exercise() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &10_000_000_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let option_id = client.create_option(
+            &buyer,
+            &OptionType::Put,
+            &1_000_i128,
+            &expiry,
+            &1_000_000_i128,
+        );
+
+        client.exercise_option(&option_id);
+        let option = client.get_option(&option_id).unwrap();
+        assert!(option.exercised);
+    }
+
+    #[test]
+    fn test_option_exercise_after_expiry_rejected() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &10_000_000_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let option_id = client.create_option(
+            &buyer,
+            &OptionType::Call,
+            &1_000_i128,
+            &expiry,
+            &1_000_000_i128,
+        );
+
+        env.ledger().set_timestamp(expiry + 1);
+        let result = client.try_exercise_option(&option_id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_margin_requirement_enforced_on_creation() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        // Fund below the required initial margin.
+        token_admin_client.mint(&buyer, &100_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let result = client.try_create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
+        assert_eq!(result, Err(Ok(Error::InsufficientMargin)));
+    }
+
+    #[test]
+    fn test_liquidation_below_maintenance_margin() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &10_000_000_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let future_id = client.create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
+
+        // Drop the position's margin below the maintenance threshold.
+        client.set_future_margin(&future_id, &1_i128);
+        assert!(client.is_under_maintenance_margin(&future_id));
+
+        client.liquidate_future(&future_id);
+        let future = client.get_future(&future_id).unwrap();
+        assert!(future.liquidated);
+    }
+
+    #[test]
+    fn test_liquidation_above_maintenance_rejected() {
+        let (env, client, admin, token_address) = setup_with_token();
+        setup_derivatives(&env, &client, &token_address, &admin);
+
+        let buyer = Address::generate(&env);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &10_000_000_i128);
+
+        let expiry = env.ledger().timestamp() + 1_000;
+        let future_id = client.create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
+
+        let result = client.try_liquidate_future(&future_id);
+        assert_eq!(result, Err(Ok(Error::NotLiquidatable)));
+    }
 }
