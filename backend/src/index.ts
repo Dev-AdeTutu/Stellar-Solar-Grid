@@ -118,6 +118,11 @@ import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
 import { workOrdersRouter } from "./routes/workOrders.js";
 import { surveysRouter } from "./routes/surveys.js";
+import { lifespanRouter } from "./routes/lifespan.js";
+import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
+import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
+import { shadowsRouter } from "./routes/shadows.js";
+import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -238,6 +243,14 @@ app.use("/api/voice", readLimiter, voiceAssistantRouter);
 app.use("/api/voice/payments", writeLimiter, voiceAssistantRouter);
 startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
+// #1079: meter lifespan extension recommendations
+app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
+app.use("/api/rate-limits", rateLimitTiersRouter);
+// #1081: meter device shadows (desired vs reported state)
+app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
+// #1082: 7-day energy forecasting dashboard
+app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
