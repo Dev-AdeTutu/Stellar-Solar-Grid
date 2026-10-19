@@ -1,0 +1,24 @@
+name: Formal Verification
+
+on:
+  push:
+    branches: [main]
+    paths: ["contracts/**"]
+  pull_request:
+    paths: ["contracts/**"]
+
+jobs:
+  kani:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove contract invariants with Kani
+        uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: contracts/solar_grid
+          args: --lib --output-format terse
+      - name: Verification report
+        if: always()
+        run: |
+          echo "## Kani verification" >> "$GITHUB_STEP_SUMMARY"
+          echo "Harnesses: contracts/solar_grid/src/verification.rs (kani_proofs)" >> "$GITHUB_STEP_SUMMARY"

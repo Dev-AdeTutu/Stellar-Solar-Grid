@@ -7,6 +7,8 @@ const NAV_LINKS = [
   { href: "/pay", label: "Pay" },
   { href: "/dashboard/provider", label: "Provider" },
   { href: "/history", label: "History" },
+  { href: "/marketplace", label: "Algos" },
+  { href: "/admin/batch", label: "Batch" },
 ];
 
 export default function Navbar() {

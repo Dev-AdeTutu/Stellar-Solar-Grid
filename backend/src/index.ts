@@ -7,6 +7,10 @@ import { stellarService, server } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { lakeRouter } from "./routes/lake.js";
+import { algosRouter } from "./routes/algos.js";
+import { batchRouter } from "./routes/batch.js";
+import { startDataLakeWorker } from "./lake/dataLake.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { logger } from "./lib/logger.js";
 import {
@@ -63,6 +67,9 @@ app.use((req, _res, next) => {
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/lake", lakeRouter);
+app.use("/api/algos", algosRouter);
+app.use("/api/batch", batchRouter);
 
 app.get('/health', async (_req, res) => {
   const checks: Record<string, string> = {};
@@ -147,7 +154,7 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 app.listen(PORT, () => {
-  initUsageEventStore();
+  startDataLakeWorker(initUsageEventStore());
   startUsageEventRetryWorker();
   logger.info("SolarGrid backend listening", { port: PORT });
   startIoTBridge();

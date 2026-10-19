@@ -32,3 +32,18 @@ export async function makePayment(
     StellarSdk.nativeToScVal({ [plan]: null }, { type: "map" }),
   ]);
 }
+
+export async function publishAlgorithm(creator: string, name: string, feeXlm: number): Promise<string> {
+  return contractInvoke(creator, "publish_algorithm", [
+    new StellarSdk.Address(creator).toScVal(),
+    StellarSdk.nativeToScVal(name, { type: "string" }),
+    StellarSdk.nativeToScVal(BigInt(Math.round(feeXlm * 10_000_000)), { type: "i128" }),
+  ]);
+}
+
+export async function subscribeAlgorithm(user: string, algoId: number): Promise<string> {
+  return contractInvoke(user, "subscribe_algorithm", [
+    new StellarSdk.Address(user).toScVal(),
+    StellarSdk.nativeToScVal(algoId, { type: "u32" }),
+  ]);
+}

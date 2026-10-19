@@ -24,7 +24,18 @@ pub enum ContractError {
     InsufficientBalance = 12,
     CollaboratorAlreadyExists = 13,
     DailyLimitReached = 14,
+    BatchEmpty = 15,
+    AlgorithmNotFound = 16,
+    AlreadySubscribed = 17,
+    AlgorithmInactive = 18,
 }
+
+pub mod algo_market;
+pub mod batching;
+pub mod verification;
+
+use algo_market::{split_fee, AlgoKey, Algorithm};
+use batching::{AdminAction, MAX_BATCH_ACTIONS};
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
@@ -837,6 +848,171 @@ impl SolarGridContract {
         let migrated = migrate_meter_v0(legacy);
         env.storage().persistent().set(&key, &migrated);
         Ok(())
+    }
+
+    // ── Multi-sig batching ──────────────────────────────────────────────────
+
+    /// Execute a bundle of admin actions under a single admin authorization.
+    /// The admin may be a Stellar multi-sig account: one threshold-signed
+    /// envelope approves the whole batch. Execution is atomic — any failing
+    /// action reverts every state change in the batch.
+    pub fn execute_batch(env: Env, actions: Vec<AdminAction>) -> Result<u32, ContractError> {
+        Self::require_admin(&env)?;
+        let n = actions.len();
+        if n == 0 {
+            return Err(ContractError::BatchEmpty);
+        }
+        if n > MAX_BATCH_ACTIONS {
+            return Err(ContractError::BatchTooLarge);
+        }
+        for action in actions.iter() {
+            match action {
+                AdminAction::SetActive(id, active) => Self::set_active(env.clone(), id, active)?,
+                AdminAction::SetDailyLimit(id, limit) => {
+                    Self::set_daily_limit(env.clone(), id, limit)?
+                }
+                AdminAction::AllowlistAdd(a) => Self::allowlist_add(env.clone(), a)?,
+                AdminAction::AllowlistRemove(a) => Self::allowlist_remove(env.clone(), a)?,
+                AdminAction::SetOracle(a) => Self::set_oracle(env.clone(), a)?,
+            }
+        }
+        env.events().publish((symbol_short!("batch"), EVT_NS), n);
+        Ok(n)
+    }
+
+    // ── Algorithm marketplace ───────────────────────────────────────────────
+
+    /// Publish a trading algorithm. Returns its id.
+    pub fn publish_algorithm(
+        env: Env,
+        creator: Address,
+        name: String,
+        fee: i128,
+    ) -> Result<u32, ContractError> {
+        creator.require_auth();
+        if fee < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let id: u32 = env.storage().instance().get(&AlgoKey::Count).unwrap_or(0) + 1;
+        let algo = Algorithm {
+            id,
+            creator,
+            name,
+            fee,
+            active: true,
+            subscribers: 0,
+            trades: 0,
+            total_pnl: 0,
+            creator_earnings: 0,
+        };
+        env.storage().persistent().set(&AlgoKey::Algo(id), &algo);
+        env.storage().instance().set(&AlgoKey::Count, &id);
+        env.events().publish((symbol_short!("algo_pub"), EVT_NS), id);
+        Ok(id)
+    }
+
+    /// Subscribe to an algorithm, paying its fee. The creator receives
+    /// `CREATOR_SHARE_BPS` of the fee; the remainder goes to the admin.
+    pub fn subscribe_algorithm(env: Env, user: Address, algo_id: u32) -> Result<(), ContractError> {
+        user.require_auth();
+        let key = AlgoKey::Algo(algo_id);
+        let mut algo: Algorithm = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::AlgorithmNotFound)?;
+        if !algo.active {
+            return Err(ContractError::AlgorithmInactive);
+        }
+        let sub_key = AlgoKey::Sub(algo_id, user.clone());
+        if env.storage().persistent().has(&sub_key) {
+            return Err(ContractError::AlreadySubscribed);
+        }
+        if algo.fee > 0 {
+            let token = token::Client::new(&env, &Self::get_token_address(&env)?);
+            let (creator_part, platform_part) = split_fee(algo.fee);
+            token.transfer(&user, &algo.creator, &creator_part);
+            if platform_part > 0 {
+                token.transfer(&user, &Self::get_admin(&env)?, &platform_part);
+            }
+            algo.creator_earnings += creator_part;
+        }
+        algo.subscribers += 1;
+        env.storage().persistent().set(&sub_key, &env.ledger().timestamp());
+        env.storage().persistent().set(&key, &algo);
+        Ok(())
+    }
+
+    /// Cancel a subscription.
+    pub fn unsubscribe_algorithm(env: Env, user: Address, algo_id: u32) -> Result<(), ContractError> {
+        user.require_auth();
+        let sub_key = AlgoKey::Sub(algo_id, user);
+        if env.storage().persistent().has(&sub_key) {
+            env.storage().persistent().remove(&sub_key);
+            let key = AlgoKey::Algo(algo_id);
+            if let Some(mut algo) = env.storage().persistent().get::<_, Algorithm>(&key) {
+                algo.subscribers = algo.subscribers.saturating_sub(1);
+                env.storage().persistent().set(&key, &algo);
+            }
+        }
+        Ok(())
+    }
+
+    /// Oracle-only: record a trade executed off-chain on behalf of subscribers.
+    pub fn record_algo_trade(env: Env, algo_id: u32, pnl: i128) -> Result<(), ContractError> {
+        let oracle: Address = env
+            .storage()
+            .instance()
+            .get(&ORACLE)
+            .ok_or(ContractError::OracleNotSet)?;
+        oracle.require_auth();
+        let key = AlgoKey::Algo(algo_id);
+        let mut algo: Algorithm = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::AlgorithmNotFound)?;
+        algo.trades += 1;
+        algo.total_pnl = algo.total_pnl.checked_add(pnl).ok_or(ContractError::InvalidAmount)?;
+        env.storage().persistent().set(&key, &algo);
+        env.events().publish((symbol_short!("algo_trd"), EVT_NS, algo_id), pnl);
+        Ok(())
+    }
+
+    /// Creator-only: enable or disable new subscriptions.
+    pub fn set_algorithm_active(env: Env, algo_id: u32, active: bool) -> Result<(), ContractError> {
+        let key = AlgoKey::Algo(algo_id);
+        let mut algo: Algorithm = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::AlgorithmNotFound)?;
+        algo.creator.require_auth();
+        algo.active = active;
+        env.storage().persistent().set(&key, &algo);
+        Ok(())
+    }
+
+    pub fn get_algorithm(env: Env, algo_id: u32) -> Result<Algorithm, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&AlgoKey::Algo(algo_id))
+            .ok_or(ContractError::AlgorithmNotFound)
+    }
+
+    pub fn list_algorithms(env: Env) -> Vec<Algorithm> {
+        let count: u32 = env.storage().instance().get(&AlgoKey::Count).unwrap_or(0);
+        let mut out = Vec::new(&env);
+        for id in 1..=count {
+            if let Some(a) = env.storage().persistent().get(&AlgoKey::Algo(id)) {
+                out.push_back(a);
+            }
+        }
+        out
+    }
+
+    pub fn is_subscribed(env: Env, user: Address, algo_id: u32) -> bool {
+        env.storage().persistent().has(&AlgoKey::Sub(algo_id, user))
     }
 
     /// Migrate a meter from v1 (LegacyMeterV1) to v2 (Meter) schema. Admin-only.

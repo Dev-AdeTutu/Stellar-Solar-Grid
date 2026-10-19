@@ -9,7 +9,9 @@
     "build": "tsc",
     "lint": "echo 'No linting configured yet'",
     "test:e2e": "tsx ../tests/e2e/payment-flow.ts",
-    "test:scrub": "tsx tests/scrub.test.ts"
+    "test:scrub": "tsx tests/scrub.test.ts",
+    "test:lake": "tsx tests/dataLake.test.ts",
+    "test:algo": "tsx tests/algoEngine.test.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^12.0.0",
