@@ -52,6 +52,7 @@ export interface InstallmentScheduleEntry {
 /** An installment payment plan for a meter purchase or upgrade (Issue #987). */
 export interface InstallmentPlan {
   planId: string;
+  id?: string;
   meterId: string;
   payer: string;
   /** Total amount financed, in stroops. */
@@ -71,11 +72,12 @@ export interface InstallmentPlan {
 }
 
 export interface CreateInstallmentPlanRequest {
-  meterId: string;
-  payer: string;
-  total: string;
+  meterId?: string;
+  walletAddress?: string | null;
+  payer?: string;
+  total: string | number;
   installments: number;
-  graceSecs: number;
+  graceSecs?: number;
 }
 
 export interface ProcessDueInstallmentsResponse {

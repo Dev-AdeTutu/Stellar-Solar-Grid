@@ -80,7 +80,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "513213"
+                  "i128": "257386"
                 }
               ]
             }
@@ -105,7 +105,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "513213"
+                  "i128": "257386"
                 },
                 {
                   "vec": [
@@ -132,7 +132,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "513213"
+                      "i128": "257386"
                     }
                   ]
                 }
@@ -156,7 +156,7 @@
                   "string": "RFND"
                 },
                 {
-                  "i128": "410329"
+                  "i128": "219813"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -171,6 +171,9 @@
         }
       ]
     ],
+    [],
+    [],
+    [],
     [],
     []
   ],
@@ -585,9 +588,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -646,7 +665,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -676,7 +695,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "102884"
+                "i128": "37573"
               }
             }
           },
@@ -703,7 +722,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -764,7 +783,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "513213"
+                "i128": "257386"
               }
             }
           },
@@ -794,7 +813,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "410329"
+                "i128": "219813"
               }
             }
           },
@@ -821,7 +840,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "102884"
+                "i128": "37573"
               }
             }
           },
@@ -921,7 +940,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "513213"
+                        "i128": "257386"
                       }
                     }
                   ]
@@ -978,7 +997,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "102884"
+                      "i128": "37573"
                     }
                   },
                   {
@@ -1030,7 +1049,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "410329"
+                      "i128": "219813"
                     }
                   },
                   {

@@ -63,6 +63,7 @@ import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
 import { startVoiceTokenPruner, stopVoiceTokenPruner } from "./lib/voiceAssistant.js";
+import { outagesRouter } from "./routes/outages.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler, startInstallmentScheduler } from "./lib/billing.js";
@@ -284,6 +285,9 @@ app.use("/api/surveys", writeLimiter, surveysRouter);
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);
 startMaintenanceScheduler();
+
+// #976: grid outage detection and notifications
+app.use("/api/outages", writeLimiter, outagesRouter);
 
 // #985: automatic meter firmware updates (OTA)
 app.use("/api/firmware", writeLimiter, firmwareRouter);

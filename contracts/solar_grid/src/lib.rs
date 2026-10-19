@@ -17,6 +17,9 @@ mod recs;
 mod scheduling;
 mod staking;
 mod warranty;
+mod loyalty;
+mod load_shedding;
+mod p2p_trading;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
@@ -36,6 +39,9 @@ pub use recs::{
 };
 pub use scheduling::{CircuitOverride, Schedule};
 pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
+pub use loyalty::{LoyaltyAccount, LoyaltyTier};
+pub use load_shedding::{CircuitLoad, CircuitPriority};
+pub use p2p_trading::EnergyListing;
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
@@ -735,6 +741,79 @@ pub enum DataKey {
     SubscriptionTierCount,
     Subscription(Address),
     GiftHistory(Address),
+    /// Community solar farm definition keyed by farm id (#984).
+    SolarFarm(String),
+    /// Global list of registered solar farm ids (#984).
+    SolarFarmList,
+    /// Shares held by an address in a given solar farm (#984).
+    ShareholderShares(String, Address),
+    /// Cumulative credit paid to a meter for grid exports (#990).
+    GridExportCredit(String),
+    /// Chronological list of grid exports recorded for a meter (#990).
+    GridExportHistory(String),
+    /// Installment plan definition keyed by plan id (#987).
+    InstallmentPlan(u64),
+    /// Global list of registered installment plan ids (#987).
+    InstallmentPlanList,
+    /// Installment plan ids belonging to a payer (#987).
+    PayerInstallments(Address),
+}
+
+/// Lifecycle state of an installment payment plan (#987).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum InstallmentStatus {
+    Active,
+    Completed,
+    Defaulted,
+}
+
+/// An installment plan spreading a meter's balance top-up over fixed intervals (#987).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct InstallmentPlan {
+    pub payer: Address,
+    pub meter_id: String,
+    pub total: i128,
+    pub paid: i128,
+    pub remaining: i128,
+    pub installments: u32,
+    pub installment_amount: i128,
+    pub next_due: u64,
+    pub grace_secs: u64,
+    pub status: InstallmentStatus,
+}
+
+/// A single grid export credited to a meter (Issue #990).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GridExport {
+    pub meter_id: String,
+    pub kwh: u64,
+    pub credit: i128,
+    pub rate: i128,
+    pub timestamp: u64,
+}
+
+/// A per-period generation record for a community solar farm (#984).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GenerationRecord {
+    pub timestamp: u64,
+    pub generation_kwh: i128,
+}
+
+/// A community solar farm that users can buy shares in (#984).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SolarFarm {
+    pub id: String,
+    pub capacity_watts: u32,
+    pub shareholders: Map<Address, i128>,
+    pub generation_data: Vec<GenerationRecord>,
+    pub total_generation: i128,
+    pub total_shares: i128,
+    pub share_price: i128,
 }
 
 #[contracttype]
@@ -1868,6 +1947,13 @@ impl SolarGridContract {
             return false;
         }
         true
+    }
+
+    pub fn require_not_paused(env: &Env) -> Result<(), ContractError> {
+        if Self::pause_is_active(env) {
+            return Err(ContractError::ContractPaused);
+        }
+        Ok(())
     }
 
     /// Guard against a misconfigured zero unit price before any cost math runs
@@ -3024,7 +3110,7 @@ impl SolarGridContract {
         }
         env.storage().instance().set(&DataKey::SeasonalRates, &rates);
         env.events()
-            .publish((EVT_NS, symbol_short!("season_set")), rates.len());
+            .publish((EVT_NS, Symbol::new(&env, "season_set")), rates.len());
         Ok(())
     }
 
@@ -4774,6 +4860,330 @@ impl SolarGridContract {
     pub fn get_total_generation(env: Env, farm_id: String) -> Result<i128, ContractError> {
         Ok(Self::get_solar_farm(env, farm_id)?.total_generation)
     }
+
+    /// Set the admin-configurable grid export credit rate, in stroops per kWh
+    /// (Issue #990). Must be strictly positive; a zero or negative rate would
+    /// let exports be recorded without any compensation.
+    ///
+    /// Emits: `exp_rate { old, new }`.
+    pub fn set_export_rate(env: Env, rate: i128) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "set_export_rate", "contract")?;
+        if rate <= 0 {
+            return Err(ContractError::InvalidConfiguration);
+        }
+        let old: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
+        env.storage().instance().set(&EXPORT_RATE, &rate);
+        env.events()
+            .publish((EVT_NS, symbol_short!("exp_rate")), (old, rate));
+        Ok(())
+    }
+
+    /// Return the configured grid export credit rate (stroops per kWh), or 0
+    /// when the admin has not configured one yet (Issue #990).
+    pub fn get_export_rate(env: Env) -> i128 {
+        env.storage().instance().get(&EXPORT_RATE).unwrap_or(0)
+    }
+
+    /// Record a grid export for a meter and credit its owner (Issue #990).
+    pub fn record_grid_export(
+        env: Env,
+        meter_id: String,
+        kwh: u64,
+    ) -> Result<i128, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if kwh == 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let oracle: Option<Address> = env.storage().instance().get(&ORACLE);
+        let admin = Self::get_admin(&env)?;
+        match oracle {
+            Some(o) => o.require_auth(),
+            None => admin.require_auth(),
+        }
+
+        let rate: i128 = env.storage().instance().get(&EXPORT_RATE).unwrap_or(0);
+        if rate <= 0 {
+            return Err(ContractError::ExportRateNotSet);
+        }
+
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+
+        let now = env.ledger().timestamp();
+        let credit = i128::from(kwh).saturating_mul(rate);
+
+        meter.export_kwh = meter.export_kwh.saturating_add(kwh);
+        env.storage().persistent().set(&key, &meter);
+
+        // Credit the meter owner's prepaid balance.
+        let bal_key = DataKey::MeterBalance(meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&bal_key, &balance.saturating_add(credit));
+
+        // Track cumulative export credit for the meter.
+        let credit_key = DataKey::GridExportCredit(meter_id.clone());
+        let total_credit: i128 = env.storage().persistent().get(&credit_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&credit_key, &total_credit.saturating_add(credit));
+
+        // Append to the meter's export history.
+        let history_key = DataKey::GridExportHistory(meter_id.clone());
+        let mut history: Vec<GridExport> = env
+            .storage()
+            .persistent()
+            .get(&history_key)
+            .unwrap_or_else(|| vec![&env]);
+        history.push_back(GridExport {
+            meter_id: meter_id.clone(),
+            kwh,
+            credit,
+            rate,
+            timestamp: now,
+        });
+        env.storage().persistent().set(&history_key, &history);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("grid_exp"), meter_id),
+            (kwh, credit, rate, now),
+        );
+        Ok(credit)
+    }
+
+    /// Paginated grid export history for a meter (Issue #990). `limit` is
+    /// capped at [`MAX_EXPORT_PAGE`].
+    pub fn get_export_history(
+        env: Env,
+        meter_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> Result<Vec<GridExport>, ContractError> {
+        Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
+        let limit = limit.min(MAX_EXPORT_PAGE);
+        let history: Vec<GridExport> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GridExportHistory(meter_id))
+            .unwrap_or_else(|| vec![&env]);
+        let total = history.len();
+        if offset >= total {
+            return Ok(vec![&env]);
+        }
+        let end = (offset + limit).min(total);
+        let mut page: Vec<GridExport> = vec![&env];
+        for i in offset..end {
+            if let Some(entry) = history.get(i) {
+                page.push_back(entry);
+            }
+        }
+        Ok(page)
+    }
+
+    /// Return `(import_kwh, export_kwh)` totals for a meter (Issue #990).
+    pub fn get_export_totals(env: Env, meter_id: String) -> Result<(u64, u64), ContractError> {
+        let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
+        Ok((meter.import_kwh, meter.export_kwh))
+    }
+
+    /// Cumulative grid export credit paid to a meter (Issue #990).
+    pub fn get_export_credit(env: Env, meter_id: String) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GridExportCredit(meter_id))
+            .unwrap_or(0)
+    }
+
+    /// Create an installment plan (#987).
+    pub fn create_installment_plan(
+        env: Env,
+        meter_id: String,
+        payer: Address,
+        total: i128,
+        installments: u32,
+        grace_secs: u64,
+    ) -> Result<u64, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractFrozen);
+        }
+        if total <= 0 || installments == 0 || installments > MAX_INSTALLMENTS {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+        payer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let plan_id: u64 = env.storage().instance().get(&PLAN_COUNT).unwrap_or(0);
+        env.storage().instance().set(&PLAN_COUNT, &(plan_id + 1));
+
+        let installment_amount = total / i128::from(installments);
+        if installment_amount <= 0 {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+        let now = env.ledger().timestamp();
+        let plan = InstallmentPlan {
+            payer: payer.clone(),
+            meter_id: meter_id.clone(),
+            total,
+            paid: 0,
+            remaining: total,
+            installments,
+            installment_amount,
+            next_due: now.saturating_add(grace_secs),
+            grace_secs,
+            status: InstallmentStatus::Active,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::InstallmentPlan(plan_id), &plan);
+
+        let mut list: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InstallmentPlanList)
+            .unwrap_or_else(|| vec![&env]);
+        list.push_back(plan_id);
+        env.storage().instance().set(&DataKey::InstallmentPlanList, &list);
+
+        let mut payer_list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PayerInstallments(payer.clone()))
+            .unwrap_or_else(|| vec![&env]);
+        payer_list.push_back(plan_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PayerInstallments(payer.clone()), &payer_list);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("inst_new"), plan_id),
+            (payer, total, installments),
+        );
+        Ok(plan_id)
+    }
+
+    pub fn pay_installment(env: Env, plan_id: u64) -> Result<(), ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if env
+            .storage()
+            .instance()
+            .get::<Symbol, bool>(&FROZEN)
+            .unwrap_or(false)
+        {
+            return Err(ContractError::ContractFrozen);
+        }
+        let key = DataKey::InstallmentPlan(plan_id);
+        let mut plan: InstallmentPlan = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(ContractError::InstallmentPlanNotFound)?;
+        match plan.status {
+            InstallmentStatus::Active => {}
+            InstallmentStatus::Completed => return Err(ContractError::InstallmentPlanCompleted),
+            InstallmentStatus::Defaulted => return Err(ContractError::InstallmentPlanDefaulted),
+        }
+        plan.payer.require_auth();
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let now = env.ledger().timestamp();
+        if now < plan.next_due {
+            return Err(ContractError::InstallmentNotDue);
+        }
+
+        let amount = if plan.remaining <= plan.installment_amount {
+            plan.remaining
+        } else {
+            plan.installment_amount
+        };
+        if amount <= 0 {
+            return Err(ContractError::InvalidInstallmentPlan);
+        }
+
+        let token_address = Self::get_token_address(&env)?;
+
+        let bal_key = DataKey::MeterBalance(plan.meter_id.clone());
+        let balance: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&bal_key, &balance.saturating_add(amount));
+
+        plan.paid = plan.paid.saturating_add(amount);
+        plan.remaining = plan.remaining.saturating_sub(amount);
+        plan.next_due = plan.next_due.saturating_add(plan.grace_secs);
+        if plan.remaining == 0 {
+            plan.status = InstallmentStatus::Completed;
+        }
+        env.storage().persistent().set(&key, &plan);
+
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&plan.payer, &env.current_contract_address(), &amount);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("inst_paid"), plan_id),
+            (plan.payer.clone(), amount, plan.paid, plan.remaining),
+        );
+        Ok(())
+    }
+
+    pub fn process_due_installments(env: Env) -> Result<(), ContractError> {
+        let plan_ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::InstallmentPlanList)
+            .unwrap_or_else(|| vec![&env]);
+        let now = env.ledger().timestamp();
+        for plan_id in plan_ids.iter() {
+            let key = DataKey::InstallmentPlan(plan_id);
+            let mut plan: InstallmentPlan = match env.storage().persistent().get(&key) {
+                Some(p) => p,
+                None => continue,
+            };
+            if plan.status != InstallmentStatus::Active {
+                continue;
+            }
+            if now > plan.next_due.saturating_add(plan.grace_secs) {
+                plan.status = InstallmentStatus::Defaulted;
+                let missed_amount = plan.remaining;
+                let next_due = plan.next_due;
+                env.storage().persistent().set(&key, &plan);
+                env.events().publish(
+                    (EVT_NS, symbol_short!("inst_dflt"), plan_id),
+                    (plan.payer.clone(), missed_amount, next_due),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    pub fn get_installment_plan(env: Env, plan_id: u64) -> Result<InstallmentPlan, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InstallmentPlan(plan_id))
+            .ok_or(ContractError::InstallmentPlanNotFound)
+    }
+
+    pub fn get_payer_installments(env: Env, payer: Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PayerInstallments(payer))
+            .unwrap_or_else(|| vec![&env])
+    }
+
     /// Migrate a v0 (LegacyMeter) entry to the current schema. Admin-only.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
         Self::require_admin_action(&env, "migrate_meter", "contract")?;

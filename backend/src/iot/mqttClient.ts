@@ -226,3 +226,33 @@ export function getMqttClient(): MqttClient {
   }
   return client;
 }
+
+/**
+ * Publish MQTT command to control individual circuit state on an IoT meter (#977).
+ */
+export async function publishCircuitControl(
+  meterId: string,
+  circuitId: number,
+  state: 'shed' | 'restore'
+): Promise<void> {
+  const mqtt = getMqttClient();
+  const topic = `solargrid/meters/${meterId}/circuits/${circuitId}/command`;
+  const payload = JSON.stringify({
+    action: state,
+    circuitId,
+    meterId,
+    timestamp: Date.now(),
+  });
+
+  return new Promise((resolve, reject) => {
+    mqtt.publish(topic, payload, { qos: 1 }, (err) => {
+      if (err) {
+        logger.error('Failed to publish circuit command over MQTT', { meterId, circuitId, state, err });
+        return reject(err);
+      }
+      logger.info('Published circuit command over MQTT', { meterId, circuitId, state, topic });
+      resolve();
+    });
+  });
+}
+

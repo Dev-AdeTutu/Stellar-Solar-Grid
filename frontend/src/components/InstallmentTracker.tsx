@@ -31,9 +31,11 @@ export interface InstallmentPlan {
 
 export interface InstallmentTrackerProps {
   /** Address of the payer whose plans should be loaded. */
-  payer: string;
+  payer?: string;
+  /** Alias for payer. */
+  address?: string;
   /** Contract client exposing getPayerInstallments, getInstallmentPlan, payInstallment. */
-  contract: {
+  contract?: {
     getPayerInstallments: (payer: string) => Promise<Array<number | string>>;
     getInstallmentPlan: (planId: number | string) => Promise<InstallmentPlan>;
     payInstallment: (planId: number | string) => Promise<unknown>;
@@ -295,11 +297,13 @@ const styles: Record<string, React.CSSProperties> = {
 };
 
 export const InstallmentTracker: React.FC<InstallmentTrackerProps> = ({
-  payer,
+  payer: explicitPayer,
+  address,
   contract,
   onPaymentSuccess,
   onError,
 }) => {
+  const payer = explicitPayer || address || '';
   const [plans, setPlans] = useState<InstallmentPlan[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -378,6 +382,7 @@ export const InstallmentTracker: React.FC<InstallmentTrackerProps> = ({
 
   const handlePayNow = useCallback(
     async (planId: number | string) => {
+      if (!contract) return;
       setPayingId(planId);
       setError(null);
       try {

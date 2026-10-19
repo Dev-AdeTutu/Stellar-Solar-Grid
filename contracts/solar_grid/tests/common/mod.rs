@@ -80,7 +80,7 @@ impl Fixture {
     pub fn solar_farm(
         &self,
         name: &str,
-        capacity_watts: u64,
+        capacity_watts: u32,
         share_price: i128,
         shareholders: u32,
     ) -> (String, soroban_sdk::Vec<Address>) {
@@ -105,5 +105,52 @@ impl Fixture {
     pub fn advance(&self, secs: u64) {
         use soroban_sdk::testutils::Ledger;
         self.env.ledger().with_mut(|li| li.timestamp += secs);
+    }
+}
+
+pub struct TestSetup {
+    pub env: Env,
+    pub client: SolarGridContractClient<'static>,
+    pub contract_id: Address,
+    pub admin: Address,
+    pub token: token::Client<'static>,
+    pub token_address: Address,
+}
+
+impl TestSetup {
+    pub fn new() -> Self {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let token_address = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let contract_id = env.register(SolarGridContract, (&admin, &token_address));
+        let client = SolarGridContractClient::new(&env, &contract_id);
+        let token = token::Client::new(&env, &token_address);
+        Self {
+            env,
+            client,
+            contract_id,
+            admin,
+            token,
+            token_address,
+        }
+    }
+
+    pub fn allowlisted_user(&self) -> Address {
+        let user = Address::generate(&self.env);
+        self.client.allowlist_add(&user);
+        user
+    }
+
+    pub fn register_meter(&self, owner: &Address, meter_id: &str) -> String {
+        let id = String::from_str(&self.env, meter_id);
+        self.client.register_meter(&id, owner);
+        id
+    }
+
+    pub fn mint(&self, to: &Address, amount: i128) {
+        token::StellarAssetClient::new(&self.env, &self.token_address).mint(to, &amount);
     }
 }

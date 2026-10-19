@@ -1,4 +1,4 @@
-import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, fetchDelegates, addMeterDelegate, removeMeterDelegate, makeDelegatedPayment, contractInvoke, type MeterData, type Delegate } from "@/lib/contract";
+import { fetchMeter, fetchMetersByOwner, checkMeterAccess, fetchAllMeters, fetchMetersPaginated, transferMeterOwnership, fetchDelegates, addDelegate as contractAddDelegate, removeDelegate as contractRemoveDelegate, makeDelegatedPayment as contractMakeDelegatedPayment, contractInvoke, type MeterData, type Delegate } from "@/lib/contract";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
 export type { MeterData, Delegate };
@@ -21,13 +21,6 @@ export async function getAllMeters(): Promise<MeterData[]> {
 
 export async function getMetersPaginated(offset: number, limit: number): Promise<string[]> {
   return fetchMetersPaginated(offset, limit);
-}
-
-export async function getPowerQuality(
-  meterId: string,
-  days?: number,
-): Promise<PowerQualityResponse> {
-  return getMeterPowerQuality(meterId, days);
 }
 
 export async function transferOwnership(
@@ -64,48 +57,73 @@ export async function makePayment(
 
 // Issue #981: Family/Household Account Sharing — delegation service helpers.
 
+export type DelegatePermission = "view" | "pay" | "admin";
+
 export async function getDelegates(meterId: string): Promise<Delegate[]> {
   return fetchDelegates(meterId);
 }
 
 export async function addDelegate(
-  sourceAddress: string,
-  meterId: string,
-  delegate: string,
-  permissions: string,
-  expiry: number,
+  arg1: string,
+  arg2: string,
+  arg3: any,
+  arg4?: any,
+  arg5?: any,
 ): Promise<string> {
-  return addMeterDelegate(sourceAddress, meterId, delegate, permissions, expiry);
+  if (arg5 !== undefined) {
+    return contractAddDelegate(arg1, arg2, arg3, Array.isArray(arg4) ? arg4.join(",") : arg4, arg5);
+  }
+  return contractAddDelegate("", arg1, arg2, Array.isArray(arg3) ? arg3.join(",") : arg3, arg4 ?? 0);
 }
 
 export async function removeDelegate(
-  sourceAddress: string,
-  meterId: string,
-  delegate: string,
+  arg1: string,
+  arg2: string,
+  arg3?: string,
 ): Promise<string> {
-  return removeMeterDelegate(sourceAddress, meterId, delegate);
+  if (arg3 !== undefined) {
+    return contractRemoveDelegate(arg1, arg2, arg3);
+  }
+  return contractRemoveDelegate("", arg1, arg2);
 }
 
 export async function makeDelegatedPayment(
   sourceAddress: string,
   meterId: string,
-  delegate: string,
-  amountXlm: number,
-  plan: "Daily" | "Weekly" | "Monthly" | "Usage",
-  memo?: string,
+  arg3: string | number,
+  arg4: any,
+  arg5?: any,
+  arg6?: string,
 ): Promise<string> {
+  let delegate: string;
+  let amountXlm: number;
+  let plan: "Daily" | "Weekly" | "Monthly" | "Usage";
+  let memo: string | undefined;
+
+  if (typeof arg3 === "number") {
+    delegate = sourceAddress;
+    amountXlm = arg3;
+    plan = arg4 ?? "Daily";
+    memo = arg5;
+  } else {
+    delegate = arg3;
+    amountXlm = Number(arg4);
+    plan = arg5 ?? "Daily";
+    memo = arg6;
+  }
+
   const amountStroops = BigInt(Math.round(amountXlm * 10_000_000));
   const trimmedMemo = memo?.trim();
   const memoScVal =
     trimmedMemo && trimmedMemo.length > 0
       ? StellarSdk.nativeToScVal(trimmedMemo, { type: "string" })
       : StellarSdk.xdr.ScVal.scvVoid();
-  return makeDelegatedPayment(
+  return contractMakeDelegatedPayment(
     sourceAddress,
     meterId,
     delegate,
     amountStroops,
     plan,
-    memoScVal,
+    memoScVal as any,
   );
 }

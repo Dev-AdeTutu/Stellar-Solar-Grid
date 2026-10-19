@@ -59,6 +59,8 @@ export function usageStats() {
   return [...keys.values()].map((k) => ({
     id: k.id, owner: k.owner, active: isActive(k), today: k.usage.count, dailyQuota: k.dailyQuota, total: k.total,
   }));
+}
+
 /**
  * Provider API key management (#833).
  *

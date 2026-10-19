@@ -67,7 +67,109 @@
         }
       ]
     ],
-    []
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "function_name": "update_meter_metadata",
+              "args": [
+                {
+                  "string": "META"
+                },
+                {
+                  "map": [
+                    {
+                      "key": {
+                        "string": "k0"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k1"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k2"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k3"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k4"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k5"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k6"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k7"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k8"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    },
+                    {
+                      "key": {
+                        "string": "k9"
+                      },
+                      "val": {
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ]
   ],
   "ledger": {
     "protocol_version": 27,
@@ -372,9 +474,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -433,7 +551,115 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 7
+                      "u32": 8
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "MeterMetadata"
+                  },
+                  {
+                    "string": "META"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "map": [
+                  {
+                    "key": {
+                      "string": "k0"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k1"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k2"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k3"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k4"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k5"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k6"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k7"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k8"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                    }
+                  },
+                  {
+                    "key": {
+                      "string": "k9"
+                    },
+                    "val": {
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                     }
                   }
                 ]
@@ -463,7 +689,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -604,6 +830,26 @@
           "data": {
             "contract_data": {
               "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "4837995959683129791"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
               "contract": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
@@ -717,5 +963,30 @@
       }
     ]
   },
-  "events": []
+  "events": [
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "solargrid"
+              },
+              {
+                "symbol": "mtr_meta"
+              },
+              {
+                "string": "META"
+              }
+            ],
+            "data": "void"
+          }
+        }
+      },
+      "failed_call": false
+    }
+  ]
 }

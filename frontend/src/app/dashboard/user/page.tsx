@@ -12,14 +12,16 @@ import Recommendations from "@/components/Recommendations";
 import { MeterSearchBar, type StatusFilter } from "@/components/MeterSearchBar";
 import { fuzzyMatch } from "@/lib/fuzzySearch";
 import { useWalletStore } from "@/store/walletStore";
-import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
 import {
+  getMeter,
+  getMetersByOwner,
   getDelegates,
   addDelegate,
   removeDelegate,
+  type MeterData,
   type Delegate,
   type DelegatePermission,
-} from "@/services/delegationService";
+} from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
 import { useInterval } from "@/hooks/useInterval";
@@ -314,16 +316,18 @@ function PermissionBadge({ permission }: { permission: DelegatePermission }) {
   );
 }
 
-function formatDelegateExpiry(expiry: number): string {
-  if (!expiry || expiry === Number.MAX_SAFE_INTEGER) return "Never";
-  const date = new Date(expiry * 1000);
+function formatDelegateExpiry(expiry: number | bigint): string {
+  const expNum = Number(expiry);
+  if (!expNum || expNum === Number.MAX_SAFE_INTEGER) return "Never";
+  const date = new Date(expNum * 1000);
   if (isNaN(date.getTime())) return "—";
   return date.toLocaleDateString();
 }
 
-function isDelegateExpired(expiry: number): boolean {
-  if (!expiry || expiry === Number.MAX_SAFE_INTEGER) return false;
-  return Date.now() / 1000 >= expiry;
+function isDelegateExpired(expiry: number | bigint): boolean {
+  const expNum = Number(expiry);
+  if (!expNum || expNum === Number.MAX_SAFE_INTEGER) return false;
+  return Date.now() / 1000 >= expNum;
 }
 
 /**
