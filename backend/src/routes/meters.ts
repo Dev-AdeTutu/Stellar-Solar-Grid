@@ -33,6 +33,9 @@ import {
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
 import { getBatteryStats } from "../lib/batteryStats.js";
+import { getBillingHistory } from "../lib/billing.js";
+import { getMeterCarbonFootprint } from "../lib/carbonFootprint.js";
+import { benchmarkMeter } from "../lib/benchmarking.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -503,6 +506,38 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
       ]);
       res.json({ meters: StellarSdk.scValToNative(result), owner: req.params.address });
+    }),
+  /**
+   * GET /api/meters/:id/billing-history — billing cycle information and history (#971).
+   */
+  meterRouter.get(
+    "/:id/billing-history",
+    asyncHandler(async (req, res) => {
+      const history = getBillingHistory(req.params.id);
+      res.json(history);
+    }),
+  );
+
+  /**
+   * GET /api/meters/:id/carbon-footprint — carbon emissions savings and impact calculator (#972).
+   */
+  meterRouter.get(
+    "/:id/carbon-footprint",
+    asyncHandler(async (req, res) => {
+      const region = String(req.query.region ?? "US");
+      const footprint = getMeterCarbonFootprint(req.params.id, region);
+      res.json(footprint);
+    }),
+  );
+
+  /**
+   * GET /api/meters/:id/benchmark — meter performance benchmark and peer group comparison (#974).
+   */
+  meterRouter.get(
+    "/:id/benchmark",
+    asyncHandler(async (req, res) => {
+      const benchmark = benchmarkMeter(req.params.id);
+      res.json(benchmark);
     }),
   );
 

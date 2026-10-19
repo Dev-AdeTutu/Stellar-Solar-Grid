@@ -530,3 +530,11 @@ adds the included kWh, and carries unused kWh forward up to the tier's
 `rollover_limit`. `SubscriptionRenewed(owner, tier_id, price)` is emitted for
 enrollment, changes, and monthly renewal. `consume_subscription_kwh` is the
 usage-accounting hook used by the billing integration.
+
+## Dynamic Pricing (#973)
+
+The smart contract dynamic pricing engine allows real-time pricing updates based on demand and grid conditions:
+- `DynamicPricing`: Struct tracking `base_price`, `current_multiplier` (percentage scale where 100 = 1.0x), `min_price`, `max_price`, and `last_updated_at`.
+- `update_pricing_multiplier(env, admin, multiplier)`: Admin-only function to set the pricing multiplier (between 10% and 1000%), recalculating effective price clamped within bounds. Emits `(symbol_short!("solar"), symbol_short!("price_upd"))` event.
+- `get_current_price(env)`: Read-only query returning the current calculated price.
+

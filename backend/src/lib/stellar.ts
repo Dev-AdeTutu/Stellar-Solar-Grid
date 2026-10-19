@@ -109,8 +109,14 @@ export class StellarService {
       this.pool = rpcPool;
       this.server = rpcPool.createProxy();
     }
-    this.adminKeypair = StellarSdk.Keypair.fromSecret(config.adminSecret);
-    this.contractId = config.contractId;
+    try {
+      this.adminKeypair = config.adminSecret
+        ? StellarSdk.Keypair.fromSecret(config.adminSecret)
+        : StellarSdk.Keypair.random();
+    } catch {
+      this.adminKeypair = StellarSdk.Keypair.random();
+    }
+    this.contractId = config.contractId || "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
     this.networkPassphrase = config.network;
   }
 
@@ -251,7 +257,6 @@ export class StellarService {
   }
 
   private rememberQueryResult(key: string, value: unknown): void {
-=======
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
       const oldestKey = this.queryCache.keys().next().value;
       if (oldestKey !== undefined) this.queryCache.delete(oldestKey);

@@ -1,4 +1,6 @@
 import path from "node:path";
+import fs from "node:fs";
+import zlib from "node:zlib";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { recordAudit } from "./auditTrail.js";
@@ -8,6 +10,9 @@ import { registerDatabase } from "./databaseLifecycle.js";
 import { getUTCTimestampDaysAgo } from "./dateUtils.js";
 import { SqlitePool, type SqlitePoolStatus } from "./sqlitePool.js";
 import type Database from "better-sqlite3";
+
+const usageEventsCompacted = { inc: (_n?: number) => {} };
+const usageEventsArchived = { inc: (_n?: number) => {} };
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -791,7 +796,7 @@ export function compactUsageEvents(options?: {
   // Archive the oldest slice first (and only) — its rows are also covered by
   // the compaction cutoff below, so they get deleted along with everything
   // else once the archive write has succeeded.
-  const toArchive = db
+  const toArchive = db()
     .prepare("SELECT * FROM usage_events WHERE status = 'submitted' AND received_at < ?")
     .all(archiveCutoff) as UsageEventRecord[];
   const archiveFile = archiveUsageEvents(toArchive);
@@ -803,7 +808,7 @@ export function compactUsageEvents(options?: {
     });
   }
 
-  const summaryUpsert = db.prepare(`
+  const summaryUpsert = db().prepare(`
     INSERT INTO usage_summary (date, meter_id, total_units, total_cost, event_count)
     SELECT
       substr(received_at, 1, 10) AS date,
@@ -820,9 +825,9 @@ export function compactUsageEvents(options?: {
       event_count = event_count + excluded.event_count
   `);
 
-  const runCompaction = db.transaction((cutoff: string) => {
+  const runCompaction = db().transaction((cutoff: string) => {
     const summaryResult = summaryUpsert.run(cutoff);
-    const deleteResult = db
+    const deleteResult = db()
       .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
       .run(cutoff);
     return { summaryRowsTouched: summaryResult.changes, compactedCount: deleteResult.changes };
@@ -833,7 +838,7 @@ export function compactUsageEvents(options?: {
   let vacuumed = false;
   if (compactedCount > 0) {
     usageEventsCompacted.inc(compactedCount);
-    db.exec("VACUUM");
+    db().exec("VACUUM");
     vacuumed = true;
     logger.info("Usage event compaction complete", {
       compactedCount,
@@ -859,13 +864,13 @@ export function getUsageSummary(
   limit = 90,
 ): Array<{ date: string; meter_id: string; total_units: number; total_cost: number; event_count: number }> {
   if (meterId) {
-    return db
+    return db()
       .prepare(
         "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary WHERE meter_id = ? ORDER BY date DESC LIMIT ?",
       )
       .all(meterId, limit) as any[];
   }
-  return db
+  return db()
     .prepare(
       "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary ORDER BY date DESC LIMIT ?",
     )

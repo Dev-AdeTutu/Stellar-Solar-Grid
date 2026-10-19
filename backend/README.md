@@ -63,3 +63,36 @@ GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/
 - `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
 - `GET /api/grid-services/geofences/:meterId` — status and verification history
 - `GET /api/grid-services/geofences` — data for the frontend map
+
+## Automated Billing Cycle Management (#971)
+
+Tracks recurring billing cycles for meters, issues notifications, and processes invoices upon cycle close:
+- Configurable cycle durations (default 30 days) per meter.
+- Advance reminder email notifications at 7, 3, and 1 day before billing cycle ends.
+- Automated generation of invoice records and rollover of next billing date when current cycle closes.
+- Endpoints:
+  - `GET /api/meters/:id/billing-history` — retrieve historical invoices and current cycle state.
+
+## Carbon Footprint Calculator (#972)
+
+Calculates carbon emissions saved from solar generation against regional grid emission factors:
+- Converts kWh generated into kg CO2 offset, equivalent trees planted, and passenger car miles avoided.
+- Provides monthly and yearly breakdown along with shareable impact badge metadata.
+- Endpoints:
+  - `GET /api/meters/:id/carbon-footprint` — detailed carbon metrics and equivalence data.
+
+## Dynamic Pricing Engine (#973)
+
+Allows responsive pricing adjustments based on real-time grid demand:
+- Admin configuration for pricing multiplier (`POST /api/pricing/multiplier`).
+- Automatically emits `PriceUpdated` events on changes.
+- Syncs with on-chain dynamic pricing parameters.
+
+## Meter Performance Benchmarking (#974)
+
+Compares individual meter efficiency and output against peer groups:
+- Peer group segmentation by capacity tier (residential, commercial, industrial) and location type (urban, suburban, rural).
+- Performance scoring (0–100 scale), efficiency percentile ranking, and actionable peer comparison insights.
+- Endpoints:
+  - `GET /api/meters/:id/benchmark` — retrieve peer group benchmark statistics and percentile ranks.
+

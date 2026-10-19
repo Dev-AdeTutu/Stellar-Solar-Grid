@@ -14,9 +14,11 @@ mod leases;
 mod recs;
 mod scheduling;
 mod staking;
+mod dynamic_pricing;
 mod warranty;
 #[cfg(test)]
 mod test_assets_warranty;
+pub use dynamic_pricing::*;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use insurance::{ClaimStatus, InsuranceClaim, InsurancePolicy};
 pub use multi_asset::{SupportedAsset, RATE_SCALE};
