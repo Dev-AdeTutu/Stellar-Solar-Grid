@@ -1,0 +1,7 @@
+import { Router } from "express";
+import { z } from "zod";
+import { generateComplianceReport, reportCsv, reportPdf, type ComplianceFramework } from "../lib/complianceReports.js";
+export const complianceReportsRouter = Router();
+const query = z.object({ format: z.enum(["json", "csv", "pdf"]).default("json"), framework: z.enum(["GSE", "I-REC", "EU-RED", "FERC"]).default("GSE"), period: z.enum(["monthly", "quarterly"]).default("monthly") });
+complianceReportsRouter.get("/compliance", async (req, res) => { const parsed = query.safeParse(req.query); if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() }); const report = await generateComplianceReport(parsed.data.framework as ComplianceFramework, parsed.data.period); if (parsed.data.format === "csv") { res.type("text/csv").attachment(`compliance-${parsed.data.framework.toLowerCase()}.csv`).send(reportCsv(report)); } else if (parsed.data.format === "pdf") { res.type("application/pdf").attachment(`compliance-${parsed.data.framework.toLowerCase()}.pdf`).send(reportPdf(report)); } else res.json(report); });
+complianceReportsRouter.get("/compliance/schedules", (_req, res) => res.json({ schedules: [{ frequency: "monthly", nextRun: "1st day of next month", framework: "GSE" }, { frequency: "quarterly", nextRun: "1st day of next quarter", framework: "I-REC" }], note: "Connect a scheduler to invoke the same signed report generator." }));

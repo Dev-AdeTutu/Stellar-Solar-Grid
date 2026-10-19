@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="description" content="Web application with offline capabilities." />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="App" />
+    <title>App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.js"></script>
+    <script>
+      // Register the service worker for offline support and background sync.
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker
+            .register('/sw.js', { scope: '/' })
+            .then(function (registration) {
+              // Check for updates to the service worker on each load.
+              registration.update();
+
+              registration.addEventListener('updatefound', function () {
+                var newWorker = registration.installing;
+                if (!newWorker) return;
+                newWorker.addEventListener('statechange', function () {
+                  if (
+                    newWorker.state === 'installed' &&
+                    navigator.serviceWorker.controller
+                  ) {
+                    // A new version is available; notify the app so it can prompt a reload.
+                    window.dispatchEvent(new CustomEvent('sw:updateavailable'));
+                  }
+                });
+              });
+            })
+            .catch(function (error) {
+              console.error('Service worker registration failed:', error);
+            });
+        });
+      }
+
+      // Capture the install prompt so the app can surface an install UI.
+      window.__deferredInstallPrompt = null;
+      window.addEventListener('beforeinstallprompt', function (event) {
+        event.preventDefault();
+        window.__deferredInstallPrompt = event;
+        window.dispatchEvent(new CustomEvent('pwa:installavailable'));
+      });
+
+      window.addEventListener('appinstalled', function () {
+        window.__deferredInstallPrompt = null;
+        window.dispatchEvent(new CustomEvent('pwa:installed'));
+      });
+
+      // Trigger the deferred install prompt from app UI.
+      window.promptInstall = function () {
+        var promptEvent = window.__deferredInstallPrompt;
+        if (!promptEvent) return Promise.resolve('unavailable');
+        promptEvent.prompt();
+        return promptEvent.userChoice.then(function (choice) {
+          window.__deferredInstallPrompt = null;
+          return choice.outcome;
+        });
+      };
+    </script>
+  </body>
+</html>

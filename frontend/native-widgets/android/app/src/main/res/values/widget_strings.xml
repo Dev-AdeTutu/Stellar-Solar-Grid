@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="widget_name">SolarGrid Meter</string>
+    <string name="widget_description">Balance, days remaining and recent usage for your meter.</string>
+    <string name="widget_not_configured">Open SolarGrid and choose a meter to see it here.</string>
+    <string name="widget_xlm_balance">XLM balance</string>
+    <string name="widget_today_units">Today: %.1f units</string>
+    <string name="widget_last_7_days">Last 7 days</string>
+    <string name="widget_top_up">Buy</string>
+    <string name="widget_sell">Sell</string>
+    <string name="widget_active">Active</string>
+    <string name="widget_inactive">Inactive</string>
+    <string name="widget_less_than_day">&lt; 1 day left</string>
+    <string name="widget_usage_chart">Daily usage for the last 7 days</string>
+    <plurals name="widget_days_left">
+        <item quantity="one">%d day left</item>
+        <item quantity="other">%d days left</item>
+    </plurals>
+    <color name="widget_bg">#FF1E293B</color>
+    <color name="widget_text">#FFF8FAFC</color>
+    <color name="widget_text_secondary">#FF94A3B8</color>
+    <color name="widget_brand">#FFF5B300</color>
+</resources>

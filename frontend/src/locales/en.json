@@ -1,0 +1,260 @@
+{
+  "nav": {
+    "brand": "SolarGrid",
+    "myMeter": "My Meter",
+    "multisig": "Org Wallets",
+    "pay": "Pay",
+    "analytics": "Analytics",
+    "resilience": "Resilience",
+    "privacy": "Privacy",
+    "provider": "Provider",
+    "history": "History",
+    "bills": "Bills",
+    "communities": "Energy Communities",
+    "competitions": "Competitions",
+    "smartHome": "Smart Home",
+    "toggleTheme": "Toggle Theme",
+    "openMenu": "Open menu",
+    "closeMenu": "Close menu",
+    "languageToggle": "Français",
+    "languageLabel": "Switch language",
+    "emergency": "Emergency"
+  },
+  "home": {
+    "tagline": "Affordable, pay-as-you-go solar energy powered by the Stellar blockchain. No large upfront costs — just clean energy on your terms.",
+    "userDashboard": "User Dashboard",
+    "providerDashboard": "Provider Dashboard"
+  },
+  "meterCard": {
+    "balance": "Balance",
+    "plan": "Plan",
+    "expiry": "Expiry",
+    "never": "Never",
+    "daysLeft": "{days}d left",
+    "deactivate": "Deactivate Meter",
+    "deactivating": "Deactivating…",
+    "ariaLabel": "Meter {meterId}"
+  },
+  "meterStatus": {
+    "active": "Active",
+    "inactive": "Inactive",
+    "expired": "Expired",
+    "ariaLabel": "Meter status: {status}"
+  },
+  "wallet": {
+    "connect": "Connect Wallet",
+    "connectCompact": "Connect",
+    "connecting": "Connecting…",
+    "disconnect": "Disconnect",
+    "copyAddress": "Click to copy full address",
+    "copied": "✓ Copied",
+    "freighterNotDetected": "Freighter not detected",
+    "installFreighter": "Install Freighter ↗",
+    "wrongNetwork": "Wrong network",
+    "switchNetwork": "Switch networks in Freighter: Settings → Network.",
+    "ariaWalletAddress": "Wallet address {address}. Click to copy.",
+    "ariaDisconnect": "Disconnect wallet",
+    "ariaConnecting": "Connecting"
+  },
+  "networkBanner": {
+    "wrongNetwork": "Wrong network:",
+    "dismiss": "Dismiss network mismatch warning"
+  },
+  "errors": {
+    "freighterNotInstalled": "Selected wallet is not installed.",
+    "noAccount": "No account found in selected wallet",
+    "walletConnectFailed": "Failed to connect wallet",
+    "meterLoadFailed": "Failed to load meter data: {error}",
+    "retry": "Retry",
+    "installFreighter": "Install Freighter ↗"
+  },
+  "dashboard": {
+    "user": {
+      "title": "My Meters",
+      "connectWallet": "Connect your wallet to view your meters.",
+      "noMeters": "No meters found for your address.",
+      "loading": "Loading meters…",
+      "balance": "Balance",
+      "unitsUsed": "Units Used",
+      "active": "Active",
+      "inactive": "Inactive",
+      "plan": "Plan",
+      "expiry": "Expiry"
+    },
+    "provider": {
+      "title": "Provider Dashboard",
+      "allMeters": "All Meters",
+      "deactivate": "Deactivate",
+      "deactivating": "Deactivating…"
+    }
+  },
+  "report": {
+    "title": "Meter Status Report",
+    "printReport": "Print Report",
+    "print": "Print",
+    "back": "← Back",
+    "meterId": "Meter ID",
+    "owner": "Owner",
+    "balance": "Balance",
+    "plan": "Plan",
+    "status": "Status",
+    "expiry": "Expiry",
+    "unitsUsed": "Units Used",
+    "generatedAt": "Generated at",
+    "recentReadings": "Recent Readings (Last 5)",
+    "noReadings": "No readings available.",
+    "date": "Date",
+    "units": "Units",
+    "amount": "Amount",
+    "qrCode": "QR Code",
+    "scanToView": "Scan to view this meter",
+    "never": "Never",
+    "active": "Active",
+    "inactive": "Inactive"
+  },
+  "history": {
+    "title": "Payment History",
+    "noHistory": "No payment history found.",
+    "date": "Date",
+    "meter": "Meter",
+    "plan": "Plan",
+    "amount": "Amount",
+    "transaction": "Transaction",
+    "viewExplorer": "View on Explorer ↗",
+    "export": "Export CSV",
+    "exporting": "Exporting…",
+    "prev": "Previous",
+    "next": "Next",
+    "page": "Page {page} / {total}"
+  },
+  "pay": {
+    "title": "Make a Payment",
+    "meterId": "Meter ID",
+    "amount": "Amount (XLM)",
+    "plan": "Plan",
+    "submit": "Pay",
+    "submitting": "Processing…",
+    "success": "Payment successful!",
+    "daily": "Daily",
+    "weekly": "Weekly",
+    "usage": "Usage"
+  },
+  "pauseBanner": {
+    "title": "Emergency pause active",
+    "message": "Payments and meter registration are temporarily disabled. Usage reporting remains available."
+  },
+  "common": {
+    "loading": "Loading…",
+    "error": "Error",
+    "close": "Close",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "back": "Back",
+    "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Energy Insights",
+    "refresh": "Refresh",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "thisWeek": "This Week",
+    "vsLastWeek": "vs Last Week",
+    "peersAvg": "Peers (avg)",
+    "weeklyAvg": "weekly avg",
+    "hourlyProfile": "24-Hour Usage Profile (last 30 days, UTC)",
+    "peak": "Peak",
+    "achievements": "Achievements",
+    "lastComputed": "Last computed",
+    "noData": "No usage data yet. Insights will appear once your meter starts recording.",
+    "earned": "earned",
+    "notEarned": "not yet earned",
+    "increase": "increase",
+    "decrease": "decrease",
+    "noPriorData": "No prior data",
+    "badges": {
+      "low_consumer": "🌱 Low Consumer",
+      "off_peak_hero": "🌙 Off-Peak Hero",
+      "improver": "📉 Improver",
+      "below_average": "⚡ Below Average",
+      "consistent": "📊 Consistent"
+    }
+  },
+  "emergency": {
+    "title": "Emergency Energy Sharing",
+    "loading": "Loading…",
+    "active": "Emergency mode active",
+    "inactive": "Normal operation",
+    "since": "since",
+    "pool": "Shared pool",
+    "donated": "Total donated",
+    "donors": "Donors",
+    "facilities": "Priority facilities",
+    "noFacilities": "No facilities registered.",
+    "facility": "Facility",
+    "type": "Type",
+    "coverage": "Allocated / demand",
+    "donateTitle": "Donate energy",
+    "meterId": "Your meter ID",
+    "donate": "Donate",
+    "donateSuccess": "Thank you! Your energy was added to the shared pool.",
+    "donateFailed": "Donation failed. Please try again.",
+    "recentDonations": "Recent donations",
+    "types": {
+      "hospital": "Hospital",
+      "clinic": "Clinic",
+      "water": "Water supply",
+      "shelter": "Shelter",
+      "school": "School",
+      "household": "Household"
+    }
+  },
+  "recommendations": {
+    "title": "Recommendations for you",
+    "none": "No new recommendations this week.",
+    "estimated": "Estimated saving: {kwh} kWh/week",
+    "accept": "Accept",
+    "dismiss": "Dismiss",
+    "estimatedSavings": "Estimated weekly savings",
+    "actualSavings": "Actual weekly savings"
+  },
+  "delegation": {
+    "title": "Account Delegation",
+    "addDelegate": "Add Delegate",
+    "delegateAddress": "Delegate Address",
+    "permissions": "Permissions",
+    "viewOnly": "View Only",
+    "pay": "Pay",
+    "admin": "Admin",
+    "expiry": "Expiry",
+    "remove": "Remove",
+    "noDelegates": "No delegates added yet.",
+    "added": "Delegate added successfully.",
+    "removed": "Delegate removed successfully."
+  },
+  "technician": {
+    "title": "Technician Portal",
+    "workOrders": "Work Orders",
+    "assignedTo": "Assigned To",
+    "complete": "Complete",
+    "notes": "Notes",
+    "scanMeter": "Scan Meter",
+    "uploadPhoto": "Upload Photo",
+    "noOrders": "No work orders assigned."
+  },
+  "seasonal": {
+    "currentSeason": "Current Season",
+    "multiplier": "Rate Multiplier",
+    "history": "Seasonal History",
+    "comparison": "Seasonal Comparison"
+  },
+  "surveys": {
+    "title": "Customer Satisfaction Surveys",
+    "nps": "Net Promoter Score",
+    "promoters": "Promoters",
+    "passives": "Passives",
+    "detractors": "Detractors",
+    "responses": "Responses",
+    "averageScore": "Average Score"
+  }
+}

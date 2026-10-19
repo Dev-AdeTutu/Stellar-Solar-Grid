@@ -9,7 +9,7 @@ function ToastItem({ toast }: { toast: Toast }) {
   useEffect(() => {
     const timer = setTimeout(() => {
       remove(toast.id);
-    }, 4000);
+    }, 5000);
     return () => clearTimeout(timer);
   }, [toast.id, remove]);
 
@@ -22,7 +22,7 @@ function ToastItem({ toast }: { toast: Toast }) {
 
   return (
     <div
-      role="alert"
+      role={toast.type === "error" ? "alert" : "status"}
       onClick={() => remove(toast.id)}
       className={`w-full cursor-pointer rounded-xl border px-4 py-3 shadow-2xl backdrop-blur transition hover:opacity-90 ${chrome}`}
     >
@@ -68,16 +68,21 @@ function ToastItem({ toast }: { toast: Toast }) {
 
 export default function ToastContainer() {
   const toasts = useToastStore((s) => s.toasts);
+  const errorToasts = toasts.filter((t) => t.type === "error");
+  const politeToasts = toasts.filter((t) => t.type !== "error");
 
   return (
-    <div
-      aria-atomic="true"
-      aria-live="assertive"
-      className="pointer-events-none fixed inset-x-4 bottom-4 z-[60] flex flex-col items-end gap-3 sm:left-auto sm:right-4 sm:w-full sm:max-w-sm"
-    >
-      {toasts.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} />
-      ))}
+    <div className="pointer-events-none fixed inset-x-4 bottom-4 z-[60] flex flex-col items-end gap-3 sm:left-auto sm:right-4 sm:w-full sm:max-w-sm">
+      <div aria-atomic="false" aria-live="polite" className="contents">
+        {politeToasts.map((toast) => (
+          <ToastItem key={toast.id} toast={toast} />
+        ))}
+      </div>
+      <div aria-atomic="false" aria-live="assertive" className="contents">
+        {errorToasts.map((toast) => (
+          <ToastItem key={toast.id} toast={toast} />
+        ))}
+      </div>
     </div>
   );
 }

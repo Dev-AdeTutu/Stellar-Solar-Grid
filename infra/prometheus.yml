@@ -1,0 +1,22 @@
+# infra/prometheus.yml
+#
+# Prometheus scrape configuration for SolarGrid.
+#
+# Closes #537: the /metrics endpoint on the backend is intentionally public
+# (no authentication).  Prometheus's pull model requires unauthenticated HTTP
+# GET access to scrape metrics.  The backend port (3001) is only exposed on
+# the internal Docker app-network and is NOT forwarded to a public interface,
+# so network-level isolation already limits who can reach /metrics.
+#
+# If the backend is ever placed behind a public-facing load balancer, restrict
+# /metrics at the reverse-proxy layer (e.g. an nginx `deny all` block or a
+# firewall rule that allows only the Prometheus container's IP).
+
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'backend'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['backend:3001']

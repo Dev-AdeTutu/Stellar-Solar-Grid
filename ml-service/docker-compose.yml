@@ -1,0 +1,63 @@
+version: '3.8'
+
+services:
+  ml-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: load-forecasting-ml
+    ports:
+      - "5000:5000"
+    environment:
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
+      - ML_SERVICE_PORT=5000
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount models directory for persistence
+      - ./models:/app/models
+      # Mount data directory
+      - ./data:/app/data
+      # Mount logs directory
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:5000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - stellar-grid-network
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 4G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
+  # Scheduler service for automated retraining
+  ml-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: load-forecasting-scheduler
+    command: ["python", "src/scheduler.py", "--model-dir", "/app/models", "--cron", "0 2 * * 0"]
+    environment:
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - stellar-grid-network
+    depends_on:
+      - ml-service
+
+networks:
+  stellar-grid-network:
+    external: true

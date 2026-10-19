@@ -6,9 +6,12 @@ const config: Config = {
     extend: {
       colors: {
         solar: {
-          yellow: "#F5A623",
-          dark: "#1A1A2E",
-          accent: "#16213E",
+          // #764 — driven by NEXT_PUBLIC_BRAND_PRIMARY/SECONDARY_COLOR at
+          // runtime, see globals.css and lib/branding.ts.
+          yellow: "var(--color-brand-primary)",
+          secondary: "var(--color-brand-secondary)",
+          dark: "var(--color-bg-primary)",
+          accent: "var(--color-bg-card)",
         },
       },
     },

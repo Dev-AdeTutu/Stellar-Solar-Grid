@@ -1,0 +1,103 @@
+name: Contract CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['contracts/**', '.github/workflows/contract-ci.yml']
+  pull_request:
+    paths: ['contracts/**', '.github/workflows/contract-ci.yml']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Unit, integration and property tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      - name: Run test suite
+        working-directory: contracts
+        run: cargo test --all-targets --no-fail-fast
+        env:
+          PROPTEST_CASES: '256'
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Measure line coverage
+        working-directory: contracts
+        run: |
+          cargo llvm-cov --all-targets --lcov --output-path lcov.info \
+            --fail-under-lines "${MIN_LINE_COVERAGE}"
+          cargo llvm-cov report --summary-only | tee coverage-summary.txt
+        env:
+          MIN_LINE_COVERAGE: ${{ vars.CONTRACT_MIN_LINE_COVERAGE || '90' }}
+      - name: Publish coverage summary
+        if: always()
+        working-directory: contracts
+        run: |
+          if [ -f coverage-summary.txt ]; then
+            {
+              echo "### Contract coverage"
+              echo '```'
+              cat coverage-summary.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: contract-coverage
+          path: contracts/lcov.info
+          if-no-files-found: ignore
+
+  wasm:
+    name: Release WASM build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts
+      # soroban-sdk rejects wasm32-unknown-unknown on Rust >= 1.82 (it enables
+      # reference-types/multi-value); wasm32v1-none is the supported target.
+      - run: cd contracts && cargo build --target wasm32v1-none --release
+      - name: Verify WASM Size
+        run: |
+          WASM_FILE="contracts/target/wasm32v1-none/release/solar_grid.wasm"
+          WASM_SIZE=$(wc -c < "$WASM_FILE")
+          echo "WASM size: $WASM_SIZE bytes"
+
+          # Write summary
+          echo "### WASM Binary Size Verification" >> $GITHUB_STEP_SUMMARY
+          echo "- **File:** \`$WASM_FILE\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size:** $WASM_SIZE bytes" >> $GITHUB_STEP_SUMMARY
+          echo "- **Limit:** $MAX_WASM_BYTES bytes" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$WASM_SIZE" -gt "$MAX_WASM_BYTES" ]; then
+            echo ":x: **Failure:** WASM binary size ($WASM_SIZE bytes) exceeds the limit of $MAX_WASM_BYTES bytes!" >> $GITHUB_STEP_SUMMARY
+            echo "Error: WASM size exceeds limit!"
+            exit 1
+          else
+            echo ":white_check_mark: **Success:** WASM binary size is within limits." >> $GITHUB_STEP_SUMMARY
+          fi
+        env:
+          MAX_WASM_BYTES: ${{ vars.MAX_WASM_BYTES || '102400' }}

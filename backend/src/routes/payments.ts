@@ -1,10 +1,382 @@
 import { Router } from "express";
+import { publishRealtime } from "../lib/realtime.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
-import { server, CONTRACT_ID, NETWORK_PASSPHRASE } from "../lib/stellar.js";
+import { z } from "zod";
+import { server, CONTRACT_ID, NETWORK_PASSPHRASE, adminInvoke, stellarService } from "../lib/stellar.js";
 import { logger } from "../lib/logger.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { idempotency } from "../middleware/idempotency.js";
+import { sendPaymentWebhook, stroopsToXlm } from "../lib/paymentWebhook.js";
+import { saveReceipt } from "../lib/receipts.js";
+import { recordRevenueEvent } from "../lib/revenueStore.js";
+import { emailTrade } from "../lib/billing.js";
+import { sendSurveyEmail } from "../lib/surveys.js";
+import { getMeterBillingEmail } from "../lib/meters.js";
+
+const PUBLIC_APP_URL = process.env.PUBLIC_APP_URL ?? "http://localhost:5173";
 
 export const paymentsRouter = Router();
+
+const PaymentSchema = z.object({
+  meterId: z.string().min(1).max(64),
+  amount: z.number().int().positive(),
+  payer: z.string().length(56),
+  // Issue #766: optional free-text note (e.g. "August electricity"), capped
+  // to match the contract's MAX_MEMO_LEN.
+  memo: z.string().max(100).optional(),
+});
+
+// Issue #987: installment payment plans.
+const InstallmentPlanSchema = z.object({
+  meterId: z.string().min(1).max(64),
+  payer: z.string().length(56),
+  total: z.number().int().positive(),
+  installments: z.number().int().positive().max(120),
+  graceSecs: z.number().int().nonnegative().optional(),
+});
+
+const ProcessDueSchema = z.object({
+  planIds: z.array(z.number().int().nonnegative()).min(1).max(200),
+});
+
+interface IdempotencyRecord {
+  hash: string;
+  createdAt: number;
+}
+
+const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+const idempotencyCache = new Map<string, IdempotencyRecord>();
+
+function cleanExpiredIdempotencyKeys() {
+  const now = Date.now();
+  for (const [key, record] of idempotencyCache.entries()) {
+    if (now - record.createdAt > IDEMPOTENCY_TTL_MS) {
+      idempotencyCache.delete(key);
+    }
+  }
+}
+
+/**
+ * Helper function to get meter balance (Issue #692).
+ * Queries the contract for the current balance of a meter.
+ */
+async function getMeterBalance(meterId: string): Promise<number> {
+  try {
+    const result = await stellarService.query("get_meter_balance", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    if (typeof result === "bigint" || typeof result === "number") {
+      return Number(result);
+    }
+    return 0;
+  } catch (err: any) {
+    logger.warn("Failed to get meter balance for webhook", {
+      meterId,
+      error: err.message,
+    });
+    return 0;
+  }
+}
+
+/**
+ * Helper function to get meter plan (Issue #692).
+ * Queries the contract for the meter's payment plan.
+ */
+async function getMeterPlan(meterId: string): Promise<string> {
+  try {
+    const result = await stellarService.query("get_meter", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+    // Extract plan from meter struct if available
+    if (result && typeof result === "object" && "plan" in result) {
+      return result.plan || "Daily";
+    }
+    return "Daily"; // fallback
+  } catch (err: any) {
+    logger.warn("Failed to get meter plan for webhook", {
+      meterId,
+      error: err.message,
+    });
+    return "Daily"; // fallback
+  }
+}
+
+paymentsRouter.post(
+  "/",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const parsed = PaymentSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { meterId, amount, payer, memo } = parsed.data;
+    // Issue #766: memo is an Option<String> contract-side — omit (scvVoid)
+    // when not provided, rather than passing an empty string.
+    const memoScVal =
+      memo && memo.trim().length > 0
+        ? StellarSdk.nativeToScVal(memo.trim(), { type: "string" })
+        : StellarSdk.xdr.ScVal.scvVoid();
+    const hash = await adminInvoke("make_payment", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      StellarSdk.nativeToScVal(BigInt(amount), { type: "i128" }),
+      StellarSdk.nativeToScVal(payer, { type: "address" }),
+      memoScVal,
+    ]);
+    saveReceipt({
+      paymentId: hash,
+      amount,
+      meterId,
+      date: new Date().toISOString(),
+      transactionHash: hash,
+    });
+    // #1002: record this payment for the provider revenue analytics dashboard
+    // (MRR/ARPU/churn/trends/geo-breakdown) — see lib/revenueStore.ts.
+    try {
+      recordRevenueEvent({ paymentId: hash, meterId, amount, payer });
+    } catch (err: any) {
+      logger.warn("Failed to record revenue analytics event", { meterId, hash, error: err.message });
+    }
+
+    // Issue #692: Send webhook notification for successful payment
+    // Fire async webhook in background without blocking response
+    void (async () => {
+      try {
+        const balance = await getMeterBalance(meterId);
+        const plan = await getMeterPlan(meterId);
+
+        await emailTrade({ meterId, payer, amountXlm: stroopsToXlm(amount), transactionHash: hash });
+
+        // Issue #994: trigger a satisfaction survey email after a successful
+        // payment. Failures here must never affect the payment response.
+        try {
+          const billingEmail = await getMeterBillingEmail(meterId);
+          if (billingEmail) {
+            const surveyId = `payment-${hash}`;
+            const surveyUrl = `${PUBLIC_APP_URL}/surveys/${surveyId}?meter=${meterId}`;
+            await sendSurveyEmail({
+              to: billingEmail,
+              meterId,
+              surveyId,
+              surveyUrl,
+              trigger: "payment",
+            });
+          }
+        } catch (surveyErr: any) {
+          logger.error("Failed to send payment survey email", {
+            meterId,
+            hash,
+            error: surveyErr.message,
+          });
+        }
+
+        await sendPaymentWebhook({
+          meter_id: meterId,
+          payer_address: payer,
+          amount,
+          amount_xlm: stroopsToXlm(amount),
+          plan_type: plan,
+          transaction_hash: hash,
+          timestamp: new Date().toISOString(),
+          updated_balance: balance,
+        });
+      } catch (err: any) {
+        logger.error("Failed to send payment webhook", {
+          meterId,
+          hash,
+          error: err.message,
+        });
+      }
+    })();
+
+    return res.json({ hash });
+  }),
+);
+
+// ── Installment plans (Issue #987) ────────────────────────────────────────────
+
+/**
+ * POST /api/payments/installments
+ *
+ * Creates an installment plan for a meter purchase/upgrade. The contract
+ * tracks total/paid/remaining and the payment schedule, and deducts each
+ * installment automatically once due.
+ */
+paymentsRouter.post(
+  "/installments",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const parsed = InstallmentPlanSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { meterId, payer, total, installments, graceSecs } = parsed.data;
+
+    try {
+      const hash = await adminInvoke("create_installment_plan", [
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        StellarSdk.nativeToScVal(payer, { type: "address" }),
+        StellarSdk.nativeToScVal(BigInt(total), { type: "i128" }),
+        StellarSdk.nativeToScVal(installments, { type: "u32" }),
+        graceSecs === undefined
+          ? StellarSdk.xdr.ScVal.scvVoid()
+          : StellarSdk.nativeToScVal(graceSecs, { type: "u64" }),
+      ]);
+
+      const planId = await stellarService.query("get_payer_installments", [
+        StellarSdk.nativeToScVal(payer, { type: "address" }),
+      ]);
+
+      logger.info("Created installment plan", { meterId, payer, total, installments, hash });
+
+      return res.json({ hash, planId });
+    } catch (err: any) {
+      logger.error("create_installment_plan error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to create installment plan" });
+    }
+  }),
+);
+
+/**
+ * GET /api/payments/installments/payer/:address
+ *
+ * Returns the plan ids belonging to a payer.
+ */
+paymentsRouter.get(
+  "/installments/payer/:address",
+  asyncHandler(async (req, res) => {
+    const rawAddress = req.params.address;
+    const address = Array.isArray(rawAddress) ? rawAddress[0] : rawAddress;
+    if (typeof address !== "string" || address.trim().length === 0) {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(address);
+    } catch {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+
+    try {
+      const planIds = await stellarService.query("get_payer_installments", [
+        StellarSdk.nativeToScVal(address, { type: "address" }),
+      ]);
+      return res.json({ address, planIds });
+    } catch (err: any) {
+      logger.error("get_payer_installments error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch payer installments" });
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/installments/process-due
+ *
+ * Admin-only: processes the given plans, deducting any due installments and
+ * flagging defaults where payments were missed past the grace period.
+ */
+paymentsRouter.post(
+  "/installments/process-due",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const parsed = ProcessDueSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { planIds } = parsed.data;
+
+    try {
+      const hash = await adminInvoke("process_due_installments", [
+        StellarSdk.nativeToScVal(planIds, { type: "u32" }),
+      ]);
+      logger.info("Processed due installments", { planIds, hash });
+      return res.json({ hash });
+    } catch (err: any) {
+      logger.error("process_due_installments error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to process due installments" });
+    }
+  }),
+);
+
+/**
+ * GET /api/payments/installments/:planId
+ *
+ * Returns the current state of an installment plan.
+ */
+paymentsRouter.get(
+  "/installments/:planId",
+  asyncHandler(async (req, res) => {
+    const planId = Number(req.params.planId);
+    if (!Number.isInteger(planId) || planId < 0) {
+      return res.status(400).json({ error: "Invalid planId" });
+    }
+
+    try {
+      const plan = await stellarService.query("get_installment_plan", [
+        StellarSdk.nativeToScVal(planId, { type: "u32" }),
+      ]);
+      if (plan === null || plan === undefined) {
+        return res.status(404).json({ error: "Installment plan not found" });
+      }
+      return res.json({ plan });
+    } catch (err: any) {
+      logger.error("get_installment_plan error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch installment plan" });
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/installments/:planId/pay
+ *
+ * Pays the next due installment for a plan.
+ */
+paymentsRouter.post(
+  "/installments/:planId/pay",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const planId = Number(req.params.planId);
+    if (!Number.isInteger(planId) || planId < 0) {
+      return res.status(400).json({ error: "Invalid planId" });
+    }
+
+    try {
+      const hash = await adminInvoke("pay_installment", [
+        StellarSdk.nativeToScVal(planId, { type: "u32" }),
+      ]);
+      logger.info("Paid installment", { planId, hash });
+      return res.json({ hash });
+    } catch (err: any) {
+      logger.error("pay_installment error:", err);
+      if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to pay installment" });
+    }
+  }),
+);
 
 const HORIZON_URL =
   NETWORK_PASSPHRASE === StellarSdk.Networks.PUBLIC
@@ -19,13 +391,30 @@ export interface PaymentRecord {
   meterId: string;
   amountXlm: number;
   plan: string;
+  status: "Completed" | "Pending" | "Failed";
+  /** Optional free-text note attached to the payment (Issue #766). */
+  memo?: string;
+  /**
+   * Opaque, stable pagination cursor (the Soroban event's pagingToken).
+   * Unlike a numeric offset, this identifies a specific event and doesn't
+   * shift when other payments are inserted before/after it — see Issue #767.
+   */
+  cursor: string;
 }
 
 /**
- * GET /api/payments/:address?page=1&limit=10&sort=desc
+ * GET /api/payments/:address?cursor=<opaque>&limit=10&sort=desc
  *
  * Queries Soroban contract events for make_payment calls where payer === address.
  * Falls back to Horizon transaction history when events are unavailable.
+ *
+ * Issue #767: pagination is cursor-based, not offset-based. `cursor` is the
+ * `cursor` value of the last record from the previous page (omit for the
+ * first page). Because the cursor identifies a specific event rather than a
+ * numeric position, a payment inserted between two requests can't shift
+ * later pages — offset-based paging (`page=1` skip 0, `page=2` skip 10)
+ * duplicated or dropped records whenever the underlying event set changed
+ * between page requests.
  */
 paymentsRouter.get(
   "/:address",
@@ -36,12 +425,21 @@ paymentsRouter.get(
       return res.status(400).json({ error: "Invalid Stellar address" });
     }
 
-    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
     const limit = Math.min(
       50,
       Math.max(1, parseInt((req.query.limit as string) ?? "10", 10)),
     );
     const sort = req.query.sort === "asc" ? "asc" : "desc";
+    const days = Math.min(90, Math.max(1, parseInt((req.query.days as string) ?? "30", 10)));
+    const rawCursor = req.query.cursor;
+    const cursor = typeof rawCursor === "string" && rawCursor.length > 0 ? rawCursor : undefined;
+    const from = req.query.from ? new Date(`${req.query.from}T00:00:00Z`).getTime() : undefined;
+    const to = req.query.to ? new Date(`${req.query.to}T23:59:59.999Z`).getTime() : undefined;
+    const min = req.query.min ? Number(req.query.min) : undefined;
+    const max = req.query.max ? Number(req.query.max) : undefined;
+    const plan = typeof req.query.plan === "string" && req.query.plan !== "All" ? req.query.plan : undefined;
+    const status = typeof req.query.status === "string" && req.query.status !== "All" ? req.query.status : undefined;
+    const query = typeof req.query.q === "string" ? req.query.q.toLowerCase() : undefined;
 
     try {
       StellarSdk.StrKey.decodeEd25519PublicKey(address);
@@ -49,60 +447,229 @@ paymentsRouter.get(
       return res.status(400).json({ error: "Invalid Stellar address" });
     }
 
-    const records = await fetchPaymentEvents(address, sort);
-    const total = records.length;
-    const start = (page - 1) * limit;
-    const paginated = records.slice(start, start + limit);
+    try {
+      const records = (await fetchPaymentEvents(address, sort, days)).filter((record) => {
+        const timestamp = new Date(record.date).getTime();
+        const matchesPlan = !plan || record.plan === plan || (plan === "Usage" && record.plan === "UsageBased");
+        const matchesStatus = !status || record.status === status;
+        const haystack = `${record.txHash} ${record.meterId}`.toLowerCase();
+        return (!from || timestamp >= from) && (!to || timestamp <= to) && (min === undefined || record.amountXlm >= min) && (max === undefined || record.amountXlm <= max) && matchesPlan && matchesStatus && (!query || haystack.includes(query));
+      });
 
-    return res.json({
-      payments: paginated,
-      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-    });
+      // Seek to the record immediately after the cursor. A cursor that no
+      // longer matches anything (e.g. it aged out of the `days` window)
+      // is treated as "start from the top" rather than an error, so a
+      // stale bookmark degrades gracefully instead of 400ing.
+      let startIndex = 0;
+      if (cursor) {
+        const idx = records.findIndex((r) => r.cursor === cursor);
+        if (idx >= 0) startIndex = idx + 1;
+      }
+
+      const paginated = records.slice(startIndex, startIndex + limit);
+      const hasMore = startIndex + limit < records.length;
+      const nextCursor = hasMore ? paginated[paginated.length - 1]?.cursor ?? null : null;
+
+      return res.json({
+        payments: paginated,
+        pagination: { limit, count: paginated.length, hasMore, nextCursor },
+      });
+    } catch (err: any) {
+      logger.error("payments route error:", err);
+      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
+    }
+  }),
+);
+
+/**
+ * GET /api/payments/history/:address?from=<unix_ts>&to=<unix_ts>&limit=50&page=1
+ *
+ * Returns payment history for a given address with optional date range filtering.
+ * from/to are UNIX timestamps converted to ledger numbers.
+ * limit is capped at 100 per page (Issue #747 — a caller requesting a huge
+ * page size on an account with thousands of transactions was forcing the
+ * full result set to be serialized to JSON in one response, causing
+ * multi-second responses and, at large enough volumes, OOM crashes).
+ * address must be a valid 56-char Stellar public key.
+ */
+paymentsRouter.get(
+  "/history/:address",
+  asyncHandler(async (req, res) => {
+    const rawAddress = req.params.address;
+    const address = Array.isArray(rawAddress) ? rawAddress[0] : rawAddress;
+
+    // Validate address format (56 chars, Stellar public key)
+    if (typeof address !== "string" || address.length !== 56 || !address.startsWith("G")) {
+      return res.status(400).json({ error: "Invalid Stellar address format" });
+    }
+
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(address);
+    } catch {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+
+    const from = req.query.from ? Number(req.query.from) : undefined;
+    const to = req.query.to ? Number(req.query.to) : undefined;
+    const limit = Math.min(100, Math.max(1, parseInt((req.query.limit as string) ?? "50", 10)));
+    const page = Math.max(1, parseInt((req.query.page as string) ?? "1", 10));
+
+    // Validate timestamps
+    if ((from && !Number.isFinite(from)) || (to && !Number.isFinite(to))) {
+      return res.status(400).json({ error: "Invalid from/to timestamps" });
+    }
+
+    try {
+      const fromLedger = from ? await stellarService.timestampToLedger(from) : undefined;
+      const toLedger = to ? await stellarService.timestampToLedger(to) : undefined;
+
+      const events = await fetchPaymentEventsWithDateRange(address, fromLedger, toLedger);
+      
+      const total = events.length;
+      const start = (page - 1) * limit;
+      const paginated = events.slice(start, start + limit);
+
+      return res.json({
+        data: paginated,
+        address,
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+      });
+    } catch (err: any) {
+      logger.error("payments history route error:", err);
+      if (err?.code === 'RPC_ERROR' || err?.isRpcError) {
+        return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+      }
+      return res.status(500).json({ error: err.message ?? "Failed to fetch payment history" });
+    }
   }),
 );
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+export async function fetchPaymentEventsWithDateRange(
+  address: string,
+  startLedger?: number,
+  endLedger?: number,
+): Promise<PaymentRecord[]> {
+  // Query Soroban RPC for contract events within optional ledger range
+  try {
+    const EVT_NS = StellarSdk.xdr.ScVal.scvSymbol("solargrid").toXDR("base64");
+    const ACTION = StellarSdk.xdr.ScVal.scvSymbol("payment").toXDR("base64");
+
+    const response = await (server as any).getEvents({
+      startLedger: startLedger ?? 1,
+      endLedger: endLedger,
+      filters: [
+        {
+          type: "contract",
+          contractIds: [CONTRACT_ID],
+          topics: [
+            [EVT_NS, ACTION],
+          ],
+        },
+      ],
+      limit: 1000,
+    });
+
+    const events: PaymentRecord[] = [];
+
+    for (const event of response?.events ?? []) {
+      try {
+        const record = parsePaymentEvent(event, address);
+        if (record) events.push(record);
+      } catch {
+        // skip malformed events
+      }
+    }
+
+    // Sort by date descending (most recent first)
+    events.sort((a, b) => {
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+
+    return events;
+  } catch (err: any) {
+    const rpcErr: any = new Error(err.message ?? "RPC request failed");
+    rpcErr.isRpcError = true;
+    throw rpcErr;
+  }
+}
+
 async function fetchPaymentEvents(
   address: string,
   sort: "asc" | "desc",
+  days = 30,
 ): Promise<PaymentRecord[]> {
-  // Query Soroban RPC for contract events
-  const now = Math.floor(Date.now() / 1000);
-  // Soroban events are keyed by ledger sequence; use a wide window (last ~30 days)
-  const response = await (server as any).getEvents({
-    startLedger: 1,
-    filters: [
-      {
-        type: "contract",
-        contractIds: [CONTRACT_ID],
-        topics: [
-          // topic[0] = "payment" symbol (emitted by make_payment)
-          [StellarSdk.xdr.ScVal.scvSymbol("payment").toXDR("base64")],
-        ],
-      },
-    ],
-    limit: 1000,
-  });
+  // Query Soroban RPC for contract events within the requested day window
+  try {
+    const EVT_NS = StellarSdk.xdr.ScVal.scvSymbol("solargrid").toXDR("base64");
+    const ACTION = StellarSdk.xdr.ScVal.scvSymbol("payment").toXDR("base64");
 
-  const events: PaymentRecord[] = [];
+    const latestLedgerResp = await (server as any).getLatestLedger();
+    const latestLedger = latestLedgerResp.sequence;
+    const startLedger = Math.max(1, latestLedger - Math.floor((days * 24 * 60 * 60) / 6));
 
-  for (const event of response?.events ?? []) {
-    try {
-      const record = parsePaymentEvent(event, address);
-      if (record) events.push(record);
-    } catch {
-      // skip malformed events
+    const response = await (server as any).getEvents({
+      startLedger,
+      filters: [
+        {
+          type: "contract",
+          contractIds: [CONTRACT_ID],
+          topics: [
+            [EVT_NS, ACTION],
+          ],
+        },
+      ],
+      limit: 1000,
+    });
+
+    const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+    const events: PaymentRecord[] = [];
+
+    for (const event of response?.events ?? []) {
+      try {
+        const record = parsePaymentEvent(event, address);
+        if (record && new Date(record.date).getTime() >= cutoff) events.push(record);
+      } catch {
+        // skip malformed events
+      }
     }
+
+    events.sort((a, b) => {
+      const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
+      return sort === "asc" ? diff : -diff;
+    });
+
+    return events;
+  } catch (err: any) {
+    const rpcErr: any = new Error(err.message ?? "RPC request failed");
+    rpcErr.isRpcError = true;
+    throw rpcErr;
   }
+}
 
-  // Sort by date
-  events.sort((a, b) => {
-    const diff = new Date(a.date).getTime() - new Date(b.date).getTime();
-    return sort === "asc" ? diff : -diff;
-  });
-
-  return events;
+/**
+ * Decode a `PaymentPlan` enum value from `scValToNative`'s output.
+ *
+ * Soroban encodes a data-less enum variant like `Daily` as a one-element
+ * tuple `(Symbol,)`, which `scValToNative` turns into a one-element array
+ * (`["Daily"]`) — not `{ Daily: [] }`. Reading that with `Object.keys(x)[0]`
+ * (as this used to) returns the array index key `"0"`, not the plan name.
+ */
+function decodePaymentPlan(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw) && typeof raw[0] === "string") return raw[0];
+  if (raw && typeof raw === "object") {
+    const key = Object.keys(raw)[0];
+    if (key) return key;
+  }
+  return "Unknown";
 }
 
 function parsePaymentEvent(
@@ -110,57 +677,71 @@ function parsePaymentEvent(
   filterAddress: string,
 ): PaymentRecord | null {
   // Contract events emitted by make_payment have topics:
-  // ("payment", meter_id, payer) and data: (amount, plan)
+  // (EVT_NS, "payment", meter_id) and data: (payer, token_address, amount, plan, memo)
   const topics: StellarSdk.xdr.ScVal[] = (event.topic ?? []).map((t: string) =>
     StellarSdk.xdr.ScVal.fromXDR(t, "base64"),
   );
 
   if (topics.length < 3) return null;
 
-  const payerVal = topics[2];
-  const payer =
-    payerVal.switch().name === "scvAddress"
-      ? StellarSdk.StrKey.encodeEd25519PublicKey(
-          payerVal.address().accountId().ed25519(),
-        )
-      : null;
-
-  if (!payer || payer !== filterAddress) return null;
-
-  const meterVal = topics[1];
+  // topics[2] = meter_id (subject)
+  const meterVal = topics[2];
   const meterId =
     meterVal.switch().name === "scvSymbol"
       ? meterVal.sym().toString()
       : "unknown";
 
-  // data is [amount_i128, plan_map]
+  // data is (payer, token_address, amount, plan, memo)
   const dataXdr = event.value ?? event.data;
   let amountXlm = 0;
   let plan = "Unknown";
+  let payer: string | null = null;
+  // Issue #766: memo is an Option<String> on the contract side — absent
+  // (void) decodes as undefined/null here, present as a plain string.
+  let memo: string | undefined;
 
   if (dataXdr) {
     try {
       const dataVal = StellarSdk.xdr.ScVal.fromXDR(dataXdr, "base64");
-      const native = StellarSdk.scValToNative(dataVal);
-      if (Array.isArray(native) && native.length >= 2) {
-        amountXlm = Number(native[0]) / 10_000_000;
-        plan = Object.keys(native[1])[0] ?? "Unknown";
+      const native = StellarSdk.scValToNative(dataVal) as any[];
+      if (Array.isArray(native) && native.length >= 4) {
+        // data[0] = payer address, data[2] = amount, data[3] = plan
+        const payerNative = native[0];
+        payer =
+          typeof payerNative === "string"
+            ? payerNative
+            : payerNative?.toString() ?? null;
+        amountXlm = Number(native[2]) / 10_000_000;
+        plan = decodePaymentPlan(native[3]);
+        if (native.length >= 5 && typeof native[4] === "string") {
+          memo = native[4];
+        }
       }
     } catch {
       // leave defaults
     }
   }
 
-  // Ledger close time from event
+  if (!payer || payer !== filterAddress) return null;
+
   const date = event.ledgerClosedAt
     ? new Date(event.ledgerClosedAt).toISOString()
     : new Date().toISOString();
 
-  return {
-    txHash: event.txHash ?? event.id ?? "",
+  const txHash = event.txHash ?? event.id ?? "";
+  const record: PaymentRecord = {
+    txHash,
     date,
     meterId,
     amountXlm,
     plan,
+    status: "Completed",
+    ...(memo ? { memo } : {}),
+    cursor: event.pagingToken ?? event.id ?? `${date}:${meterId}`,
   };
+  publishRealtime({ type: "paymentConfirmed", key: filterAddress, payload: { ...record, address: filterAddress, confirmedAt: date } });
+  return record;
 }
+
+// suppress unused import warning — horizonServer reserved for fallback
+void horizonServer;

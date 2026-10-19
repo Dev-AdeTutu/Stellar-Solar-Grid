@@ -1,0 +1,27 @@
+backend:
+  - changed-files:
+    - any-glob-to-any-file: 'backend/**'
+
+frontend:
+  - changed-files:
+    - any-glob-to-any-file: 'frontend/**'
+
+contract:
+  - changed-files:
+    - any-glob-to-any-file: 'contracts/**'
+
+infra:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'docker-compose.yml'
+      - '**/Dockerfile'
+      - '.github/workflows/**'
+      - 'nginx.conf'
+      - 'mosquitto.conf'
+
+documentation:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'README.md'
+      - 'docs/**'
+      - 'CONTRIBUTING.md'

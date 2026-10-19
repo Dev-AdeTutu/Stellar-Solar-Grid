@@ -1,0 +1,8 @@
+# ZAP rules to ignore/warn false positives
+id	action	parameter	evidence	comment
+10020	IGNORE		 	API endpoints, no frame embedding risk — X-Frame-Options not applicable
+10021	IGNORE		 	API returns JSON, not user-facing HTML — X-Content-Type-Options not applicable
+10035	IGNORE		 	HTTP-only local dev environment — Strict-Transport-Security not applicable
+10038	IGNORE		 	REST API, not a browser app endpoint — Content Security Policy not applicable
+10063	IGNORE		 	REST API endpoint, not applicable — Feature Policy header not needed
+10096	WARN		 	Timestamp values may appear in error responses — low risk for an API

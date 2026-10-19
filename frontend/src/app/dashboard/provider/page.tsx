@@ -1,13 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
+import { MeterStatusBadge } from "@/components/MeterStatusBadge";
+import { SkeletonCard } from "@/components/SkeletonCard";
 import { Skeleton } from "@/components/Skeleton";
 import { useToast } from "@/components/ToastProvider";
 import { getAllMeters, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { MeterComparison } from "@/components/MeterComparison";
+import { env } from "@/lib/env";
 
-const API = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001";
+const API = env.NEXT_PUBLIC_BACKEND_URL;
 
 /** Stellar public keys: G + 55 base32 chars (56 total) */
 function isValidStellarAddress(addr: string): boolean {
@@ -16,30 +23,73 @@ function isValidStellarAddress(addr: string): boolean {
 
 type Status = "idle" | "loading";
 
+export const dynamic = "force-dynamic";
+
 export default function ProviderDashboardPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderDashboardPageContent />
+    </Suspense>
+  );
+}
+
+function ProviderDashboardPageContent() {
   const { showToast } = useToast();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const querySearch = searchParams.get("q") ?? "";
+
   const [meterId, setMeterId] = useState("");
   const [ownerAddress, setOwnerAddress] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [deactivatingId, setDeactivatingId] = useState<string | null>(null);
-  
+  const [search, setSearch] = useState(querySearch);
+
   const [meters, setMeters] = useState<MeterData[]>([]);
   const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [showComparison, setShowComparison] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const addressInvalid = ownerAddress.trim().length > 0 && !isValidStellarAddress(ownerAddress.trim());
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key !== "/") return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
-  const EXPLORER_BASE = import.meta.env.VITE_NETWORK_PASSPHRASE?.includes("Test")
+  const addressInvalid =
+    ownerAddress.trim().length > 0 && !isValidStellarAddress(ownerAddress.trim());
+
+  // Sync search to URL and filter meters
+  useEffect(() => {
+    if (search) {
+      router.push(`?q=${encodeURIComponent(search)}`, { scroll: false } as any);
+    } else if (querySearch) {
+      router.push("", { scroll: false } as any);
+    }
+  }, [search, querySearch, router]);
+
+  const filteredMeters = meters.filter((m) => m.owner.toLowerCase().includes(search.toLowerCase()));
+
+  const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
 
   const fetchMeters = useCallback(async () => {
     setFetching(true);
+    setFetchError(null);
     try {
       const allMeters = await getAllMeters();
       setMeters(allMeters);
     } catch (err: unknown) {
       console.error("Failed to fetch meters:", err);
-      // Don't show toast on initial load to avoid noise, but maybe we should
+      setFetchError(err instanceof Error ? err.message : "Failed to fetch meters");
     } finally {
       setFetching(false);
     }
@@ -66,7 +116,7 @@ export default function ProviderDashboardPage() {
         actionHref: `${EXPLORER_BASE}/${data.tx_hash}`,
         actionLabel: "View transaction",
       });
-      fetchMeters(); // Refresh list
+      fetchMeters();
     } catch (err: unknown) {
       showToast({
         variant: "error",
@@ -112,7 +162,7 @@ export default function ProviderDashboardPage() {
       });
       setMeterId("");
       setOwnerAddress("");
-      fetchMeters(); // Refresh list
+      fetchMeters();
     } catch (err: unknown) {
       showToast({
         variant: "error",
@@ -129,13 +179,21 @@ export default function ProviderDashboardPage() {
   }
 
   return (
-    <>
+    <ErrorBoundary>
       <Navbar />
-      <main className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
+      <main id="main-content" tabIndex={-1} className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
         <div className="w-full max-w-md">
-          <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">
-            Provider Dashboard
-          </h1>
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow">
+              Provider Dashboard
+            </h1>
+            <Link
+              href="/dashboard/provider/analytics"
+              className="shrink-0 text-xs font-medium rounded-lg border border-white/10 bg-solar-accent px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+            >
+              Revenue Analytics →
+            </Link>
+          </div>
           <p className="text-gray-400 text-sm mb-6">
             Register new smart meters on the Stellar blockchain.
           </p>
@@ -146,13 +204,14 @@ export default function ProviderDashboardPage() {
           >
             {/* Meter ID */}
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-1.5">
-                Meter ID
-              </label>
+              <label className="block text-sm font-medium text-gray-300 mb-1.5">Meter ID</label>
               <input
                 type="text"
                 value={meterId}
-                onChange={(e) => { setMeterId(e.target.value); reset(); }}
+                onChange={(e) => {
+                  setMeterId(e.target.value);
+                  reset();
+                }}
                 placeholder="e.g. METER5"
                 required
                 disabled={status === "loading"}
@@ -168,7 +227,10 @@ export default function ProviderDashboardPage() {
               <input
                 type="text"
                 value={ownerAddress}
-                onChange={(e) => { setOwnerAddress(e.target.value); reset(); }}
+                onChange={(e) => {
+                  setOwnerAddress(e.target.value);
+                  reset();
+                }}
                 placeholder="G…"
                 required
                 disabled={status === "loading"}
@@ -196,24 +258,108 @@ export default function ProviderDashboardPage() {
           </form>
         </div>
 
+        {/* Stats row */}
+        <div className="w-full max-w-5xl">
+          {(() => {
+            const now = Date.now() / 1000;
+            const activeCount = meters.filter((m) => {
+              const exp = Number(m.expires_at);
+              return m.active && !(exp !== Number.MAX_SAFE_INTEGER && exp > 0 && now >= exp);
+            }).length;
+            const inactiveCount = meters.length - activeCount;
+            return (
+              <div className="grid grid-cols-3 gap-4 mb-8">
+                {[
+                  { label: "Total Meters", value: meters.length },
+                  { label: "Active", value: activeCount, color: "text-green-400" },
+                  { label: "Inactive", value: inactiveCount, color: "text-red-400" },
+                ].map(({ label, value, color }) => (
+                  <div
+                    key={label}
+                    className="rounded-xl border border-white/10 bg-solar-accent px-5 py-4 text-center"
+                  >
+                    <p className="text-xs uppercase tracking-wider text-gray-500 mb-1">{label}</p>
+                    <p className={`text-2xl font-bold ${color ?? "text-white"} flex justify-center`}>
+                      {fetching && meters.length === 0 ? (
+                        <Skeleton width="2.5rem" height={28} />
+                      ) : (
+                        value
+                      )}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
+
         {/* Meters Table */}
         <div className="w-full max-w-5xl">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-white">Registered Meters</h2>
-            <button 
-              onClick={fetchMeters}
-              disabled={fetching}
-              className="text-xs text-gray-400 hover:text-solar-yellow transition flex items-center gap-1"
-            >
-              {fetching ? "Refreshing..." : "↻ Refresh List"}
-            </button>
+            <div className="flex items-center gap-2">
+              {meters.length >= 2 && (
+                <button
+                  onClick={() => setShowComparison(!showComparison)}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+                    showComparison
+                      ? "bg-solar-yellow text-solar-dark"
+                      : "bg-solar-accent text-gray-300 hover:bg-solar-accent/80"
+                  }`}
+                >
+                  {showComparison ? "Hide" : "Compare"}
+                </button>
+              )}
+              <button
+                onClick={fetchMeters}
+                disabled={fetching}
+                className="text-xs text-gray-400 hover:text-solar-yellow transition flex items-center gap-1"
+              >
+                {fetching ? "Refreshing..." : "↻ Refresh List"}
+              </button>
+            </div>
           </div>
 
-          <div className="rounded-xl border border-white/10 bg-solar-accent overflow-hidden">
+          {/* Comparison View */}
+          {showComparison && (
+            <div className="mb-6">
+              <MeterComparison meters={filteredMeters} isLoading={fetching} />
+            </div>
+          )}
+
+          {/* Search Input — focus with "/" shortcut */}
+          {!showComparison && (
+            <div className="relative mb-4">
+              <input
+                ref={searchInputRef}
+                type="search"
+                placeholder="Search by owner address… (press / to focus)"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setSearch("");
+                }}
+                className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          )}
+
+          {!showComparison && (
+            <div className="rounded-xl border border-white/10 bg-solar-accent overflow-hidden">
             <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
               <table className="w-full text-left text-sm text-gray-300">
                 <thead className="border-b border-white/10 bg-white/5 text-xs uppercase tracking-wider text-gray-400">
                   <tr>
+                    <th className="px-6 py-4 font-semibold">Meter ID</th>
                     <th className="px-6 py-4 font-semibold">Owner</th>
                     <th className="px-6 py-4 font-semibold">Status</th>
                     <th className="px-6 py-4 font-semibold">Plan</th>
@@ -223,50 +369,88 @@ export default function ProviderDashboardPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5">
-                  {fetching && meters.length === 0 ? (
+                  {fetchError ? (
+                    <tr>
+                      <td colSpan={7} className="px-6 py-12 text-center text-red-500">
+                        {fetchError}
+                      </td>
+                    </tr>
+                  ) : fetching && meters.length === 0 ? (
                     <>
-                      {[1, 2, 3].map((i) => (
+                      {[1, 2, 3, 4, 5].map((i) => (
                         <tr key={i}>
-                          <td className="px-6 py-4"><Skeleton width="140px" height={14} /></td>
-                          <td className="px-6 py-4"><Skeleton width="60px" height={18} /></td>
-                          <td className="px-6 py-4"><Skeleton width="70px" height={14} /></td>
-                          <td className="px-6 py-4"><Skeleton width="50px" height={14} /></td>
-                          <td className="px-6 py-4"><Skeleton width="80px" height={14} /></td>
-                          <td className="px-6 py-4"><Skeleton width="80px" height={28} /></td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={14} />
+                          </td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={14} />
+                          </td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={18} />
+                          </td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={14} />
+                          </td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={14} />
+                          </td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={14} />
+                          </td>
+                          <td className="px-6 py-4">
+                            <SkeletonCard height={28} />
+                          </td>
                         </tr>
                       ))}
                     </>
-                  ) : meters.length === 0 ? (
+                  ) : filteredMeters.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
-                        No meters found.
+                      <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                        {search ? "No meters match your search" : "No meters found."}
                       </td>
                     </tr>
                   ) : (
-                    meters.map((m, i) => {
+                    filteredMeters.map((m, i) => {
                       const expiresAt = Number(m.expires_at);
-                      const isExpired = expiresAt !== Number.MAX_SAFE_INTEGER && expiresAt > 0 && Date.now() / 1000 >= expiresAt;
+                      const isExpired =
+                        expiresAt !== Number.MAX_SAFE_INTEGER &&
+                        expiresAt > 0 &&
+                        Date.now() / 1000 >= expiresAt;
                       const isActive = m.active && !isExpired;
-                      
+
                       return (
                         <tr key={i} className="hover:bg-white/[0.02] transition">
+                          <td className="px-6 py-4">
+                            <div className="flex items-center gap-2 font-mono text-xs text-solar-yellow">
+                              <span>{m.meter_id ?? "—"}</span>
+                              {m.meter_id && (
+                                <button
+                                  aria-label={`Copy meter ID ${m.meter_id}`}
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(m.meter_id!);
+                                    showToast({ variant: "success", title: "Meter ID copied" });
+                                  }}
+                                  className="text-gray-400 hover:text-solar-yellow transition shrink-0"
+                                >
+                                  ⧉
+                                </button>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-6 py-4 font-mono text-xs">
                             {m.owner.slice(0, 8)}...{m.owner.slice(-8)}
                           </td>
                           <td className="px-6 py-4">
-                            <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                              isActive ? "bg-green-500/10 text-green-500" : "bg-red-500/10 text-red-500"
-                            }`}>
-                              <span className={`h-1 w-1 rounded-full ${isActive ? "bg-green-500" : "bg-red-500"}`} />
-                              {isActive ? "Active" : "Inactive"}
-                            </span>
+                            <MeterStatusBadge active={m.active} expiresAt={expiresAt} />
                           </td>
                           <td className="px-6 py-4 text-xs font-medium">{m.plan}</td>
                           <td className="px-6 py-4 text-xs">
                             {Number(m.units_used) / 1000} <span className="text-gray-500">kWh</span>
                           </td>
                           <td className="px-6 py-4 text-xs text-gray-400">
-                            {expiresAt === Number.MAX_SAFE_INTEGER ? "Never" : new Date(expiresAt * 1000).toLocaleDateString()}
+                            {expiresAt === Number.MAX_SAFE_INTEGER
+                              ? "Never"
+                              : new Date(expiresAt * 1000).toLocaleDateString()}
                           </td>
                           <td className="px-6 py-4">
                             {isActive && (
@@ -287,9 +471,9 @@ export default function ProviderDashboardPage() {
               </table>
             </div>
           </div>
+          )}
         </div>
       </main>
-    </>
+    </ErrorBoundary>
   );
 }
-

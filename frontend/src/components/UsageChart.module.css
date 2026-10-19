@@ -1,9 +1,12 @@
 .chartContainer {
   min-height: 12rem;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 .legendStyle {
-  fontSize: "11px";
-  color: "#9ca3af";
-  paddingTop: "8px";
+  font-size: 11px;
+  color: var(--color-text-secondary, #9ca3af);
+  padding-top: 8px;
 }
