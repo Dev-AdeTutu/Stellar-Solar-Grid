@@ -39,6 +39,11 @@ export type AuditEntry = {
   ip: string;
   /** Optional: admin key identity hint (last 4 chars) for multi-key setups */
   keyHint: string;
+  /**
+   * Tenant (provider) the action was performed for. Used to enforce
+   * row-level isolation of audit records between providers (#1049).
+   */
+  providerId?: string | null;
 };
 
 // ── File sink (optional) ──────────────────────────────────────────────────────
@@ -102,6 +107,8 @@ export function buildAuditEntry(
     headers: Record<string, string | string[] | undefined>;
     socket?: { remoteAddress?: string };
     ip?: string;
+    /** Tenant context resolved by the tenant-isolation middleware (#1049). */
+    tenant?: { providerId?: string | null } | null;
   },
 ): AuditEntry {
   // Prefer x-forwarded-for (set by reverse proxies) over socket IP
@@ -124,6 +131,7 @@ export function buildAuditEntry(
     params: req.body ?? null,
     ip,
     keyHint,
+    providerId: req.tenant?.providerId ?? null,
   };
 }
 
@@ -140,6 +148,13 @@ export interface AuditQueryOptions {
   limit?: number;
   /** Number of entries to skip (for pagination). Defaults to 0. */
   offset?: number;
+  /**
+   * Tenant (provider) whose audit records may be read. When set, only
+   * entries belonging to this provider are returned — cross-tenant audit
+   * access is impossible (#1049). When omitted, no tenant filtering is
+   * applied (internal/system callers only).
+   */
+  providerId?: string | null;
 }
 
 /**
@@ -153,9 +168,10 @@ export interface AuditQueryOptions {
 export async function queryAuditLog(
   opts: AuditQueryOptions = {},
 ): Promise<{ entries: (AuditEntry & { audit?: true })[]; total: number }> {
-  const { start, end, eventType, limit = 500, offset = 0 } = opts;
+  const { start, end, eventType, limit = 500, offset = 0, providerId } = opts;
   const startMs = start ? new Date(start).getTime() : -Infinity;
   const endMs = end ? new Date(end).getTime() : Infinity;
+  const tenantScoped = providerId !== undefined;
 
   if (!fs.existsSync(AUDIT_LOG_PATH)) {
     return { entries: [], total: 0 };
@@ -181,6 +197,10 @@ export async function queryAuditLog(
         const ts = new Date(record.timestamp).getTime();
         if (ts < startMs || ts > endMs) return;
         if (eventType && !record.path.includes(eventType)) return;
+        // Row-level tenant isolation: never leak another provider's records.
+        if (tenantScoped && (record.providerId ?? null) !== (providerId ?? null)) {
+          return;
+        }
 
         matching.push(record);
       } catch {
@@ -196,19 +216,35 @@ export async function queryAuditLog(
 
 /**
  * Serialise audit entries as a CSV string.
- * Columns: timestamp, method, path, ip, keyHint, params
+ * Columns: timestamp, method, path, ip, keyHint, providerId, params
  *
  * Closes #744.
  */
 export function auditEntriesToCsv(
   entries: (AuditEntry & { audit?: true })[],
 ): string {
-  const header = "timestamp,method,path,ip,keyHint,params";
+  const header = "timestamp,method,path,ip,keyHint,providerId,params";
   const rows = entries.map((e) => {
     const params = JSON.stringify(e.params ?? null).replace(/"/g, '""');
-    return `${e.timestamp},${e.method},${e.path},${e.ip},${e.keyHint},"${params}"`;
+    const providerId = e.providerId ?? "";
+    return `${e.timestamp},${e.method},${e.path},${e.ip},${e.keyHint},${providerId},"${params}"`;
   });
   return [header, ...rows].join("\n");
+}
+
+/**
+ * Filter audit entries down to a single tenant (provider).
+ *
+ * Used by export endpoints to guarantee that a provider can only ever
+ * download its own audit trail (#1049). When `providerId` is undefined the
+ * entries are returned unchanged (internal/system callers only).
+ */
+export function filterAuditEntriesByTenant(
+  entries: (AuditEntry & { audit?: true })[],
+  providerId?: string | null,
+): (AuditEntry & { audit?: true })[] {
+  if (providerId === undefined) return entries;
+  return entries.filter((e) => (e.providerId ?? null) === (providerId ?? null));
 }
 
 // ── Energy data export (closes #905) ─────────────────────────────────────────

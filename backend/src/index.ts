@@ -128,6 +128,9 @@ import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
 import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
 import { shadowsRouter } from "./routes/shadows.js";
 import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
+// #1046: federated learning coordinator
+import { federatedRouter } from "./routes/federated.js";
+import { startFederatedCoordinator, stopFederatedCoordinator } from "./lib/federatedLearning.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -263,6 +266,9 @@ app.use("/api/rate-limits", rateLimitTiersRouter);
 app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
 // #1082: 7-day energy forecasting dashboard
 app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
+// #1046: federated learning (local training + privacy-preserving aggregation)
+app.use("/api/federated", writeLimiter, federatedRouter);
+startFederatedCoordinator();
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
@@ -397,7 +403,7 @@ httpServer.listen(PORT, () => {
   startRecommendationWorker();
 });
 
-export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner };
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);

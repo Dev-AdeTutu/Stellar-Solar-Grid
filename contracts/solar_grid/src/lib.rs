@@ -7,6 +7,7 @@ use soroban_sdk::{
     BytesN, Map, String, Symbol, TryFromVal, Val, Vec,
 };
 
+mod carbon;
 mod certificates;
 mod commons;
 mod insurance;
@@ -22,6 +23,11 @@ mod load_shedding;
 mod p2p_trading;
 #[cfg(test)]
 mod test_assets_warranty;
+pub use carbon::{
+    CarbonCredit, CarbonListing, CarbonOrder, CarbonOrderSide, CarbonOrderStatus, CarbonProject,
+    CarbonTrade, CarbonVerification, CarbonVerificationStatus, CarbonConfig, CarbonIndexPrice,
+    CARBON_PRICE_SCALE, MAX_CARBON_PAGE, MAX_CARBON_QUANTITY,
+};
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use commons::{
     CommonsConflict, CommonsMember, CommonsResource, CommonsRule, CommonsSanction,
@@ -161,6 +167,30 @@ pub enum ContractError {
     ReputationNotFound = 75,
     /// A DID string is empty or exceeds MAX_DID_LEN (#1070).
     InvalidDid = 76,
+    /// Carbon credit marketplace entrypoints used before `configure_carbon` (#1043).
+    CarbonNotConfigured = 77,
+    /// No carbon credit exists with the given id (#1043).
+    CarbonCreditNotFound = 78,
+    /// The carbon credit has not been verified/certified yet (#1043).
+    CarbonNotVerified = 79,
+    /// The carbon credit has been retired and can no longer trade (#1043).
+    CarbonCreditRetired = 80,
+    /// No carbon order exists with the given id (#1043).
+    CarbonOrderNotFound = 81,
+    /// The carbon order is not open (already filled or cancelled) (#1043).
+    CarbonOrderNotOpen = 82,
+    /// No carbon trade exists with the given id (#1043).
+    CarbonTradeNotFound = 83,
+    /// Carbon credit quantity is zero, negative or exceeds the cap (#1043).
+    InvalidCarbonQuantity = 84,
+    /// Carbon credit price is zero or negative (#1043).
+    InvalidCarbonPrice = 85,
+    /// The caller does not own the carbon credit being listed (#1043).
+    CarbonNotOwner = 86,
+    /// The carbon credit generation data is missing or invalid (#1043).
+    InvalidCarbonGeneration = 87,
+    /// A carbon verification/certification reference is required (#1043).
+    CarbonVerificationRefMissing = 88,
 }
 
 pub mod algo_market;
@@ -5633,6 +5663,142 @@ impl SolarGridContract {
         member: Address,
     ) -> Result<CommonsMember, ContractError> {
         commons::get_member(&env, resource_id, member)
+    }
+
+    // ── Issue #1043: Carbon credit marketplace ───────────────────────────────
+
+    /// Configure the carbon credit marketplace (fee, verification authority).
+    /// Admin-only.
+    pub fn configure_carbon(
+        env: Env,
+        fee_bps: u32,
+        verifier: Address,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "configure_carbon", "contract")?;
+        carbon::configure(&env, fee_bps, verifier)
+    }
+
+    /// Register a carbon reduction/removal project. Admin-only.
+    pub fn register_carbon_project(
+        env: Env,
+        project_id: String,
+        owner: Address,
+        methodology: String,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "register_carbon_project", "contract")?;
+        carbon::register_project(&env, project_id, owner, methodology)
+    }
+
+    /// Issue carbon credits for verified solar generation. Minting is gated on
+    /// the meter's generation being attested by the configured oracle. The
+    /// credits are minted to the meter owner.
+    pub fn issue_carbon_credits(
+        env: Env,
+        meter_id: String,
+        generation_kwh: i128,
+        project_id: String,
+    ) -> Result<u64, ContractError> {
+        carbon::issue_credits(&env, meter_id, generation_kwh, project_id)
+    }
+
+    /// Verify and certify a carbon credit. Only the configured verifier may
+    /// attest.
+    pub fn verify_carbon_credit(
+        env: Env,
+        verifier: Address,
+        credit_id: u64,
+        certification_ref: String,
+    ) -> Result<(), ContractError> {
+        verifier.require_auth();
+        carbon::verify_credit(&env, verifier, credit_id, certification_ref)
+    }
+
+    /// Retire a carbon credit (permanently remove it from circulation).
+    pub fn retire_carbon_credit(
+        env: Env,
+        owner: Address,
+        credit_id: u64,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+        carbon::retire_credit(&env, owner, credit_id)
+    }
+
+    /// Place a sell (ask) order for carbon credits.
+    pub fn place_carbon_ask(
+        env: Env,
+        seller: Address,
+        credit_id: u64,
+        quantity: i128,
+        price: i128,
+    ) -> Result<u64, ContractError> {
+        seller.require_auth();
+        carbon::place_order(&env, seller, credit_id, quantity, price, CarbonOrderSide::Sell)
+    }
+
+    /// Place a buy (bid) order for carbon credits.
+    pub fn place_carbon_bid(
+        env: Env,
+        buyer: Address,
+        credit_id: u64,
+        quantity: i128,
+        price: i128,
+    ) -> Result<u64, ContractError> {
+        buyer.require_auth();
+        carbon::place_order(&env, buyer, credit_id, quantity, price, CarbonOrderSide::Buy)
+    }
+
+    /// Cancel an open carbon order.
+    pub fn cancel_carbon_order(
+        env: Env,
+        owner: Address,
+        order_id: u64,
+    ) -> Result<(), ContractError> {
+        owner.require_auth();
+        carbon::cancel_order(&env, owner, order_id)
+    }
+
+    /// Fetch a carbon credit by id.
+    pub fn get_carbon_credit(env: Env, credit_id: u64) -> Result<CarbonCredit, ContractError> {
+        carbon::get_credit(&env, credit_id)
+    }
+
+    /// Fetch a carbon order by id.
+    pub fn get_carbon_order(env: Env, order_id: u64) -> Result<CarbonOrder, ContractError> {
+        carbon::get_order(&env, order_id)
+    }
+
+    /// Fetch a carbon trade by id.
+    pub fn get_carbon_trade(env: Env, trade_id: u64) -> Result<CarbonTrade, ContractError> {
+        carbon::get_trade(&env, trade_id)
+    }
+
+    /// Fetch a carbon verification record for a credit.
+    pub fn get_carbon_verification(
+        env: Env,
+        credit_id: u64,
+    ) -> Result<CarbonVerification, ContractError> {
+        carbon::get_verification(&env, credit_id)
+    }
+
+    /// Volume-weighted index price for a carbon credit, in price scale units.
+    pub fn get_carbon_index_price(env: Env, credit_id: u64) -> Result<i128, ContractError> {
+        carbon::index_price(&env, credit_id)
+    }
+
+    /// Paginated view of the open order book for a credit.
+    pub fn get_carbon_order_book(
+        env: Env,
+        credit_id: u64,
+        side: CarbonOrderSide,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<CarbonOrder> {
+        carbon::order_book(&env, credit_id, side, offset, limit)
+    }
+
+    /// Total number of carbon credits issued.
+    pub fn get_carbon_credit_count(env: Env) -> u64 {
+        carbon::credit_count(&env)
     }
 }
 

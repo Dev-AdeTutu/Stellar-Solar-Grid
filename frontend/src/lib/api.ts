@@ -322,3 +322,171 @@ export async function getSeasonalHistory(years?: number): Promise<SeasonalHistor
   const { history } = (await res.json()) as { history: SeasonalHistoryEntry[] };
   return history;
 }
+
+// ---------------------------------------------------------------------------
+// Carbon credit marketplace
+// ---------------------------------------------------------------------------
+
+export interface CarbonListing {
+  id: string;
+  seller: string;
+  amount: number;
+  pricePerCredit: number;
+  currency: string;
+  status: string;
+  verificationStatus: string;
+  createdAt: string;
+  expiresAt?: string;
+}
+
+export interface CarbonIndexPrice {
+  pricePerCredit: number;
+  currency: string;
+  change24h?: number;
+  volume24h?: number;
+  updatedAt: string;
+}
+
+export interface CarbonListingsFilters {
+  status?: string;
+  seller?: string;
+  minPrice?: number;
+  maxPrice?: number;
+}
+
+export interface CarbonIssuanceResult {
+  creditId: string;
+  amount: number;
+  meterId: string;
+  generationKwh: number;
+  issuedAt: string;
+}
+
+export interface CarbonBid {
+  id: string;
+  listingId: string;
+  bidder: string;
+  amount: number;
+  pricePerCredit: number;
+  status: string;
+  createdAt: string;
+}
+
+export interface CarbonPurchase {
+  id: string;
+  listingId: string;
+  buyer: string;
+  amount: number;
+  totalPrice: number;
+  status: string;
+  transactionHash?: string;
+  createdAt: string;
+}
+
+export interface CarbonVerification {
+  creditId: string;
+  status: string;
+  verifier?: string;
+  verifiedAt?: string;
+  notes?: string;
+}
+
+export async function getCarbonListings(
+  filters: CarbonListingsFilters = {},
+): Promise<CarbonListing[]> {
+  const params = new URLSearchParams();
+  if (filters.status) params.set("status", filters.status);
+  if (filters.seller) params.set("seller", filters.seller);
+  if (filters.minPrice !== undefined) params.set("minPrice", String(filters.minPrice));
+  if (filters.maxPrice !== undefined) params.set("maxPrice", String(filters.maxPrice));
+  const queryString = params.toString();
+  const res = await fetch(
+    `${API_BASE}/carbon/listings${queryString ? `?${queryString}` : ""}`,
+  );
+  if (!res.ok) await parseError(res, "Failed to fetch carbon listings");
+  const { listings } = (await res.json()) as { listings: CarbonListing[] };
+  return listings;
+}
+
+export async function getCarbonIndexPrice(): Promise<CarbonIndexPrice> {
+  const res = await fetch(`${API_BASE}/carbon/index-price`);
+  if (!res.ok) await parseError(res, "Failed to fetch carbon index price");
+  const { indexPrice } = (await res.json()) as { indexPrice: CarbonIndexPrice };
+  return indexPrice;
+}
+
+export async function issueCarbonCreditsFromGeneration(
+  meterId: string,
+): Promise<CarbonIssuanceResult> {
+  const res = await fetch(`${API_BASE}/carbon/issue`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ meterId }),
+  });
+  if (!res.ok) await parseError(res, "Failed to issue carbon credits");
+  const { issuance } = (await res.json()) as { issuance: CarbonIssuanceResult };
+  return issuance;
+}
+
+export async function listCarbonCredit(
+  amount: number,
+  pricePerCredit: number,
+): Promise<CarbonListing> {
+  const res = await fetch(`${API_BASE}/carbon/listings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ amount, pricePerCredit }),
+  });
+  if (!res.ok) await parseError(res, "Failed to list carbon credit");
+  const { listing } = (await res.json()) as { listing: CarbonListing };
+  return listing;
+}
+
+export async function placeCarbonBid(
+  listingId: string,
+  amount: number,
+  pricePerCredit: number,
+): Promise<CarbonBid> {
+  const res = await fetch(
+    `${API_BASE}/carbon/listings/${encodeURIComponent(listingId)}/bids`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount, pricePerCredit }),
+    },
+  );
+  if (!res.ok) await parseError(res, "Failed to place carbon bid");
+  const { bid } = (await res.json()) as { bid: CarbonBid };
+  return bid;
+}
+
+export async function purchaseCarbonCredit(
+  listingId: string,
+  amount: number,
+): Promise<CarbonPurchase> {
+  const res = await fetch(
+    `${API_BASE}/carbon/listings/${encodeURIComponent(listingId)}/purchase`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount }),
+    },
+  );
+  if (!res.ok) await parseError(res, "Failed to purchase carbon credit");
+  const { purchase } = (await res.json()) as { purchase: CarbonPurchase };
+  return purchase;
+}
+
+export async function verifyCarbonCredit(
+  creditId: string,
+  notes?: string,
+): Promise<CarbonVerification> {
+  const res = await fetch(`${API_BASE}/carbon/credits/${encodeURIComponent(creditId)}/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes }),
+  });
+  if (!res.ok) await parseError(res, "Failed to verify carbon credit");
+  const { verification } = (await res.json()) as { verification: CarbonVerification };
+  return verification;
+}

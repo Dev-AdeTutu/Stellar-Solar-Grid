@@ -687,4 +687,152 @@ mod batch_and_market_tests {
         let history = client.get_payment_history(&owner);
         assert_eq!(history.len(), 1);
     }
+
+    // ------------------------------------------------------------------
+    // Carbon credit marketplace tests
+    // ------------------------------------------------------------------
+
+    fn setup_carbon_meter(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        token_address: &Address,
+        owner: &Address,
+    ) -> String {
+        let meter_id = String::from_str(env, "SG-2024-CARBON");
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        client.allowlist_add(owner);
+        client.register_meter(&meter_id, owner);
+        token_admin_client.mint(owner, &100_000_000_i128);
+        client.make_payment(meter_id, owner, &10_000_000_i128, &PaymentPlan::Daily);
+        meter_id
+    }
+
+    #[test]
+    fn test_carbon_issuance_from_generation() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &owner);
+
+        // Generation is recorded by the oracle and converted into credits.
+        client.update_usage(&meter_id, &1_000_i128);
+        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+        assert!(issued > 0);
+
+        let credits = client.get_carbon_credits(&owner);
+        assert_eq!(credits, issued);
+        assert_eq!(client.get_carbon_supply(), issued);
+    }
+
+    #[test]
+    fn test_carbon_issuance_requires_verified_meter() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &owner);
+
+        // Unverified meters cannot mint credits.
+        let result = client.try_issue_carbon_credits(&meter_id, &1_000_i128);
+        assert_eq!(result, Err(Ok(Error::CarbonNotVerified)));
+
+        client.verify_carbon_meter(&meter_id);
+        assert!(client.is_carbon_verified(&meter_id));
+        assert!(client.issue_carbon_credits(&meter_id, &1_000_i128) > 0);
+    }
+
+    #[test]
+    fn test_carbon_verification_admin_only() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &owner);
+
+        let attacker = Address::generate(&env);
+        let result = client.try_verify_carbon_meter(&attacker, &meter_id);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_carbon_list_and_buy_settles_trade() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
+        client.verify_carbon_meter(&meter_id);
+        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+
+        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
+        let listing = client.get_carbon_listing(&listing_id).unwrap();
+        assert_eq!(listing.seller, seller);
+        assert_eq!(listing.amount, issued);
+        assert_eq!(listing.price, 100_i128);
+
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&buyer, &1_000_000_i128);
+        client.buy_carbon_credits(&buyer, &listing_id);
+
+        let tc = token::Client::new(&env, &token_address);
+        assert_eq!(tc.balance(&seller), 100_i128 * issued);
+        assert_eq!(client.get_carbon_credits(&buyer), issued);
+        assert_eq!(client.get_carbon_credits(&seller), 0);
+        assert!(client.get_carbon_listing(&listing_id).is_none());
+    }
+
+    #[test]
+    fn test_carbon_bid_and_fill_updates_index_price() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let seller = Address::generate(&env);
+        let bidder = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
+        client.verify_carbon_meter(&meter_id);
+        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+
+        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.mint(&bidder, &1_000_000_i128);
+
+        // A bid above the ask is accepted and settles at the ask price.
+        client.place_carbon_bid(&bidder, &listing_id, &issued, &150_i128);
+        let bids = client.get_carbon_bids(&listing_id);
+        assert_eq!(bids.len(), 1);
+
+        client.fill_carbon_bid(&seller, &listing_id, &0);
+        assert_eq!(client.get_carbon_credits(&bidder), issued);
+        assert_eq!(client.get_carbon_index_price(), 100_i128);
+    }
+
+    #[test]
+    fn test_carbon_cancel_listing_returns_credits() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let seller = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
+        client.verify_carbon_meter(&meter_id);
+        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+
+        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
+        assert_eq!(client.get_carbon_credits(&seller), 0);
+
+        client.cancel_carbon_listing(&seller, &listing_id);
+        assert_eq!(client.get_carbon_credits(&seller), issued);
+        assert!(client.get_carbon_listing(&listing_id).is_none());
+    }
+
+    #[test]
+    fn test_carbon_cancel_listing_non_seller_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let seller = Address::generate(&env);
+        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
+        client.verify_carbon_meter(&meter_id);
+        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
+
+        let attacker = Address::generate(&env);
+        let result = client.try_cancel_carbon_listing(&attacker, &listing_id);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_carbon_listing_requires_balance() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let seller = Address::generate(&env);
+        let result = client.try_list_carbon_credits(&seller, &1_000_i128, &100_i128);
+        assert_eq!(result, Err(Ok(Error::InsufficientCarbonCredits)));
+    }
 }

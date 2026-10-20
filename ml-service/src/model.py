@@ -363,6 +363,141 @@ class LoadForecastingModel:
         
         print(f"Models loaded from {model_dir}")
 
+    def get_weights(self, horizon: int) -> List[np.ndarray]:
+        """
+        Export the weights of a horizon model as a list of numpy arrays.
+
+        This is used by the federated learning coordinator to collect local
+        model updates from meters without requiring access to raw data.
+
+        Args:
+            horizon: Prediction horizon in hours.
+
+        Returns:
+            List of weight arrays for the model.
+        """
+        if horizon not in self.models:
+            raise ValueError(f"No model trained for horizon {horizon}h")
+        return [w.copy() for w in self.models[horizon].get_weights()]
+
+    def set_weights(self, horizon: int, weights: List[np.ndarray]):
+        """
+        Apply a list of weight arrays to a horizon model.
+
+        Used by meters to load the aggregated global model after a federated
+        learning round.
+
+        Args:
+            horizon: Prediction horizon in hours.
+            weights: List of weight arrays matching the model architecture.
+        """
+        if horizon not in self.models:
+            raise ValueError(f"No model trained for horizon {horizon}h")
+        self.models[horizon].set_weights(weights)
+
+    def export_weights_vector(self, horizon: int) -> np.ndarray:
+        """
+        Flatten a horizon model's weights into a single 1-D vector.
+
+        The flat vector is the wire format exchanged with the federated
+        learning coordinator for aggregation.
+
+        Args:
+            horizon: Prediction horizon in hours.
+
+        Returns:
+            Flattened weight vector.
+        """
+        weights = self.get_weights(horizon)
+        return np.concatenate([w.flatten() for w in weights]).astype(np.float32)
+
+    def import_weights_vector(self, horizon: int, vector: np.ndarray):
+        """
+        Apply a flat weight vector to a horizon model.
+
+        The vector is split back into per-layer arrays using the shapes of the
+        current model weights.
+
+        Args:
+            horizon: Prediction horizon in hours.
+            vector: Flattened weight vector produced by
+                :meth:`export_weights_vector` or by the coordinator's
+                aggregation.
+        """
+        if horizon not in self.models:
+            raise ValueError(f"No model trained for horizon {horizon}h")
+
+        model = self.models[horizon]
+        reference = model.get_weights()
+        vector = np.asarray(vector, dtype=np.float32).flatten()
+
+        expected = sum(w.size for w in reference)
+        if vector.size != expected:
+            raise ValueError(
+                f"Weight vector size mismatch for horizon {horizon}h: "
+                f"expected {expected}, got {vector.size}"
+            )
+
+        new_weights = []
+        offset = 0
+        for ref in reference:
+            size = ref.size
+            new_weights.append(
+                vector[offset:offset + size].reshape(ref.shape).copy()
+            )
+            offset += size
+
+        model.set_weights(new_weights)
+
+    def evaluate_weights(
+        self,
+        horizon: int,
+        weights: List[np.ndarray],
+        df: pd.DataFrame,
+        target_column: str = 'load'
+    ) -> Dict[str, float]:
+        """
+        Evaluate a candidate set of weights on local data without mutating
+        the current model.
+
+        The coordinator uses this to score the aggregated global model on a
+        validation set before broadcasting it to meters.
+
+        Args:
+            horizon: Prediction horizon in hours.
+            weights: Candidate weight arrays (e.g. aggregated global weights).
+            df: Validation dataframe with features and target.
+            target_column: Name of target column.
+
+        Returns:
+            Dictionary with loss, mae, mape and accuracy metrics.
+        """
+        if horizon not in self.models:
+            raise ValueError(f"No model trained for horizon {horizon}h")
+
+        model = self.models[horizon]
+        original_weights = model.get_weights()
+        try:
+            model.set_weights(weights)
+
+            X = df[self.feature_names].values
+            y = df[target_column].values
+
+            X_scaled = self.scaler_X.transform(X)
+            y_scaled = self.scaler_y.transform(y.reshape(-1, 1)).flatten()
+
+            X_seq, y_seq = self.prepare_sequences(X_scaled, y_scaled, horizon)
+
+            loss, mae, mape = model.evaluate(X_seq, y_seq, verbose=0)
+            return {
+                'loss': float(loss),
+                'mae': float(mae),
+                'mape': float(mape),
+                'accuracy': float(100 - mape),
+            }
+        finally:
+            model.set_weights(original_weights)
+
     def export_edge_model(
         self,
         edge_dir: str,

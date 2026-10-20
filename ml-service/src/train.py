@@ -14,6 +14,7 @@ from typing import Dict, Optional
 
 from model import LoadForecastingModel
 from preprocessing import DataPreprocessor
+from federated import FederatedCoordinator, FederatedConfig
 
 
 def load_data_from_db(db_path: Optional[str] = None) -> pd.DataFrame:
@@ -286,6 +287,230 @@ def train_model(
     return summary
 
 
+def train_federated_round(
+    data_path: Optional[str] = None,
+    model_dir: str = './models/federated',
+    global_model_dir: Optional[str] = None,
+    num_clients: int = 5,
+    rounds: int = 1,
+    local_epochs: int = 5,
+    batch_size: int = 32,
+    validation_split: float = 0.2,
+    test_split: float = 0.1,
+    weather_api_key: Optional[str] = None,
+    lat: float = 37.7749,
+    lon: float = -122.4194,
+    min_clients: Optional[int] = None,
+    dp_noise_multiplier: float = 0.0,
+    dp_clip_norm: float = 1.0,
+    seed: Optional[int] = None
+) -> Dict:
+    """
+    Run federated training round(s) without centralizing raw client data.
+
+    Each simulated client trains locally on its own partition of the data and
+    only shares model weight updates. The coordinator aggregates these updates
+    using sample-count weighting to produce an improved global model.
+
+    Args:
+        data_path: Path to historical data (CSV or database)
+        model_dir: Directory to save the aggregated global model
+        global_model_dir: Directory to load initial global weights from
+            (defaults to model_dir)
+        num_clients: Number of federated clients to simulate
+        rounds: Number of federated training rounds
+        local_epochs: Number of local training epochs per client per round
+        batch_size: Batch size
+        validation_split: Validation split ratio
+        test_split: Test split ratio
+        weather_api_key: Weather API key
+        lat: Latitude for weather data
+        lon: Longitude for weather data
+        min_clients: Minimum clients required to aggregate (defaults to
+            a simple majority of num_clients)
+        dp_noise_multiplier: Differential privacy noise multiplier (0 disables)
+        dp_clip_norm: Gradient/update clipping norm for DP
+        seed: Optional random seed for reproducible partitioning
+
+    Returns:
+        Federated training results and metrics
+    """
+    print("=" * 80)
+    print("FEDERATED LOAD FORECASTING MODEL TRAINING")
+    print("=" * 80)
+    print(f"Start time: {datetime.now().isoformat()}")
+    print()
+
+    # Load historical load data (kept local to the coordinator process only
+    # for the purpose of partitioning; raw data is never shared with clients)
+    print("Loading historical load data...")
+    if data_path and data_path.endswith('.csv'):
+        load_df = pd.read_csv(data_path)
+    else:
+        load_df = load_data_from_db(data_path)
+
+    print(f"Loaded {len(load_df)} records")
+    print(f"Date range: {load_df['timestamp'].min()} to {load_df['timestamp'].max()}")
+    print()
+
+    # Initialize preprocessor and fetch weather data
+    preprocessor = DataPreprocessor(weather_api_key=weather_api_key)
+
+    print("Fetching weather data...")
+    start_date = pd.to_datetime(load_df['timestamp'].min())
+    end_date = pd.to_datetime(load_df['timestamp'].max())
+
+    weather_df = preprocessor.fetch_weather_data(
+        lat=lat,
+        lon=lon,
+        start_date=start_date,
+        end_date=end_date
+    )
+    print(f"Weather data shape: {weather_df.shape}")
+    print()
+
+    # Preprocess data
+    print("Preprocessing data...")
+    df = preprocessor.prepare_training_data(
+        load_df=load_df,
+        weather_df=weather_df,
+        target_column='load'
+    )
+    print()
+
+    # Split data into train/validation/test sets
+    print("Splitting data into train/validation/test sets...")
+    n_test = int(len(df) * test_split)
+    n_val = int(len(df) * validation_split)
+    n_train = len(df) - n_test - n_val
+
+    train_df = df.iloc[:n_train]
+    val_df = df.iloc[n_train:n_train + n_val]
+    test_df = df.iloc[n_train + n_val:]
+
+    print(f"Train: {len(train_df)} samples")
+    print(f"Validation: {len(val_df)} samples")
+    print(f"Test: {len(test_df)} samples")
+    print()
+
+    train_val_df = pd.concat([train_df, val_df])
+
+    feature_columns = [col for col in df.columns if col != 'load']
+    n_features = len(feature_columns)
+
+    # Configure the federated coordinator
+    if min_clients is None:
+        min_clients = max(1, (num_clients // 2) + 1)
+
+    config = FederatedConfig(
+        num_clients=num_clients,
+        rounds=rounds,
+        local_epochs=local_epochs,
+        batch_size=batch_size,
+        min_clients=min_clients,
+        dp_noise_multiplier=dp_noise_multiplier,
+        dp_clip_norm=dp_clip_norm,
+        seed=seed
+    )
+
+    print("Initializing federated coordinator...")
+    print(f"  Clients: {num_clients}")
+    print(f"  Rounds: {rounds}")
+    print(f"  Local epochs: {local_epochs}")
+    print(f"  Min clients for aggregation: {min_clients}")
+    print(f"  DP noise multiplier: {dp_noise_multiplier}")
+    print()
+
+    coordinator = FederatedCoordinator(
+        config=config,
+        n_features=n_features,
+        sequence_length=168,
+        horizons=[1, 24, 168],
+        global_model_dir=global_model_dir or model_dir
+    )
+
+    # Run federated training rounds
+    print("Running federated training rounds...")
+    print("-" * 80)
+    federated_results = coordinator.run(
+        df=train_val_df,
+        target_column='load'
+    )
+    print("-" * 80)
+    print()
+
+    # Evaluate the aggregated global model on the held-out test set
+    print("Evaluating aggregated global model on test set...")
+    global_model = coordinator.get_global_model()
+    test_results = global_model.evaluate(test_df, target_column='load')
+
+    print("\nTest Set Results (Federated Global Model):")
+    print("-" * 80)
+    for horizon, metrics in test_results.items():
+        print(f"\nHorizon: {horizon}h")
+        print(f"  Accuracy: {metrics['accuracy']:.2f}%")
+        print(f"  MAE: {metrics['mae']:.4f}")
+        print(f"  MAPE: {metrics['mape']:.2f}%")
+        print(f"  Loss: {metrics['loss']:.4f}")
+
+        if metrics['accuracy'] >= 90.0:
+            print(f"  ✓ Meets >90% accuracy requirement")
+        else:
+            print(f"  ✗ Below 90% accuracy requirement")
+    print("-" * 80)
+    print()
+
+    # Save the aggregated global model
+    print(f"Saving federated global model to {model_dir}...")
+    global_model.save(model_dir)
+
+    results_path = os.path.join(model_dir, 'federated_test_results.json')
+    with open(results_path, 'w') as f:
+        json.dump(test_results, f, indent=2)
+    print(f"Test results saved to {results_path}")
+
+    summary = {
+        'training_date': datetime.now().isoformat(),
+        'mode': 'federated',
+        'data_records': len(load_df),
+        'features': n_features,
+        'train_samples': len(train_df),
+        'validation_samples': len(val_df),
+        'test_samples': len(test_df),
+        'num_clients': num_clients,
+        'rounds': rounds,
+        'local_epochs': local_epochs,
+        'batch_size': batch_size,
+        'min_clients': min_clients,
+        'dp_noise_multiplier': dp_noise_multiplier,
+        'dp_clip_norm': dp_clip_norm,
+        'federated_results': federated_results,
+        'test_results': test_results,
+        'all_horizons_pass': all(
+            metrics['accuracy'] >= 90.0
+            for metrics in test_results.values()
+        )
+    }
+
+    summary_path = os.path.join(model_dir, 'federated_training_summary.json')
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"Federated training summary saved to {summary_path}")
+
+    print()
+    print("=" * 80)
+    print("FEDERATED TRAINING COMPLETE")
+    print("=" * 80)
+    print(f"End time: {datetime.now().isoformat()}")
+
+    if summary['all_horizons_pass']:
+        print("\n✓ All horizons meet >90% accuracy requirement!")
+    else:
+        print("\n✗ Some horizons below 90% accuracy - consider more rounds")
+
+    return summary
+
+
 def main():
     """Main training function"""
     parser = argparse.ArgumentParser(
@@ -367,23 +592,97 @@ def main():
         default=None,
         help='Directory to save edge model (defaults to <model-dir>/edge)'
     )
+
+    parser.add_argument(
+        '--federated',
+        action='store_true',
+        help='Run federated training instead of centralized training'
+    )
+
+    parser.add_argument(
+        '--num-clients',
+        type=int,
+        default=5,
+        help='Number of federated clients (federated mode only)'
+    )
+
+    parser.add_argument(
+        '--rounds',
+        type=int,
+        default=1,
+        help='Number of federated training rounds (federated mode only)'
+    )
+
+    parser.add_argument(
+        '--local-epochs',
+        type=int,
+        default=5,
+        help='Local training epochs per client per round (federated mode only)'
+    )
+
+    parser.add_argument(
+        '--min-clients',
+        type=int,
+        default=None,
+        help='Minimum clients required to aggregate (federated mode only)'
+    )
+
+    parser.add_argument(
+        '--dp-noise-multiplier',
+        type=float,
+        default=0.0,
+        help='Differential privacy noise multiplier (0 disables)'
+    )
+
+    parser.add_argument(
+        '--dp-clip-norm',
+        type=float,
+        default=1.0,
+        help='Differential privacy update clipping norm'
+    )
+
+    parser.add_argument(
+        '--seed',
+        type=int,
+        default=None,
+        help='Random seed for reproducible client partitioning'
+    )
     
     args = parser.parse_args()
     
     try:
-        summary = train_model(
-            data_path=args.data_path,
-            model_dir=args.model_dir,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            validation_split=args.validation_split,
-            test_split=args.test_split,
-            weather_api_key=args.weather_api_key,
-            lat=args.lat,
-            lon=args.lon,
-            export_edge=args.export_edge,
-            edge_model_dir=args.edge_model_dir
-        )
+        if args.federated:
+            summary = train_federated_round(
+                data_path=args.data_path,
+                model_dir=args.model_dir,
+                num_clients=args.num_clients,
+                rounds=args.rounds,
+                local_epochs=args.local_epochs,
+                batch_size=args.batch_size,
+                validation_split=args.validation_split,
+                test_split=args.test_split,
+                weather_api_key=args.weather_api_key,
+                lat=args.lat,
+                lon=args.lon,
+                min_clients=args.min_clients,
+                dp_noise_multiplier=args.dp_noise_multiplier,
+                dp_clip_norm=args.dp_clip_norm,
+                seed=args.seed
+            )
+        else:
+            summary = train_model(
+                data_path=args.data_path,
+                model_dir=args.model_dir,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                validation_split=args.validation_split,
+                test_split=args.test_split,
+                weather_api_key=args.weather_api_key,
+                lat=args.lat,
+                lon=args.lon,
+                export_edge=args.export_edge,
+                edge_model_dir=args.edge_model_dir
+            )
         
         # Exit with error if accuracy requirement not met
         if not summary['all_horizons_pass']:
