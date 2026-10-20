@@ -14,6 +14,7 @@ import {
   formatKwh,
   formatPeriod,
   isValidReadingHash,
+  revokeCertificate,
   shortAddress,
   verifyCertificate,
   type CertificateVerification,
@@ -21,8 +22,37 @@ import {
 } from "@/lib/certificates";
 
 function StatusBadge({ status }: { status: ExportCertificate["status"] }) {
-  const cls = status === "active" ? "bg-green-500/20 text-green-400" : "bg-gray-500/20 text-gray-300";
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{status === "active" ? "Active" : "Retired"}</span>;
+  const cls =
+    status === "active"
+      ? "bg-green-500/20 text-green-400"
+      : status === "revoked"
+        ? "bg-red-500/20 text-red-400"
+        : "bg-gray-500/20 text-gray-300";
+  const label = status === "active" ? "Active" : status === "revoked" ? "Revoked" : "Retired";
+  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{label}</span>;
+}
+
+function ComplianceBadge({ standard }: { standard?: string }) {
+  if (!standard) return null;
+  return (
+    <span className="rounded bg-sky-500/20 px-2 py-0.5 text-xs font-medium text-sky-300" title="International standard compliance">
+      {standard}
+    </span>
+  );
+}
+
+function VerificationStatusBadge({ cert }: { cert: ExportCertificate }) {
+  const verified = cert.thirdPartyVerified;
+  return (
+    <span
+      className={`rounded px-2 py-0.5 text-xs font-medium ${
+        verified ? "bg-green-500/20 text-green-400" : "bg-yellow-500/20 text-yellow-300"
+      }`}
+      title={verified ? "Verified by an approved third-party verifier" : "Awaiting third-party verification"}
+    >
+      {verified ? "Third-party verified" : "Unverified"}
+    </span>
+  );
 }
 
 function VerificationResult({ result }: { result: CertificateVerification }) {
@@ -38,10 +68,12 @@ function VerificationResult({ result }: { result: CertificateVerification }) {
   );
 }
 
-function CertificateCard({ cert }: { cert: ExportCertificate }) {
+function CertificateCard({ cert, onRevoked }: { cert: ExportCertificate; onRevoked?: (id: number) => void }) {
   const [result, setResult] = useState<CertificateVerification | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [revoking, setRevoking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   async function verify() {
     setVerifying(true);
@@ -55,12 +87,29 @@ function CertificateCard({ cert }: { cert: ExportCertificate }) {
     }
   }
 
+  async function revoke() {
+    setRevoking(true);
+    setRevokeError(null);
+    try {
+      await revokeCertificate(cert.id);
+      onRevoked?.(cert.id);
+    } catch (e) {
+      setRevokeError((e as Error).message);
+    } finally {
+      setRevoking(false);
+    }
+  }
+
   return (
     <li className="rounded-lg border border-white/10 p-4">
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="font-semibold">Certificate #{cert.id}</h2>
           <p className="text-2xl font-bold text-solar-yellow">{formatKwh(cert.energyKwh)}</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            <ComplianceBadge standard={cert.standard} />
+            <VerificationStatusBadge cert={cert} />
+          </div>
         </div>
         <StatusBadge status={cert.status} />
       </div>
@@ -79,8 +128,26 @@ function CertificateCard({ cert }: { cert: ExportCertificate }) {
             <dd>{new Date(cert.retiredAt).toLocaleString()}</dd>
           </>
         )}
+        {cert.verifier && (
+          <>
+            <dt className="opacity-60">Verifier</dt>
+            <dd title={cert.verifier}>{shortAddress(cert.verifier)}</dd>
+          </>
+        )}
+        {cert.revokedAt && (
+          <>
+            <dt className="opacity-60">Revoked</dt>
+            <dd>{new Date(cert.revokedAt).toLocaleString()}</dd>
+          </>
+        )}
         <dt className="opacity-60">Reading hash</dt>
         <dd className="break-all font-mono text-xs">{cert.readingHash}</dd>
+        {cert.proof && (
+          <>
+            <dt className="opacity-60">Cryptographic proof</dt>
+            <dd className="break-all font-mono text-xs">{cert.proof}</dd>
+          </>
+        )}
       </dl>
       <div className="mt-3 flex flex-wrap gap-2">
         <a
@@ -98,9 +165,20 @@ function CertificateCard({ cert }: { cert: ExportCertificate }) {
         >
           {verifying ? "Verifying…" : "Verify on-chain"}
         </button>
+        {cert.status === "active" && cert.canRevoke && (
+          <button
+            type="button"
+            onClick={revoke}
+            disabled={revoking}
+            className="rounded bg-red-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+          >
+            {revoking ? "Revoking…" : "Revoke"}
+          </button>
+        )}
       </div>
       {result && <VerificationResult result={result} />}
       {error && <p className="mt-2 text-sm text-red-500">Verification failed: {error}</p>}
+      {revokeError && <p className="mt-2 text-sm text-red-500">Revocation failed: {revokeError}</p>}
     </li>
   );
 }
@@ -189,6 +267,14 @@ export default function CertificatesPage() {
     if (query) void load(query);
   }, [query, load]);
 
+  const handleRevoked = useCallback((id: number) => {
+    setCertificates((prev) =>
+      prev
+        ? prev.map((c) => (c.id === id ? { ...c, status: "revoked" as const, revokedAt: new Date().toISOString() } : c))
+        : prev,
+    );
+  }, []);
+
   return (
     <>
       <Navbar />
@@ -233,7 +319,7 @@ export default function CertificatesPage() {
               </p>
               <ul className="space-y-4">
                 {certificates.map((c) => (
-                  <CertificateCard key={c.id} cert={c} />
+                  <CertificateCard key={c.id} cert={c} onRevoked={handleRevoked} />
                 ))}
               </ul>
             </>

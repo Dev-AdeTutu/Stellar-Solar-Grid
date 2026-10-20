@@ -118,7 +118,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "1359824"
+                  "i128": "940326"
                 }
               ]
             }
@@ -143,7 +143,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "63786"
+                  "i128": "246671"
                 },
                 {
                   "vec": [
@@ -170,7 +170,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "63786"
+                      "i128": "246671"
                     }
                   ]
                 }
@@ -197,7 +197,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "727357"
+                  "i128": "693655"
                 },
                 {
                   "vec": [
@@ -224,61 +224,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "727357"
-                    }
-                  ]
-                }
-              },
-              "sub_invocations": []
-            }
-          ]
-        }
-      ]
-    ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "make_payment",
-              "args": [
-                {
-                  "string": "PROP"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                },
-                {
-                  "i128": "568681"
-                },
-                {
-                  "vec": [
-                    {
-                      "symbol": "UsageBased"
-                    }
-                  ]
-                },
-                "void"
-              ]
-            }
-          },
-          "sub_invocations": [
-            {
-              "function": {
-                "contract_fn": {
-                  "contract_address": "CBUSYNQKASUYFWYC3M2GUEDMX4AIVWPALDBYJPNK6554BREHTGZ2IUNF",
-                  "function_name": "transfer",
-                  "args": [
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
-                    },
-                    {
-                      "i128": "568681"
+                      "i128": "693655"
                     }
                   ]
                 }
@@ -305,7 +251,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "346342"
+                  "i128": "1172504"
                 }
               ]
             }
@@ -331,7 +277,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1904163"
+                  "i128": "1464793"
                 }
               ]
             }
@@ -357,7 +303,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "794232"
+                  "i128": "847976"
                 }
               ]
             }
@@ -383,7 +329,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1696688"
+                  "i128": "398075"
                 }
               ]
             }
@@ -516,26 +462,6 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "1301173170172112462"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
                   "nonce": "2032731177588607455"
                 }
               },
@@ -597,6 +523,26 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "5806905060045992000"
                 }
               },
               "durability": "temporary",
@@ -948,7 +894,7 @@
                       "symbol": "day_spent"
                     },
                     "val": {
-                      "i128": "4741425"
+                      "i128": "3883348"
                     }
                   },
                   {
@@ -975,10 +921,26 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": {
                       "u64": "18446744073709551615"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "4"
                     }
                   },
                   {
@@ -1038,7 +1000,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -1095,7 +1057,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -1156,7 +1118,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "1359824"
+                "i128": "940326"
               }
             }
           },
@@ -1183,7 +1145,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "1359824"
+                "i128": "940326"
               }
             }
           },
@@ -1299,7 +1261,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "1359824"
+                        "i128": "940326"
                       }
                     }
                   ]
@@ -1310,26 +1272,6 @@
           "ext": "v0"
         },
         "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "5806905060045992000"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
       },
       {
         "entry": {
@@ -1396,7 +1338,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "1359824"
+                      "i128": "940326"
                     }
                   },
                   {

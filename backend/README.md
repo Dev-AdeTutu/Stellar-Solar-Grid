@@ -64,35 +64,18 @@ GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/
 - `GET /api/grid-services/geofences/:meterId` — status and verification history
 - `GET /api/grid-services/geofences` — data for the frontend map
 
-## Automated Billing Cycle Management (#971)
+## Grid Outage Detection and Notifications (#976)
 
-Tracks recurring billing cycles for meters, issues notifications, and processes invoices upon cycle close:
-- Configurable cycle durations (default 30 days) per meter.
-- Advance reminder email notifications at 7, 3, and 1 day before billing cycle ends.
-- Automated generation of invoice records and rollover of next billing date when current cycle closes.
-- Endpoints:
-  - `GET /api/meters/:id/billing-history` — retrieve historical invoices and current cycle state.
+Real-time power outage detection engine and notification dispatcher. Implemented in `backend/src/services/outageService.ts` and `backend/src/routes/outages.ts`.
 
-## Carbon Footprint Calculator (#972)
-
-Calculates carbon emissions saved from solar generation against regional grid emission factors:
-- Converts kWh generated into kg CO2 offset, equivalent trees planted, and passenger car miles avoided.
-- Provides monthly and yearly breakdown along with shareable impact badge metadata.
-- Endpoints:
-  - `GET /api/meters/:id/carbon-footprint` — detailed carbon metrics and equivalence data.
-
-## Dynamic Pricing Engine (#973)
-
-Allows responsive pricing adjustments based on real-time grid demand:
-- Admin configuration for pricing multiplier (`POST /api/pricing/multiplier`).
-- Automatically emits `PriceUpdated` events on changes.
-- Syncs with on-chain dynamic pricing parameters.
-
-## Meter Performance Benchmarking (#974)
-
-Compares individual meter efficiency and output against peer groups:
-- Peer group segmentation by capacity tier (residential, commercial, industrial) and location type (urban, suburban, rural).
-- Performance scoring (0–100 scale), efficiency percentile ranking, and actionable peer comparison insights.
-- Endpoints:
-  - `GET /api/meters/:id/benchmark` — retrieve peer group benchmark statistics and percentile ranks.
+- **Telemetry Monitoring:** Ingests live voltage and frequency readings from IoT smart meters. Power collapse is identified when voltage drops below 50V or frequency drops to 0Hz.
+- **Regional Outage Detection:** When multiple meters within the same grid sector/region report collapsed power, an active outage incident is automatically created with estimated restoration time.
+- **Push & Email Alerts:** Automatically dispatches alerts to registered emergency contacts and affected users upon outage confirmation.
+- **Endpoints:**
+  - `GET /api/outages/current` — returns active outages with affected meters and estimated restoration
+  - `POST /api/outages` — creates a new outage record
+  - `POST /api/outages/telemetry` — inbounds IoT voltage/frequency telemetry and triggers auto-evaluation
+  - `GET /api/outages/:id` — returns single outage details
+  - `POST /api/outages/:id/resolve` — marks an outage resolved and records resolution timestamp
+  - `POST /api/outages/circuits/:meterId/:circuitId` — dispatches MQTT commands to shed/restore individual circuits (#977)
 

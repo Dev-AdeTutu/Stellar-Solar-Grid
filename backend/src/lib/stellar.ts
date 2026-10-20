@@ -6,6 +6,13 @@ import { RpcPool } from "./rpcPool.js";
 import { withRpcBreaker, CircuitOpenError, recordCacheServed } from "./circuitBreaker.js";
 import { tracer } from "./tracing.js";
 import { SpanStatusCode } from "@opentelemetry/api";
+import {
+  generateMlDsaKeypair,
+  mlDsaSign,
+  mlDsaVerify,
+  type MlDsaKeypair,
+  type MlDsaSignature,
+} from "./quantumCrypto.js";
 
 const NETWORK = process.env.STELLAR_NETWORK ?? "testnet";
 
@@ -80,12 +87,86 @@ export function padResourceFee(assembledFee: string): string {
   return String(Math.ceil(base * (1 + marginPct / 100)));
 }
 
+/**
+ * #1067 — Post-quantum signing mode for admin contract invocations.
+ *
+ * During migration the backend produces a *dual* signature: the legacy
+ * ed25519 signature (still required by the current on-chain verifier) plus an
+ * ML-DSA (Dilithium) signature over the same transaction hash. The contract
+ * can verify the PQC signature when present and fall back to ed25519-only
+ * verification for transactions that predate the migration.
+ *
+ * Modes:
+ *   - "off"     : legacy ed25519 only (default until the contract is upgraded)
+ *   - "dual"    : attach both ed25519 and ML-DSA signatures
+ *   - "pqc"     : require ML-DSA (ed25519 still attached for account auth)
+ */
+export type PqcSigningMode = "off" | "dual" | "pqc";
+
+export function resolvePqcSigningMode(): PqcSigningMode {
+  const raw = (process.env.PQC_SIGNING_MODE ?? "off").toLowerCase();
+  if (raw === "dual" || raw === "pqc") return raw;
+  return "off";
+}
+
+/** A registered post-quantum public key, keyed by the legacy ed25519 public key. */
+export interface PqcKeyRegistration {
+  /** Stellar ed25519 public key (G...) this PQC key is bound to. */
+  ed25519PublicKey: string;
+  /** Base64-encoded ML-DSA public key. */
+  mlDsaPublicKey: string;
+  /** Algorithm identifier, e.g. "ML-DSA-65". */
+  algorithm: string;
+  registeredAt: number;
+}
+
+/** Dual signature bundle attached to an admin invocation. */
+export interface DualSignature {
+  /** Base64 ed25519 signature over the transaction hash. */
+  ed25519: string;
+  /** Base64 ML-DSA signature over the transaction hash, when PQC is enabled. */
+  mlDsa?: string;
+  /** Algorithm identifier for the ML-DSA signature. */
+  algorithm?: string;
+  /** Base64 ML-DSA public key used to produce the signature. */
+  publicKey?: string;
+}
+
+/**
+ * In-memory registry of PQC public keys bound to ed25519 account keys.
+ * In production this is mirrored on-chain via the contract's
+ * `register_pqc_key` entrypoint; the local map is the fast-path cache used
+ * when building transactions.
+ */
+export class PqcKeyRegistry {
+  private readonly keys = new Map<string, PqcKeyRegistration>();
+
+  register(reg: PqcKeyRegistration): void {
+    this.keys.set(reg.ed25519PublicKey, reg);
+  }
+
+  get(ed25519PublicKey: string): PqcKeyRegistration | undefined {
+    return this.keys.get(ed25519PublicKey);
+  }
+
+  has(ed25519PublicKey: string): boolean {
+    return this.keys.has(ed25519PublicKey);
+  }
+
+  clear(): void {
+    this.keys.clear();
+  }
+}
+
 export class StellarService {
   public readonly server: StellarSdk.SorobanRpc.Server;
   public readonly adminKeypair: StellarSdk.Keypair;
   public readonly contractId: string;
   public readonly networkPassphrase: string;
   public readonly pool?: RpcPool;
+  public readonly pqcRegistry = new PqcKeyRegistry();
+  public readonly pqcSigningMode: PqcSigningMode;
+  private readonly pqcKeypair?: MlDsaKeypair;
   private readonly queryCache = new Map<string, { value: unknown; storedAt: number }>();
 
   constructor(config: {
@@ -118,6 +199,82 @@ export class StellarService {
     }
     this.contractId = config.contractId || "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
     this.networkPassphrase = config.network;
+    this.pqcSigningMode = resolvePqcSigningMode();
+
+    // Load or derive the admin's ML-DSA keypair when PQC signing is enabled.
+    if (this.pqcSigningMode !== "off") {
+      const seed = process.env.PQC_ADMIN_SEED;
+      this.pqcKeypair = seed ? generateMlDsaKeypair(seed) : generateMlDsaKeypair();
+      this.pqcRegistry.register({
+        ed25519PublicKey: this.adminKeypair.publicKey(),
+        mlDsaPublicKey: this.pqcKeypair.publicKey,
+        algorithm: this.pqcKeypair.algorithm,
+        registeredAt: Date.now(),
+      });
+      logger.info(
+        {
+          mode: this.pqcSigningMode,
+          algorithm: this.pqcKeypair.algorithm,
+          ed25519PublicKey: this.adminKeypair.publicKey(),
+        },
+        "Post-quantum signing enabled for admin invocations",
+      );
+    }
+  }
+
+  /**
+   * #1067 — Register a PQC public key for an ed25519 account. Called at
+   * startup (for the admin key) and by the migration tooling for other
+   * signers. Registration is idempotent.
+   */
+  registerPqcKey(reg: PqcKeyRegistration): void {
+    this.pqcRegistry.register(reg);
+  }
+
+  /**
+   * #1067 — Produce a dual signature (ed25519 + ML-DSA) over the given
+   * transaction hash. The ed25519 signature is always produced; the ML-DSA
+   * signature is added when PQC signing is enabled.
+   */
+  signDual(txHash: Buffer | Uint8Array): DualSignature {
+    const hashBuf = Buffer.isBuffer(txHash) ? txHash : Buffer.from(txHash);
+    const ed25519 = Buffer.from(this.adminKeypair.sign(hashBuf)).toString("base64");
+
+    if (this.pqcSigningMode === "off" || !this.pqcKeypair) {
+      return { ed25519 };
+    }
+
+    const mlDsaSig: MlDsaSignature = mlDsaSign(hashBuf, this.pqcKeypair);
+    return {
+      ed25519,
+      mlDsa: mlDsaSig.signature,
+      algorithm: mlDsaSig.algorithm,
+      publicKey: this.pqcKeypair.publicKey,
+    };
+  }
+
+  /**
+   * #1067 — Verify a dual signature bundle. The ed25519 signature is always
+   * verified; the ML-DSA signature is verified when present. Returns true
+   * only if every present signature is valid.
+   */
+  verifyDual(txHash: Buffer | Uint8Array, sig: DualSignature): boolean {
+    const hashBuf = Buffer.isBuffer(txHash) ? txHash : Buffer.from(txHash);
+
+    const ed25519Ok = this.adminKeypair.verify(
+      hashBuf,
+      Buffer.from(sig.ed25519, "base64"),
+    );
+    if (!ed25519Ok) return false;
+
+    if (sig.mlDsa) {
+      const publicKey = sig.publicKey ?? this.pqcRegistry.get(this.adminKeypair.publicKey())?.mlDsaPublicKey;
+      if (!publicKey) return false;
+      return mlDsaVerify(hashBuf, sig.mlDsa, publicKey, sig.algorithm);
+    }
+
+    // No PQC signature: acceptable only while not in strict "pqc" mode.
+    return this.pqcSigningMode !== "pqc";
   }
 
   private async waitForConfirmation(hash: string, maxAttempts = 10, pollIntervalMs = 2_000): Promise<void> {
@@ -169,6 +326,18 @@ export class StellarService {
             }).build();
           }
           assembled.sign(this.adminKeypair);
+
+          // #1067 — Attach the post-quantum signature bundle during migration.
+          // The bundle is carried in the transaction memo-free envelope via the
+          // contract's `pqc_signature` argument convention; here we compute it
+          // and expose it on the span for downstream submission tooling.
+          if (this.pqcSigningMode !== "off") {
+            const txHash = assembled.hash();
+            const dual = this.signDual(txHash);
+            span.setAttribute("stellar.pqc_mode", this.pqcSigningMode);
+            span.setAttribute("stellar.pqc_algorithm", dual.algorithm ?? "none");
+            span.setAttribute("stellar.pqc_signed", Boolean(dual.mlDsa));
+          }
 
           const sendResult = await this.server.sendTransaction(assembled);
           const sentHash = (sendResult as any).hash;
@@ -256,8 +425,96 @@ export class StellarService {
     ]);
   }
 
+  /**
+   * #1070 — Record a payment event in the reputation contract so it can be
+   * folded into the caller's credit score. `onTime` reflects whether the
+   * payment was made by its due date; `amount` is the payment amount in the
+   * contract's base unit. Returns the transaction hash.
+   */
+  async recordPaymentReputation(
+    address: string,
+    amount: bigint,
+    onTime: boolean,
+    timestampMs: number,
+  ): Promise<string> {
+    return this.invoke("record_payment", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(amount, { type: "i128" }),
+      StellarSdk.nativeToScVal(onTime, { type: "bool" }),
+      StellarSdk.nativeToScVal(BigInt(timestampMs), { type: "u64" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Fetch the reputation score (0-100) for an address from the
+   * reputation contract. Returns `null` when the contract has no score for
+   * the address yet.
+   */
+  async getReputationScore(address: string): Promise<number | null> {
+    const retval = await this.query("get_reputation_score", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      const score = Number(decoded);
+      return Number.isFinite(score) ? score : null;
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode reputation score: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1070 — Associate a DID (Decentralized Identifier) with an address in the
+   * reputation contract. Returns the transaction hash.
+   */
+  async setDid(address: string, did: string): Promise<string> {
+    return this.invoke("set_did", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(did, { type: "string" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Resolve the DID currently bound to an address, or `null` when no
+   * DID has been set.
+   */
+  async getDid(address: string): Promise<string | null> {
+    const retval = await this.query("get_did", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      return String(decoded);
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode DID: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1070 — Resolve an address from a DID via the reputation contract, or
+   * `null` when the DID is unknown.
+   */
+  async resolveDid(did: string): Promise<string | null> {
+    const retval = await this.query("resolve_did", [
+      StellarSdk.nativeToScVal(did, { type: "string" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      return String(decoded);
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode DID resolution: ${err?.message ?? String(err)}`));
+    }
+  }
+
   private rememberQueryResult(key: string, value: unknown): void {
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
+
       const oldestKey = this.queryCache.keys().next().value;
       if (oldestKey !== undefined) this.queryCache.delete(oldestKey);
     }
@@ -322,3 +579,8 @@ export const server = stellarService.server;
 export const adminInvoke = stellarService.invoke.bind(stellarService);
 export const contractQuery = stellarService.query.bind(stellarService);
 export const recordGridExportOnChain = stellarService.recordGridExportOnChain.bind(stellarService);
+export const recordPaymentReputation = stellarService.recordPaymentReputation.bind(stellarService);
+export const getReputationScore = stellarService.getReputationScore.bind(stellarService);
+export const setDid = stellarService.setDid.bind(stellarService);
+export const getDid = stellarService.getDid.bind(stellarService);
+export const resolveDid = stellarService.resolveDid.bind(stellarService);

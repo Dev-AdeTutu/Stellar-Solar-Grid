@@ -29,12 +29,29 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { sendEmail } from "./mailer.js";
 import { logger } from "./logger.js";
+import {
+  PQC_SIGNATURE_BYTES,
+  PQC_SIGNATURE_HEX_LENGTH,
+  decodePqcSignature,
+  isPqcPublicKey,
+  verifyPqcSignature,
+} from "./quantumCrypto.js";
 
 type Db = InstanceType<typeof Database>;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type WalletSigner = { publicKey: string; email: string | null; label: string | null };
+export type WalletSigner = {
+  publicKey: string;
+  email: string | null;
+  label: string | null;
+  /**
+   * Post-quantum (ML-DSA) public key registered for this signer (#1067).
+   * When present, a valid PQC signature over the proposal payload counts
+   * toward the wallet threshold in place of the ed25519 signature.
+   */
+  pqcPublicKey?: string | null;
+};
 
 export type MultisigWallet = {
   address: string;
@@ -118,6 +135,46 @@ export function decodeSignature(input: string): Buffer {
 export function verifySignerSignature(publicKey: string, payload: Buffer, signature: Buffer): boolean {
   try {
     return StellarSdk.Keypair.fromPublicKey(publicKey).verify(payload, signature);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Decode a post-quantum (ML-DSA) signature supplied as hex or base64.
+ * Throws `INVALID_PQC_SIGNATURE` when the encoding or length is wrong.
+ */
+export function decodePqcSignerSignature(input: string): Buffer {
+  try {
+    return decodePqcSignature(input);
+  } catch (err) {
+    throw new MultisigError(
+      400,
+      "INVALID_PQC_SIGNATURE",
+      err instanceof Error ? err.message : `PQC signature must be ${PQC_SIGNATURE_BYTES} bytes`,
+    );
+  }
+}
+
+/**
+ * Verify a post-quantum signature against a signer's registered PQC key.
+ * Returns false for malformed keys or signatures rather than throwing.
+ */
+export function verifyPqcSignerSignature(pqcPublicKey: string, payload: Buffer, signature: Buffer): boolean {
+  if (!isPqcPublicKey(pqcPublicKey)) return false;
+  try {
+    return verifyPqcSignature(pqcPublicKey, payload, signature);
+  } catch {
+    return false;
+  }
+}
+
+/** True when the input looks like a PQC signature (hex length or byte length). */
+export function looksLikePqcSignature(input: string): boolean {
+  const value = input.trim();
+  if (/^[0-9a-fA-F]+$/.test(value) && value.length === PQC_SIGNATURE_HEX_LENGTH) return true;
+  try {
+    return Buffer.from(value, "base64").length === PQC_SIGNATURE_BYTES;
   } catch {
     return false;
   }
@@ -314,13 +371,22 @@ export function getWallet(address: string): MultisigWallet | undefined {
  */
 export async function registerWallet(
   chain: MultisigChain,
-  input: { address: string; name: string; signers: Array<{ publicKey: string; email?: string; label?: string }> },
+  input: {
+    address: string;
+    name: string;
+    signers: Array<{ publicKey: string; email?: string; label?: string; pqcPublicKey?: string }>;
+  },
 ): Promise<MultisigWallet> {
   const onChain = await chain.getWalletConfig(input.address);
   const contacts = new Map(input.signers.map((s) => [s.publicKey, s]));
   for (const key of contacts.keys()) {
     if (!onChain.signers.includes(key)) {
       throw new MultisigError(400, "UNKNOWN_SIGNER", `${key} is not a signer of wallet ${input.address}`);
+    }
+  }
+  for (const [key, contact] of contacts) {
+    if (contact.pqcPublicKey && !isPqcPublicKey(contact.pqcPublicKey)) {
+      throw new MultisigError(400, "INVALID_PQC_KEY", `Invalid post-quantum public key for ${key}`);
     }
   }
   const wallet: MultisigWallet = {
@@ -331,6 +397,7 @@ export async function registerWallet(
       publicKey,
       email: contacts.get(publicKey)?.email ?? null,
       label: contacts.get(publicKey)?.label ?? null,
+      pqcPublicKey: contacts.get(publicKey)?.pqcPublicKey ?? null,
     })),
     createdAt: new Date().toISOString(),
   };
@@ -425,7 +492,7 @@ async function refreshExpiry(chain: MultisigChain, proposal: Proposal): Promise<
 export async function addSignature(
   chain: MultisigChain,
   id: string,
-  input: { publicKey: string; signature: string },
+  input: { publicKey: string; signature: string; pqcSignature?: string },
 ): Promise<Proposal> {
   let proposal = await refreshExpiry(chain, requireProposal(id));
   if (proposal.status === "expired") throw new MultisigError(409, "PROPOSAL_EXPIRED", "Proposal has expired");
@@ -433,14 +500,51 @@ export async function addSignature(
     throw new MultisigError(409, "PROPOSAL_CLOSED", `Proposal is ${proposal.status}`);
   }
   const wallet = requireWallet(proposal.wallet);
-  if (!wallet.signers.some((s) => s.publicKey === input.publicKey)) {
+  const signer = wallet.signers.find((s) => s.publicKey === input.publicKey);
+  if (!signer) {
     throw new MultisigError(403, "NOT_A_SIGNER", "Key is not a signer of this wallet");
   }
   if (proposal.signatures[input.publicKey]) {
     throw new MultisigError(409, "ALREADY_SIGNED", "This signer has already signed");
   }
+  const payload = Buffer.from(proposal.payloadHex, "hex");
+
+  // A PQC signature is accepted when the signer has a registered PQC key and
+  // the caller supplies a PQC signature (either alone or alongside ed25519).
+  // It counts toward the threshold exactly like an ed25519 signature.
+  const pqcPublicKey = signer.pqcPublicKey ?? null;
+  const wantsPqc = Boolean(input.pqcSignature) || (!input.signature && Boolean(pqcPublicKey));
+  if (wantsPqc) {
+    if (!pqcPublicKey) {
+      throw new MultisigError(400, "PQC_KEY_NOT_REGISTERED", "Signer has no registered post-quantum key");
+    }
+    if (!input.pqcSignature) {
+      throw new MultisigError(400, "INVALID_PQC_SIGNATURE", "pqcSignature is required for post-quantum signing");
+    }
+    const pqcSignature = decodePqcSignerSignature(input.pqcSignature);
+    if (!verifyPqcSignerSignature(pqcPublicKey, payload, pqcSignature)) {
+      throw new MultisigError(400, "INVALID_PQC_SIGNATURE", "Post-quantum signature does not match the proposal payload");
+    }
+    // When both signatures are supplied, the ed25519 one must also be valid.
+    if (input.signature) {
+      const ed = decodeSignature(input.signature);
+      if (!verifySignerSignature(input.publicKey, payload, ed)) {
+        throw new MultisigError(400, "INVALID_SIGNATURE", "Signature does not match the proposal payload");
+      }
+    }
+    const signatures = { ...proposal.signatures, [input.publicKey]: pqcSignature.toString("hex") };
+    const reached = Object.keys(signatures).length >= proposal.threshold;
+    proposal = { ...proposal, signatures, status: reached ? "ready" : "pending" };
+    saveProposal(proposal);
+    if (reached) await notifySigners(wallet, proposal, "ready");
+    return proposal;
+  }
+
+  if (!input.signature) {
+    throw new MultisigError(400, "INVALID_SIGNATURE", "signature is required");
+  }
   const signature = decodeSignature(input.signature);
-  if (!verifySignerSignature(input.publicKey, Buffer.from(proposal.payloadHex, "hex"), signature)) {
+  if (!verifySignerSignature(input.publicKey, payload, signature)) {
     throw new MultisigError(400, "INVALID_SIGNATURE", "Signature does not match the proposal payload");
   }
 
@@ -459,6 +563,8 @@ export async function submitProposal(chain: MultisigChain, id: string): Promise<
     throw new MultisigError(409, "NOT_READY", `Proposal is ${proposal.status}; ${proposal.threshold} signatures are required`);
   }
   const entry = StellarSdk.xdr.SorobanAuthorizationEntry.fromXDR(proposal.authEntryXdr, "base64");
+  // PQC signatures are longer than ed25519 ones; the on-chain wallet contract
+  // distinguishes them by length and verifies with the registered PQC key.
   entry
     .credentials()
     .address()

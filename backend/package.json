@@ -13,6 +13,8 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "tsx ../tests/e2e/payment-flow.ts",
     "test:scrub": "tsx tests/scrub.test.ts",
+    "test:lake": "tsx tests/dataLake.test.ts",
+    "test:algo": "tsx tests/algoEngine.test.ts"
     "test:cors": "tsx tests/cors.test.ts",
     "test:rate-limit-spoof": "tsx tests/rate-limit-spoof.test.ts",
     "test:integration": "vitest run --config vitest.config.ts",

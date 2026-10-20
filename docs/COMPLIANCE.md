@@ -21,3 +21,23 @@ The report includes customer count, distributed energy in MWh, revenue in XLM, s
 ## Data quality
 
 Reports query the current Soroban meter registry and provider revenue. If the RPC is temporarily unavailable, the service returns a structurally valid report with zero unavailable aggregates only when the query cannot be completed; operators should treat that result as a data-quality warning and rerun before submission.
+
+## Sandbox mode
+
+Regulatory-sensitive features can be exercised in an isolated **sandbox** environment before they are promoted to production. See [SANDBOX.md](./SANDBOX.md) for the full guide.
+
+### Isolation from production compliance
+
+Sandbox reports are fully isolated from production compliance:
+
+- Sandbox runs use a separate signing secret (`SANDBOX_COMPLIANCE_SIGNING_SECRET`) so sandbox artifacts can never be mistaken for, or verified against, production signatures.
+- Sandbox reports are generated from **synthetic test data** only; they never query the production Soroban meter registry or provider revenue.
+- Sandbox artifacts are tagged with `environment: sandbox` in the JSON payload and are written to a separate archive namespace, keeping them out of production retention and submission pipelines.
+- Experimental features are gated behind feature flags that default to **off** in production, so enabling them in the sandbox has no effect on production compliance behavior.
+
+### Promoting features safely
+
+1. Enable the relevant feature flag in the sandbox and validate behavior against synthetic data.
+2. Review generated sandbox reports and confirm signatures verify with the sandbox secret.
+3. Run the sandbox isolation tests to confirm no production data or secrets are touched.
+4. Promote by enabling the feature flag in production only after sandbox validation passes; production continues to use the production signing secret and live data sources.

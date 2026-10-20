@@ -1,136 +1,81 @@
-import { getUsageSummary } from "./usageEvents.js";
-import { getDevice } from "./deviceRegistry.js";
-import { getMeterLocationIndex } from "./meterMetadataIndex.js";
-
-export type CapacityTier = "residential" | "commercial" | "industrial";
-export type LocationType = "urban" | "suburban" | "rural";
-
-export type PeerGroupMetrics = {
-  peerGroup: string;
-  capacityTier: CapacityTier;
-  locationType: LocationType;
-  meterCount: number;
-  avgUsageKwh: number;
-  avgEfficiency: number;
-  avgUptimePct: number;
-};
-
-export type MeterBenchmarkResult = {
+export interface MeterProfile {
   meterId: string;
-  peerGroup: string;
-  capacityTier: CapacityTier;
-  locationType: LocationType;
-  meterStats: {
-    usageKwh: number;
-    efficiency: number;
-    uptimePct: number;
-  };
-  peerGroupAverages: {
-    avgUsageKwh: number;
-    avgEfficiency: number;
-    avgUptimePct: number;
-  };
-  performanceScore: number; // 0 - 100
-  percentileRank: number; // 0 - 100
-  comparison: {
-    usageVsPeerAvgPct: number;
-    efficiencyVsPeerAvgPct: number;
-    uptimeVsPeerAvgPct: number;
-  };
-};
-
-export function classifyCapacityTier(capacityWatts: number): CapacityTier {
-  if (capacityWatts >= 50_000) return "industrial";
-  if (capacityWatts >= 10_000) return "commercial";
-  return "residential";
+  lat: number;
+  lng: number;
+  capacityKw: number;
+  ageYears: number;
+  /** Actual daily output in kWh */
+  dailyKwh: number;
+  /** Fraction of daily output produced in morning vs afternoon, used to infer shading */
+  morningRatio?: number;
 }
 
-export function classifyLocationType(location?: string | null): LocationType {
-  const loc = (location ?? "").toLowerCase();
-  if (loc.includes("rural") || loc.includes("farm") || loc.includes("village") || loc.includes("valley")) return "rural";
-  if (loc.includes("suburb") || loc.includes("county") || loc.includes("district")) return "suburban";
-  return "urban";
+export interface Outlier {
+  meterId: string;
+  clusterId: number;
+  performanceRatio: number;
+  zScore: number;
+  rootCause: string;
+  recommendation: string;
 }
 
-export function calculatePerformanceScore(
-  efficiency: number,
-  uptimePct: number,
-  usageRatio: number,
-): number {
-  // Efficiency (0 - 100) -> 40% weight
-  const effScore = Math.min(100, Math.max(0, efficiency)) * 0.4;
-  // Uptime (0 - 100) -> 40% weight
-  const uptimeScore = Math.min(100, Math.max(0, uptimePct)) * 0.4;
-  // Usage consistency (optimality relative to peer average) -> 20% weight
-  const usageScore = Math.min(1.0, Math.max(0, usageRatio)) * 20;
+const features = (m: MeterProfile) => [m.lat, m.lng, m.capacityKw / 10, m.ageYears / 5];
+const dist = (a: number[], b: number[]) => Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0));
 
-  return Math.round(Math.min(100, Math.max(0, effScore + uptimeScore + usageScore)));
+/** k-means clustering on location, capacity and age. */
+export function clusterMeters(meters: MeterProfile[], k = Math.max(1, Math.round(Math.sqrt(meters.length / 2))), iters = 20): number[] {
+  if (!meters.length) return [];
+  const pts = meters.map(features);
+  let centroids = pts.slice(0, Math.min(k, pts.length)).map((p) => [...p]);
+  let labels = new Array(pts.length).fill(0);
+  for (let it = 0; it < iters; it++) {
+    labels = pts.map((p) => centroids.reduce((best, c, i) => (dist(p, c) < dist(p, centroids[best]) ? i : best), 0));
+    centroids = centroids.map((c, i) => {
+      const members = pts.filter((_, j) => labels[j] === i);
+      return members.length ? c.map((_, d) => members.reduce((s, m) => s + m[d], 0) / members.length) : c;
+    });
+  }
+  return labels;
 }
 
-export function calculatePercentileRank(score: number): number {
-  // Model empirical distribution centered around score 75, std dev 15
-  if (score >= 95) return 98;
-  if (score >= 90) return 92;
-  if (score >= 85) return 82;
-  if (score >= 75) return 65;
-  if (score >= 65) return 45;
-  if (score >= 50) return 25;
-  return Math.max(5, Math.round(score * 0.4));
+function diagnose(m: MeterProfile, ratio: number, clusterMean: number): [string, string] {
+  if (m.morningRatio !== undefined && (m.morningRatio < 0.3 || m.morningRatio > 0.7))
+    return ["Partial shading", "Inspect surroundings and trim vegetation or relocate panels"];
+  if (ratio < clusterMean * 0.5) return ["Faulty panel or inverter", "Dispatch technician to test panel strings and inverter"];
+  if (m.ageYears > 15) return ["Panel degradation", "Schedule panel replacement"];
+  return ["Soiling / dirty panels", "Schedule panel cleaning"];
 }
 
-export function benchmarkMeter(meterId: string): MeterBenchmarkResult {
-  const device = getDevice(meterId);
-  const capacityWatts = Number(device?.capacityWatts ?? 5000);
-  const location = getMeterLocationIndex(meterId) ?? device?.location ?? "urban";
+/** Detect underperforming meters within each cluster using z-score of performance ratio. */
+export function detectOutliers(meters: MeterProfile[], threshold = -1.5): Outlier[] {
+  const labels = clusterMeters(meters);
+  const ratios = meters.map((m) => m.dailyKwh / Math.max(m.capacityKw, 0.001));
+  const out: Outlier[] = [];
+  for (const cid of new Set(labels)) {
+    const idx = labels.map((l, i) => (l === cid ? i : -1)).filter((i) => i >= 0);
+    const vals = idx.map((i) => ratios[i]);
+    const mean = vals.reduce((s, v) => s + v, 0) / vals.length;
+    const std = Math.sqrt(vals.reduce((s, v) => s + (v - mean) ** 2, 0) / vals.length) || 1e-9;
+    for (const i of idx) {
+      const z = (ratios[i] - mean) / std;
+      if (vals.length > 2 && z < threshold) {
+        const [rootCause, recommendation] = diagnose(meters[i], ratios[i], mean);
+        out.push({ meterId: meters[i].meterId, clusterId: cid, performanceRatio: ratios[i], zScore: z, rootCause, recommendation });
+      }
+    }
+  }
+  return out;
+}
 
-  const capacityTier = classifyCapacityTier(capacityWatts);
-  const locationType = classifyLocationType(location);
-  const peerGroup = `${capacityTier}_${locationType}`;
+/** Tracks performance before/after corrective actions. */
+const fixes = new Map<string, { baseline: number; fixedAt: number; action: string }>();
 
-  // Meter stats
-  const summaries = getUsageSummary(meterId, 30);
-  const totalUnits = summaries.reduce((acc, row) => acc + Number(row.total_units || 0), 0);
-  const meterUsageKwh = summaries.length > 0 ? Number((totalUnits / summaries.length).toFixed(2)) : 25.0;
-  const meterEfficiency = Number((device as any)?.efficiency ?? 92.5);
-  const meterUptimePct = Number((device as any)?.uptime_pct ?? 99.2);
+export function recordFix(meterId: string, baselineRatio: number, action: string) {
+  fixes.set(meterId, { baseline: baselineRatio, fixedAt: Date.now(), action });
+}
 
-  // Peer group baseline averages
-  const peerBaselines: Record<CapacityTier, { usage: number; eff: number; uptime: number }> = {
-    residential: { usage: 22.0, eff: 90.0, uptime: 98.5 },
-    commercial: { usage: 120.0, eff: 93.0, uptime: 99.0 },
-    industrial: { usage: 650.0, eff: 95.0, uptime: 99.5 },
-  };
-
-  const baseline = peerBaselines[capacityTier];
-  const usageRatio = baseline.usage > 0 ? Math.min(1.5, meterUsageKwh / baseline.usage) : 1.0;
-  const performanceScore = calculatePerformanceScore(meterEfficiency, meterUptimePct, usageRatio);
-  const percentileRank = calculatePercentileRank(performanceScore);
-
-  const usageVsPeerAvgPct = Number(((meterUsageKwh - baseline.usage) / baseline.usage * 100).toFixed(1));
-  const efficiencyVsPeerAvgPct = Number(((meterEfficiency - baseline.eff) / baseline.eff * 100).toFixed(1));
-  const uptimeVsPeerAvgPct = Number(((meterUptimePct - baseline.uptime) / baseline.uptime * 100).toFixed(1));
-
-  return {
-    meterId,
-    peerGroup,
-    capacityTier,
-    locationType,
-    meterStats: {
-      usageKwh: meterUsageKwh,
-      efficiency: meterEfficiency,
-      uptimePct: meterUptimePct,
-    },
-    peerGroupAverages: {
-      avgUsageKwh: baseline.usage,
-      avgEfficiency: baseline.eff,
-      avgUptimePct: baseline.uptime,
-    },
-    performanceScore,
-    percentileRank,
-    comparison: {
-      usageVsPeerAvgPct,
-      efficiencyVsPeerAvgPct,
-      uptimeVsPeerAvgPct,
-    },
-  };
+export function improvement(meterId: string, currentRatio: number) {
+  const f = fixes.get(meterId);
+  if (!f) return null;
+  return { ...f, current: currentRatio, improvementPct: ((currentRatio - f.baseline) / (f.baseline || 1)) * 100 };
 }

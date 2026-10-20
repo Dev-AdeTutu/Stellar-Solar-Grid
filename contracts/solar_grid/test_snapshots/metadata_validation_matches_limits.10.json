@@ -86,7 +86,7 @@
                         "string": "k0"
                       },
                       "val": {
-                        "string": "vvvvvvvvv"
+                        "string": "vvv"
                       }
                     },
                     {
@@ -94,7 +94,7 @@
                         "string": "k1"
                       },
                       "val": {
-                        "string": "vvvvvvvvv"
+                        "string": "vvv"
                       }
                     },
                     {
@@ -102,7 +102,7 @@
                         "string": "k2"
                       },
                       "val": {
-                        "string": "vvvvvvvvv"
+                        "string": "vvv"
                       }
                     },
                     {
@@ -110,7 +110,7 @@
                         "string": "k3"
                       },
                       "val": {
-                        "string": "vvvvvvvvv"
+                        "string": "vvv"
                       }
                     },
                     {
@@ -118,23 +118,7 @@
                         "string": "k4"
                       },
                       "val": {
-                        "string": "vvvvvvvvv"
-                      }
-                    },
-                    {
-                      "key": {
-                        "string": "k5"
-                      },
-                      "val": {
-                        "string": "vvvvvvvvv"
-                      }
-                    },
-                    {
-                      "key": {
-                        "string": "k6"
-                      },
-                      "val": {
-                        "string": "vvvvvvvvv"
+                        "string": "vvv"
                       }
                     }
                   ]
@@ -450,9 +434,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -511,7 +511,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 7
+                      "u32": 8
                     }
                   }
                 ]
@@ -547,7 +547,7 @@
                       "string": "k0"
                     },
                     "val": {
-                      "string": "vvvvvvvvv"
+                      "string": "vvv"
                     }
                   },
                   {
@@ -555,7 +555,7 @@
                       "string": "k1"
                     },
                     "val": {
-                      "string": "vvvvvvvvv"
+                      "string": "vvv"
                     }
                   },
                   {
@@ -563,7 +563,7 @@
                       "string": "k2"
                     },
                     "val": {
-                      "string": "vvvvvvvvv"
+                      "string": "vvv"
                     }
                   },
                   {
@@ -571,7 +571,7 @@
                       "string": "k3"
                     },
                     "val": {
-                      "string": "vvvvvvvvv"
+                      "string": "vvv"
                     }
                   },
                   {
@@ -579,23 +579,7 @@
                       "string": "k4"
                     },
                     "val": {
-                      "string": "vvvvvvvvv"
-                    }
-                  },
-                  {
-                    "key": {
-                      "string": "k5"
-                    },
-                    "val": {
-                      "string": "vvvvvvvvv"
-                    }
-                  },
-                  {
-                    "key": {
-                      "string": "k6"
-                    },
-                    "val": {
-                      "string": "vvvvvvvvv"
+                      "string": "vvv"
                     }
                   }
                 ]
@@ -625,7 +609,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },

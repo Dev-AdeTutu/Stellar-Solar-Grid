@@ -344,6 +344,100 @@ export const typeDefs = /* GraphQL */ `
     stakedAt: String
   }
 
+  # ── Energy credit derivatives (#1062) ─────────────────────────────────────
+
+  enum DerivativeType { FUTURES OPTION }
+  enum OptionType { CALL PUT }
+  enum DerivativeSide { LONG SHORT }
+  enum DerivativeStatus { OPEN FILLED PARTIALLY_FILLED SETTLED EXPIRED LIQUIDATED CANCELLED }
+
+  """A futures or options order on future energy credits."""
+  type DerivativeOrder {
+    id: ID!
+    type: DerivativeType!
+    optionType: OptionType
+    side: DerivativeSide!
+    trader: String!
+    quantity: Float!
+    filledQuantity: Float!
+    price: String!
+    strikePrice: String
+    premium: String
+    margin: String!
+    status: DerivativeStatus!
+    createdAt: String!
+    updatedAt: String!
+  }
+
+  """A futures contract for delivery of energy credits at expiry."""
+  type FuturesContract {
+    id: ID!
+    orderId: ID!
+    buyer: String!
+    seller: String!
+    quantity: Float!
+    price: String!
+    margin: String!
+    settlementPrice: String
+    status: DerivativeStatus!
+    createdAt: String!
+    expiresAt: String!
+    settledAt: String
+  }
+
+  """A call or put option on the energy credit price."""
+  type OptionsContract {
+    id: ID!
+    orderId: ID!
+    holder: String!
+    writer: String!
+    optionType: OptionType!
+    quantity: Float!
+    strikePrice: String!
+    premium: String!
+    margin: String!
+    intrinsicValue: String
+    status: DerivativeStatus!
+    createdAt: String!
+    expiresAt: String!
+    settledAt: String
+  }
+
+  """Margin account backing derivative positions, with liquidation state."""
+  type MarginAccount {
+    trader: String!
+    balance: String!
+    lockedMargin: String!
+    maintenanceMargin: String!
+    availableMargin: String!
+    equity: String!
+    marginRatio: Float!
+    liquidatable: Boolean!
+    updatedAt: String!
+  }
+
+  type DerivativePosition {
+    order: DerivativeOrder!
+    futures: FuturesContract
+    option: OptionsContract
+  }
+
+  input CreateDerivativeOrderInput {
+    type: DerivativeType!
+    optionType: OptionType
+    side: DerivativeSide!
+    quantity: Float!
+    price: Float!
+    strikePrice: Float
+    premium: Float
+    expiresAt: String!
+  }
+
+  input SettleDerivativeInput {
+    orderId: ID!
+    settlementPrice: Float!
+  }
+
   # ── Generic REST bridge ────────────────────────────────────────────────────
 
   type RestResponse { status: Int!, body: JSON }
@@ -381,6 +475,14 @@ export const typeDefs = /* GraphQL */ `
     staker(address: String!): StakerInfo!
     votingPower(address: String!): String!
 
+    derivativeOrder(id: ID!): DerivativeOrder
+    derivativeOrders(trader: String, type: DerivativeType, status: DerivativeStatus, limit: Int = 50, offset: Int = 0): [DerivativeOrder!]!
+    futuresContracts(trader: String, status: DerivativeStatus): [FuturesContract!]!
+    optionsContracts(trader: String, status: DerivativeStatus): [OptionsContract!]!
+    derivativePositions(trader: String!): [DerivativePosition!]!
+    marginAccount(trader: String!): MarginAccount
+    liquidatableAccounts: [MarginAccount!]!
+
     """
     Read-only pass-through to any REST GET endpoint under /api (e.g.
     path: "/api/stats/summary"). Auth headers from the GraphQL request are
@@ -398,6 +500,12 @@ export const typeDefs = /* GraphQL */ `
     completeMaintenance(deviceId: ID!, scheduleId: ID!, performedAt: String): MaintenanceSchedule
     recordDevicePerformance(deviceId: ID!, input: PerformanceInput!): Boolean!
     recordHeartbeat(meterId: String!, responseTimeMs: Float, error: Boolean): MeterHealth
+
+    createDerivativeOrder(input: CreateDerivativeOrderInput!): DerivativeOrder!
+    cancelDerivativeOrder(id: ID!): DerivativeOrder
+    settleDerivative(input: SettleDerivativeInput!): DerivativeOrder!
+    settleExpiredDerivatives(now: String): [DerivativeOrder!]!
+    liquidateMarginAccount(trader: String!): MarginAccount!
 
     """
     Pass-through to any mutating REST endpoint under /api (payments,

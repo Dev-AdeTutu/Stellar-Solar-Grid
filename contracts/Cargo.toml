@@ -1,4 +1,5 @@
 [workspace]
+members = ["solar_grid", "crowdfunding"]
 members = ["solar_grid", "multisig_wallet"]
 resolver = "2"
 

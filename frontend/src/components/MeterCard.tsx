@@ -3,6 +3,12 @@ import Link from "next/link";
 import { MeterStatusBadge } from "./MeterStatusBadge";
 import { formatXLM } from "@/lib/format";
 
+export interface MeterShareholder {
+  address: string;
+  /** Ownership share in basis points (10_000 = 100%). */
+  shareBps: number;
+}
+
 export interface MeterCardProps {
   meterId: string;
   owner: string;
@@ -13,7 +19,21 @@ export interface MeterCardProps {
   graceExpiresAt?: bigint | null;
   onDeactivate?: () => void;
   isDeactivating?: boolean;
+  /** Optional pre-fetched shareholders; when omitted they are fetched by meterId. */
+  shareholders?: MeterShareholder[];
 }
+
+const BPS_DENOMINATOR = 10_000;
+
+function formatShare(shareBps: number): string {
+  const pct = (shareBps / BPS_DENOMINATOR) * 100;
+  return `${Number.isInteger(pct) ? pct : pct.toFixed(2)}%`;
+}
+
+function shortenAddress(address: string): string {
+  return `${address.slice(0, 6)}...${address.slice(-6)}`;
+}
+=======
 
 const COMMON_EMOJIS = ["☀️", "🏠", "🏬", "⚡", "🔋", "🏭"];
 
@@ -27,10 +47,57 @@ export function MeterCard({
   graceExpiresAt,
   onDeactivate,
   isDeactivating = false,
+  shareholders: shareholdersProp,
 }: MeterCardProps) {
   const [nickname, setNickname] = useState<string>("");
   const [isEditing, setIsEditing] = useState(false);
   const [tempNickname, setTempNickname] = useState("");
+  const [fetchedShareholders, setFetchedShareholders] = useState<MeterShareholder[] | null>(null);
+  const [shareholdersLoading, setShareholdersLoading] = useState(false);
+  const [shareholdersError, setShareholdersError] = useState(false);
+
+  useEffect(() => {
+    if (shareholdersProp) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    async function loadShareholders() {
+      setShareholdersLoading(true);
+      setShareholdersError(false);
+      try {
+        const res = await fetch(`/api/meters/${encodeURIComponent(meterId)}/shareholders`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`Failed to load shareholders: ${res.status}`);
+        const data = await res.json();
+        const list: MeterShareholder[] = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.shareholders)
+            ? data.shareholders
+            : [];
+        if (!cancelled) setFetchedShareholders(list);
+      } catch (err) {
+        if (!cancelled && (err as Error)?.name !== "AbortError") {
+          setShareholdersError(true);
+        }
+      } finally {
+        if (!cancelled) setShareholdersLoading(false);
+      }
+    }
+
+    loadShareholders();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [meterId, shareholdersProp]);
+
+  const shareholders = shareholdersProp ?? fetchedShareholders ?? [];
+  const isCoOwned = shareholders.length > 1;
+  const totalShareBps = shareholders.reduce((sum, s) => sum + (s.shareBps || 0), 0);
+=======
 
   useEffect(() => {
     try {
@@ -203,6 +270,63 @@ export function MeterCard({
           {balanceXlm} <span className="text-sm text-gray-400">XLM</span>
         </p>
       </div>
+
+      {/* Co-owners */}
+      {shareholdersLoading && !shareholdersProp && (
+        <div className="mb-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Co-owners</p>
+          <p className="text-xs text-gray-500">Loading shareholders…</p>
+        </div>
+      )}
+
+      {shareholdersError && !shareholdersProp && (
+        <div className="mb-4">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Co-owners</p>
+          <p className="text-xs text-red-400">Unable to load shareholders.</p>
+        </div>
+      )}
+
+      {isCoOwned && (
+        <div className="mb-4 rounded-lg border border-white/10 bg-solar-dark/40 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Co-owners</p>
+            <span className="text-[10px] text-gray-500">
+              {shareholders.length} owners · {formatShare(totalShareBps)} allocated
+            </span>
+          </div>
+          <ul className="space-y-1.5">
+            {shareholders.map((s) => {
+              const isPrimary = s.address === owner;
+              return (
+                <li
+                  key={s.address}
+                  className="flex items-center justify-between gap-2 text-xs"
+                  title={s.address}
+                >
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span className="font-mono text-gray-300 truncate">{shortenAddress(s.address)}</span>
+                    {isPrimary && (
+                      <span className="rounded bg-solar-yellow/20 px-1 py-0.5 text-[10px] font-semibold text-solar-yellow">
+                        Primary
+                      </span>
+                    )}
+                  </span>
+                  <span className="flex items-center gap-2 shrink-0">
+                    <span className="text-gray-400">{formatShare(s.shareBps)}</span>
+                    <span className="h-1.5 w-12 overflow-hidden rounded-full bg-white/10">
+                      <span
+                        className="block h-full rounded-full bg-solar-yellow"
+                        style={{ width: `${Math.min(100, (s.shareBps / BPS_DENOMINATOR) * 100)}%` }}
+                      />
+                    </span>
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+=======
 
       {/* Plan and Expiry */}
       <div className="grid grid-cols-2 gap-3 mb-4">

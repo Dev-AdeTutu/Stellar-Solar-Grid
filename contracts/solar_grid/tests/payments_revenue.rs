@@ -22,10 +22,10 @@ fn delegate_can_pay_until_removed() {
             .try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::Unauthorized))
     );
-    fx.client.add_delegate(&meter, &delegate);
+    fx.client.add_delegate(&meter, &delegate, &2, &0);
     assert_eq!(
-        fx.client.get_delegates(&meter),
-        vec![&fx.env, delegate.clone()]
+        fx.client.get_delegates(&meter).get(0).unwrap().delegated_address,
+        delegate
     );
 
     fx.client
@@ -49,7 +49,7 @@ fn delegated_payment_validates_amount_and_pause() {
     let fx = Fixture::new();
     let (meter, _owner) = fx.register("DLG2");
     let delegate = Address::generate(&fx.env);
-    fx.client.add_delegate(&meter, &delegate);
+    fx.client.add_delegate(&meter, &delegate, &2, &0);
     assert_eq!(
         fx.client
             .try_make_delegated_payment(&meter, &delegate, &0, &PaymentPlan::Daily, &None),

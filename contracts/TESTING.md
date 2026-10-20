@@ -19,6 +19,9 @@ with `cargo test` from `contracts/` and in the **Contract CI** workflow.
 | `payments_revenue.rs` | Delegated payments, auto top-up, meter groups, referrals, time-of-use pricing, revenue sharing, refunds, multi-asset |
 | `staking.rs` | Staking rewards, reserve cap, cooldown/withdraw/cancel, pause behaviour |
 | `emergency_pause.rs`, `reentrancy_allowlist.rs` | Emergency pause and reentrancy/allowlist guards |
+| `certificates.rs` | Certificate-authority lifecycle: issuance for verified generation, third-party verification, cryptographic proof checks, revocation of fraudulent certificates, standard-compliance metadata |
+| `quantum_crypto.rs` | Post-quantum signature verification, backward compatibility during migration, quantum-resistance tests |
+| `commons.rs` | Energy commons governance: resource boundaries, member-defined usage rules, monitoring, graduated sanctions, conflict resolution |
 
 Shared fixtures live in `tests/common/mod.rs`. `Fixture::new()` deploys the
 contract through its constructor with a Stellar Asset Contract as the payment
@@ -32,6 +35,9 @@ cd contracts
 cargo test --all-targets                 # everything
 cargo test --test staking                # one integration suite
 cargo test --test properties             # property tests only
+cargo test --test certificates           # certificate lifecycle only
+cargo test --test quantum_crypto         # quantum-crypto resistance + benchmarks
+cargo test --test commons                # commons governance only
 PROPTEST_CASES=2000 cargo test --test properties   # deeper fuzzing locally
 ```
 
@@ -84,6 +90,13 @@ bounds on ledger writes:
 | `make_payment` | ~419k / 850k | 8 |
 | `update_usage` | ~174k / 400k | 3 |
 | `check_access` | ~69k / — | 0 |
+| `issue_certificate` | see `quantum_crypto.rs` benchmarks | see `quantum_crypto.rs` benchmarks |
+| `verify_certificate` | see `quantum_crypto.rs` benchmarks | see `quantum_crypto.rs` benchmarks |
+| post-quantum signature verify | see `quantum_crypto.rs` benchmarks | see `quantum_crypto.rs` benchmarks |
+
+Post-quantum signature verification is benchmarked in `tests/quantum_crypto.rs`
+alongside the resistance tests; the benchmarks record measured instruction
+counts so regressions in the migration path are visible in CI.
 
 A usage batch writes two entries per meter, so the network's 50-entry write
 limit caps `batch_update_usage` at about 24 meters per transaction even though

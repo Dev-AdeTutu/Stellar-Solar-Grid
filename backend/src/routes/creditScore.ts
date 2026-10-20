@@ -19,6 +19,11 @@ import {
   setCreditOverride,
 } from "../lib/creditOverrides.js";
 import { logger } from "../lib/logger.js";
+import {
+  computeReputationScore,
+  getReputationRecord,
+  linkDid,
+} from "../lib/reputationScoring.js";
 
 export const creditScoreRouter = Router();
 
@@ -123,5 +128,72 @@ creditScoreRouter.delete(
     if (!cleared) return res.status(404).json({ error: "No override found for this address" });
     logger.info({ address }, "Credit score override cleared");
     return res.status(204).send();
+  }),
+);
+
+/**
+ * GET /api/users/:address/reputation-score
+ *
+ * Reputation-based credit scoring (#1070). Returns the 0-100 on-chain
+ * reputation score derived from payment history (timeliness, amounts,
+ * defaults), the linked DID (if any), and portability metadata so the
+ * score can be verified and reused across platforms.
+ *
+ * Response (200):
+ * ```json
+ * {
+ *   "address": "G...",
+ *   "score": 82,
+ *   "tier": "Good",
+ *   "did": "did:stellar:G...",
+ *   "portable": true,
+ *   "privacyPreserving": true,
+ *   "factors": { "timeliness": 0.9, "amounts": 0.7, "defaults": 1, ... },
+ *   "attestation": "0x..."
+ * }
+ * ```
+ */
+creditScoreRouter.get(
+  "/:address/reputation-score",
+  validateRequest({ params: CreditScoreAddressParamsSchema }),
+  asyncHandler(async (req, res) => {
+    const { address } = req.params as { address: string };
+    const record = getReputationRecord(address);
+    const result = computeReputationScore(address);
+    return res.json({
+      address,
+      score: result.score,
+      tier: result.tier,
+      did: record?.did ?? null,
+      portable: true,
+      privacyPreserving: true,
+      factors: result.factors,
+      attestation: result.attestation,
+    });
+  }),
+);
+
+/**
+ * POST /api/users/:address/reputation-score/did — link a DID to an address.
+ *
+ * Body:
+ * ```json
+ * { "did": "did:stellar:G..." }
+ * ```
+ * The DID is stored alongside the on-chain reputation record so the score
+ * can be resolved and verified by other platforms.
+ */
+creditScoreRouter.post(
+  "/:address/reputation-score/did",
+  validateRequest({ params: CreditScoreAddressParamsSchema }),
+  asyncHandler(async (req, res) => {
+    const { address } = req.params as { address: string };
+    const { did } = req.body as { did?: string };
+    if (!did || typeof did !== "string" || !did.startsWith("did:")) {
+      return res.status(400).json({ error: "A valid DID (did:...) is required" });
+    }
+    const record = linkDid(address, did);
+    logger.info({ address, did }, "DID linked to reputation record");
+    return res.status(201).json({ address, did: record.did });
   }),
 );
