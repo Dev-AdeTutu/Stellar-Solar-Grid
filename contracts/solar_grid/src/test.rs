@@ -687,4 +687,157 @@ mod batch_and_market_tests {
         let history = client.get_payment_history(&owner);
         assert_eq!(history.len(), 1);
     }
+
+    // ------------------------------------------------------------------
+    // State channel tests
+    // ------------------------------------------------------------------
+
+    fn setup_channel(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        token_address: &Address,
+        deposit: i128,
+    ) -> (Address, u64) {
+        let user = Address::generate(env);
+        token::StellarAssetClient::new(env, token_address).mint(&user, &deposit);
+        let channel_id = client.open_channel(&user, &deposit);
+        (user, channel_id)
+    }
+
+    #[test]
+    fn test_channel_open_locks_deposit() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let deposit = 10_000_000_i128;
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, deposit);
+
+        let channel = client.get_channel(&channel_id).unwrap();
+        assert_eq!(channel.user, user);
+        assert_eq!(channel.deposit, deposit);
+        assert_eq!(channel.balance, deposit);
+        assert_eq!(channel.nonce, 0);
+        assert!(channel.open);
+
+        // Funds are escrowed by the contract.
+        let tc = token::Client::new(&env, &token_address);
+        assert_eq!(tc.balance(&user), 0);
+        assert_eq!(tc.balance(&client.address), deposit);
+    }
+
+    #[test]
+    fn test_channel_offchain_updates_accumulate() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+
+        // Simulate off-chain usage updates; only the latest state is submitted.
+        client.update_channel(&channel_id, &user, &1_000_000_i128, &1);
+        client.update_channel(&channel_id, &user, &2_500_000_i128, &2);
+        client.update_channel(&channel_id, &user, &4_000_000_i128, &3);
+
+        let channel = client.get_channel(&channel_id).unwrap();
+        assert_eq!(channel.balance, 6_000_000);
+        assert_eq!(channel.nonce, 3);
+        assert!(channel.open);
+    }
+
+    #[test]
+    fn test_channel_settle_transfers_balance() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+        client.update_channel(&channel_id, &user, &3_000_000_i128, &1);
+
+        client.settle_channel(&channel_id, &user);
+
+        let channel = client.get_channel(&channel_id).unwrap();
+        assert!(!channel.open);
+        assert_eq!(channel.balance, 0);
+
+        let tc = token::Client::new(&env, &token_address);
+        assert_eq!(tc.balance(&user), 7_000_000);
+        assert_eq!(tc.balance(&client.address), 3_000_000);
+    }
+
+    #[test]
+    fn test_channel_stale_nonce_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+        client.update_channel(&channel_id, &user, &1_000_000_i128, &5);
+
+        let result = client.try_update_channel(&channel_id, &user, &2_000_000_i128, &4);
+        assert!(result.is_err());
+        // State unchanged after rejected update.
+        assert_eq!(client.get_channel(&channel_id).unwrap().balance, 9_000_000);
+    }
+
+    #[test]
+    fn test_channel_overdraft_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 1_000_000);
+
+        let result = client.try_update_channel(&channel_id, &user, &2_000_000_i128, &1);
+        assert!(result.is_err());
+        assert_eq!(client.get_channel(&channel_id).unwrap().balance, 1_000_000);
+    }
+
+    #[test]
+    fn test_channel_dispute_resolution() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+        client.update_channel(&channel_id, &user, &4_000_000_i128, &1);
+
+        // User disputes the latest state; channel is frozen for settlement.
+        client.dispute_channel(&channel_id, &user);
+        let channel = client.get_channel(&channel_id).unwrap();
+        assert!(channel.disputed);
+
+        // No further off-chain updates while disputed.
+        assert!(client
+            .try_update_channel(&channel_id, &user, &1_000_000_i128, &2)
+            .is_err());
+
+        // Admin resolves in favor of the recorded state and settles.
+        client.resolve_dispute(&channel_id, &admin, &6_000_000_i128);
+        let resolved = client.get_channel(&channel_id).unwrap();
+        assert!(!resolved.disputed);
+        assert!(!resolved.open);
+
+        let tc = token::Client::new(&env, &token_address);
+        assert_eq!(tc.balance(&user), 6_000_000);
+    }
+
+    #[test]
+    fn test_channel_unauthorized_update_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (_user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+        let attacker = Address::generate(&env);
+
+        let result = client.try_update_channel(&channel_id, &attacker, &1_000_000_i128, &1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_channel_cost_reduction() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 100_000_000);
+
+        // 100 off-chain micro-updates, then a single on-chain settlement.
+        for nonce in 1..=100u64 {
+            client.update_channel(&channel_id, &user, &100_000_i128, &nonce);
+        }
+        client.settle_channel(&channel_id, &user);
+
+        let channel = client.get_channel(&channel_id).unwrap();
+        assert_eq!(channel.balance, 0);
+        // Only one settlement touched the token ledger for 100 updates.
+        let tc = token::Client::new(&env, &token_address);
+        assert_eq!(tc.balance(&user), 90_000_000);
+    }
+
+    #[test]
+    fn test_channel_settle_twice_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+        client.settle_channel(&channel_id, &user);
+
+        assert!(client.try_settle_channel(&channel_id, &user).is_err());
+    }
 }

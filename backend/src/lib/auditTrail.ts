@@ -39,6 +39,33 @@ export type AuditFilter = {
   offset?: number;
 };
 
+export type ForensicEventInput = {
+  /** Threat classification, e.g. "port_scan", "brute_force", "command_injection", "anomaly". */
+  threatType: string;
+  /** Severity of the detected threat. */
+  severity?: "low" | "medium" | "high" | "critical";
+  /** Originating IP address of the suspicious activity. */
+  sourceIp?: string | null;
+  /** Meter the event is associated with, if any. */
+  meterId?: string | null;
+  /** Raw payload or request body captured at detection time. */
+  payload?: unknown;
+  /** Additional structured context (headers, ports, counts, model scores, ...). */
+  context?: unknown;
+  /** Detector or component that raised the event. */
+  detector?: string | null;
+};
+
+export type ForensicEvent = AuditEntry & {
+  threat_type: string;
+  severity: string;
+  source_ip: string | null;
+  payload: string | null;
+  context: string | null;
+  detector: string | null;
+};
+=======
+
 const GENESIS = "0".repeat(64);
 
 const db = (() => {
@@ -65,6 +92,26 @@ const db = (() => {
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
     CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+    -- Forensic security events, linked to the hash-chained audit log.
+    CREATE TABLE IF NOT EXISTS forensic_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      audit_id INTEGER NOT NULL REFERENCES audit_log (id),
+      timestamp TEXT NOT NULL,
+      threat_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      source_ip TEXT,
+      meter_id TEXT,
+      payload TEXT,
+      context TEXT,
+      detector TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_forensic_meter ON forensic_events (meter_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_forensic_threat ON forensic_events (threat_type, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_forensic_ip ON forensic_events (source_ip, timestamp);
+    CREATE TRIGGER IF NOT EXISTS forensic_no_update BEFORE UPDATE ON forensic_events
+      BEGIN SELECT RAISE(ABORT, 'forensic_events is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS forensic_no_delete BEFORE DELETE ON forensic_events
+      BEGIN SELECT RAISE(ABORT, 'forensic_events is append-only'); END;
   `);
   return d;
 })();
@@ -101,6 +148,77 @@ export const recordAudit = db.transaction((input: AuditInput): AuditEntry => {
     .run({ ...base, hash });
   return { id: Number(lastInsertRowid), ...base, hash };
 });
+
+/**
+ * Record a security event for forensic analysis. The event is written to the
+ * append-only forensic table and mirrored into the hash-chained audit log so
+ * that it inherits tamper-evidence and appears in compliance reports.
+ */
+export const recordForensicEvent = db.transaction(
+  (input: ForensicEventInput): ForensicEvent => {
+    const severity = input.severity ?? "medium";
+    const audit = recordAudit({
+      action: "security.threat_detected",
+      meterId: input.meterId ?? null,
+      details: {
+        threatType: input.threatType,
+        severity,
+        sourceIp: input.sourceIp ?? null,
+        detector: input.detector ?? null,
+        payload: input.payload ?? null,
+        context: input.context ?? null,
+      },
+    });
+    const row = {
+      audit_id: audit.id,
+      timestamp: audit.timestamp,
+      threat_type: input.threatType,
+      severity,
+      source_ip: input.sourceIp ?? null,
+      meter_id: input.meterId ?? null,
+      payload: input.payload == null ? null : JSON.stringify(input.payload),
+      context: input.context == null ? null : JSON.stringify(input.context),
+      detector: input.detector ?? null,
+    };
+    const { lastInsertRowid } = db
+      .prepare(
+        `INSERT INTO forensic_events
+           (audit_id, timestamp, threat_type, severity, source_ip, meter_id, payload, context, detector)
+         VALUES
+           (@audit_id, @timestamp, @threat_type, @severity, @source_ip, @meter_id, @payload, @context, @detector)`,
+      )
+      .run(row);
+    return { ...audit, id: Number(lastInsertRowid), ...row };
+  },
+);
+
+export type ForensicFilter = {
+  threatType?: string;
+  severity?: string;
+  sourceIp?: string;
+  meterId?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+/** Query collected forensic events, newest first. */
+export function queryForensicEvents(f: ForensicFilter = {}): ForensicEvent[] {
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (f.threatType) { where.push("threat_type = @threatType"); params.threatType = f.threatType; }
+  if (f.severity) { where.push("severity = @severity"); params.severity = f.severity; }
+  if (f.sourceIp) { where.push("source_ip = @sourceIp"); params.sourceIp = f.sourceIp; }
+  if (f.meterId) { where.push("meter_id = @meterId"); params.meterId = f.meterId; }
+  if (f.from) { where.push("timestamp >= @from"); params.from = f.from; }
+  if (f.to) { where.push("timestamp <= @to"); params.to = f.to; }
+  params.limit = Math.min(Math.max(f.limit ?? 100, 1), 10_000);
+  params.offset = Math.max(f.offset ?? 0, 0);
+  const sql = `SELECT * FROM forensic_events ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY id DESC LIMIT @limit OFFSET @offset`;
+  return db.prepare(sql).all(params) as ForensicEvent[];
+}
 
 export function queryAudit(f: AuditFilter = {}): AuditEntry[] {
   const where: string[] = [];

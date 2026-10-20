@@ -28,6 +28,18 @@ export interface TopologyLink {
   loadPercentage: number;
 }
 
+export type GridConnectionState = "grid-connected" | "islanded" | "transitioning";
+
+export interface IslandInfo {
+  id: string;
+  label: string;
+  nodeIds: string[];
+  state: GridConnectionState;
+  localGenerationKw?: number;
+  localStorageKw?: number;
+  sharedEnergyKw?: number;
+}
+
 export interface NetworkTopologyGraph {
   nodes: TopologyNode[];
   links: TopologyLink[];
@@ -40,6 +52,8 @@ export interface NetworkTopologyGraph {
     inactiveCount: number;
     faultCount: number;
   };
+  gridConnectionState?: GridConnectionState;
+  islands?: IslandInfo[];
   generatedAt: string;
 }
 
@@ -47,6 +61,18 @@ const STATUS_COLORS: Record<NodeStatus, string> = {
   active: "#10b981",
   inactive: "#9ca3af",
   fault: "#ef4444",
+};
+
+const CONNECTION_STATE_COLORS: Record<GridConnectionState, string> = {
+  "grid-connected": "#10b981",
+  islanded: "#f59e0b",
+  transitioning: "#3b82f6",
+};
+
+const CONNECTION_STATE_LABELS: Record<GridConnectionState, string> = {
+  "grid-connected": "Grid Connected",
+  islanded: "Island Mode",
+  transitioning: "Transitioning",
 };
 
 const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
@@ -134,6 +160,8 @@ const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
     inactiveCount: 1,
     faultCount: 2,
   },
+  gridConnectionState: "grid-connected",
+  islands: [],
   generatedAt: new Date().toISOString(),
 };
 
@@ -143,6 +171,7 @@ export const NetworkTopologyMap: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [scale, setScale] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [showIslands, setShowIslands] = useState<boolean>(true);
   const isDraggingRef = useRef(false);
   const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
@@ -189,6 +218,40 @@ export const NetworkTopologyMap: React.FC = () => {
     return map;
   }, [graph]);
 
+  const gridConnectionState: GridConnectionState = graph.gridConnectionState ?? "grid-connected";
+  const islands = useMemo(() => graph.islands ?? [], [graph.islands]);
+
+  const islandByNodeId = useMemo(() => {
+    const map = new Map<string, IslandInfo>();
+    islands.forEach((island) => {
+      island.nodeIds.forEach((nodeId) => map.set(nodeId, island));
+    });
+    return map;
+  }, [islands]);
+
+  const islandBounds = useMemo(() => {
+    return islands
+      .map((island) => {
+        const points = island.nodeIds
+          .map((nodeId) => positionedNodes.get(nodeId))
+          .filter((n): n is TopologyNode & { x: number; y: number } => Boolean(n));
+        if (points.length === 0) return null;
+        const padding = 48;
+        const minX = Math.min(...points.map((p) => p.x)) - padding;
+        const maxX = Math.max(...points.map((p) => p.x)) + padding;
+        const minY = Math.min(...points.map((p) => p.y)) - padding;
+        const maxY = Math.max(...points.map((p) => p.y)) + padding;
+        return {
+          island,
+          x: minX,
+          y: minY,
+          width: Math.max(maxX - minX, 80),
+          height: Math.max(maxY - minY, 80),
+        };
+      })
+      .filter((b): b is NonNullable<typeof b> => b !== null);
+  }, [islands, positionedNodes]);
+
   const handleZoomIn = () => setScale((s) => Math.min(2.5, Number((s + 0.2).toFixed(2))));
   const handleZoomOut = () => setScale((s) => Math.max(0.4, Number((s - 0.2).toFixed(2))));
   const handleResetView = () => {
@@ -224,6 +287,36 @@ export const NetworkTopologyMap: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          <div
+            className="flex items-center gap-2 px-3 py-1.5 rounded text-sm font-semibold"
+            style={{
+              backgroundColor: `${CONNECTION_STATE_COLORS[gridConnectionState]}22`,
+              color: CONNECTION_STATE_COLORS[gridConnectionState],
+              border: `1px solid ${CONNECTION_STATE_COLORS[gridConnectionState]}`,
+            }}
+            data-testid="grid-connection-status"
+            data-state={gridConnectionState}
+          >
+            <span
+              className="inline-block w-2.5 h-2.5 rounded-full"
+              style={{ backgroundColor: CONNECTION_STATE_COLORS[gridConnectionState] }}
+              aria-hidden="true"
+            />
+            {CONNECTION_STATE_LABELS[gridConnectionState]}
+          </div>
+
+          {islands.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowIslands((v) => !v)}
+              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded text-sm"
+              aria-pressed={showIslands}
+              data-testid="toggle-islands"
+            >
+              {showIslands ? "Hide Islands" : "Show Islands"}
+            </button>
+          )}
+
           <select
             aria-label="Filter by node status"
             value={statusFilter}
@@ -274,6 +367,32 @@ export const NetworkTopologyMap: React.FC = () => {
             data-testid="topology-svg"
           >
             <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale})`}>
+              {showIslands &&
+                islandBounds.map(({ island, x, y, width, height }) => (
+                  <g key={`island-${island.id}`} data-testid={`island-boundary-${island.id}`}>
+                    <rect
+                      x={x}
+                      y={y}
+                      width={width}
+                      height={height}
+                      rx={16}
+                      fill={`${CONNECTION_STATE_COLORS[island.state]}14`}
+                      stroke={CONNECTION_STATE_COLORS[island.state]}
+                      strokeWidth={2}
+                      strokeDasharray="8,6"
+                    />
+                    <text
+                      x={x + 10}
+                      y={y + 18}
+                      fill={CONNECTION_STATE_COLORS[island.state]}
+                      fontSize={11}
+                      fontWeight={600}
+                    >
+                      {island.label}
+                    </text>
+                  </g>
+                ))}
+
               {graph.links.map((link) => {
                 const source = positionedNodes.get(link.source);
                 const target = positionedNodes.get(link.target);
@@ -302,30 +421,46 @@ export const NetworkTopologyMap: React.FC = () => {
                 );
               })}
 
-              {Array.from(positionedNodes.values()).map((node) => (
-                <g
-                  key={node.id}
-                  transform={`translate(${node.x}, ${node.y})`}
-                  onClick={() => setSelectedNode(node)}
-                  className="cursor-pointer"
-                  data-testid={`topology-node-${node.id}`}
-                >
-                  <circle
-                    r={node.type === "grid" ? 26 : node.type === "transformer" ? 20 : 15}
-                    fill={STATUS_COLORS[node.status]}
-                    stroke={selectedNode?.id === node.id ? "#ffffff" : "#1e293b"}
-                    strokeWidth={3}
-                  />
-                  <text
-                    y={node.type === "grid" ? 40 : 34}
-                    fill="#e2e8f0"
-                    fontSize={11}
-                    textAnchor="middle"
+              {Array.from(positionedNodes.values()).map((node) => {
+                const island = islandByNodeId.get(node.id);
+                const isIslanded = Boolean(island) && island?.state !== "grid-connected";
+                const ringColor = island ? CONNECTION_STATE_COLORS[island.state] : undefined;
+                return (
+                  <g
+                    key={node.id}
+                    transform={`translate(${node.x}, ${node.y})`}
+                    onClick={() => setSelectedNode(node)}
+                    className="cursor-pointer"
+                    data-testid={`topology-node-${node.id}`}
+                    data-islanded={isIslanded ? "true" : "false"}
                   >
-                    {node.label}
-                  </text>
-                </g>
-              ))}
+                    {isIslanded && (
+                      <circle
+                        r={node.type === "grid" ? 34 : node.type === "transformer" ? 28 : 23}
+                        fill="none"
+                        stroke={ringColor}
+                        strokeWidth={2}
+                        strokeDasharray="4,4"
+                        data-testid={`island-ring-${node.id}`}
+                      />
+                    )}
+                    <circle
+                      r={node.type === "grid" ? 26 : node.type === "transformer" ? 20 : 15}
+                      fill={STATUS_COLORS[node.status]}
+                      stroke={selectedNode?.id === node.id ? "#ffffff" : "#1e293b"}
+                      strokeWidth={3}
+                    />
+                    <text
+                      y={node.type === "grid" ? 40 : 34}
+                      fill="#e2e8f0"
+                      fontSize={11}
+                      textAnchor="middle"
+                    >
+                      {node.label}
+                    </text>
+                  </g>
+                );
+              })}
             </g>
           </svg>
         </div>
@@ -371,11 +506,48 @@ export const NetworkTopologyMap: React.FC = () => {
                   {selectedNode.metadata.capacityKw} kW
                 </div>
               )}
+              {islandByNodeId.get(selectedNode.id) && (
+                <div data-testid="node-island-info">
+                  <span className="text-slate-400">Island:</span>{" "}
+                  {islandByNodeId.get(selectedNode.id)?.label}{" "}
+                  <span
+                    className="px-2 py-0.5 rounded text-xs font-semibold"
+                    style={{
+                      backgroundColor: CONNECTION_STATE_COLORS[islandByNodeId.get(selectedNode.id)!.state],
+                      color: "#0f172a",
+                    }}
+                  >
+                    {CONNECTION_STATE_LABELS[islandByNodeId.get(selectedNode.id)!.state]}
+                  </span>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-sm text-slate-400">
               Click any node in the topology diagram to inspect its real-time status and metrics.
             </p>
+          )}
+
+          {islands.length > 0 && (
+            <div className="space-y-2 text-sm border-t border-slate-800 pt-3" data-testid="island-summary">
+              <h4 className="font-semibold text-slate-300">Islands</h4>
+              {islands.map((island) => (
+                <div key={island.id} className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: CONNECTION_STATE_COLORS[island.state] }}
+                      aria-hidden="true"
+                    />
+                    {island.label}
+                  </span>
+                  <span className="text-xs text-slate-400">
+                    {island.nodeIds.length} nodes
+                    {island.localGenerationKw !== undefined && ` · ${island.localGenerationKw} kW gen`}
+                  </span>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       </div>

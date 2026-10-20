@@ -158,6 +158,91 @@ export class PqcKeyRegistry {
   }
 }
 
+/**
+ * #1044 — A single VPP participant payout: the destination Stellar account,
+ * the amount (in stroops, i.e. 1e-7 of the asset unit) owed to that
+ * participant, and an optional reference (e.g. meter id or portfolio id) used
+ * for reconciliation and memo tagging.
+ */
+export interface VppPayout {
+  /** Destination Stellar account (G...). */
+  address: string;
+  /** Amount in stroops (1 XLM = 10_000_000 stroops). Must be > 0. */
+  amountStroops: bigint;
+  /** Optional reference (meter id, portfolio id) for reconciliation. */
+  reference?: string;
+}
+
+/** Result of a single payout attempt within a batch. */
+export interface VppPayoutResult {
+  address: string;
+  amountStroops: bigint;
+  reference?: string;
+  /** Whether the payment succeeded. */
+  success: boolean;
+  /** Transaction hash when successful. */
+  txHash?: string;
+  /** Error message when unsuccessful. */
+  error?: string;
+}
+
+/** Aggregate result of a batch payout run. */
+export interface VppBatchPayoutResult {
+  /** Total amount attempted, in stroops. */
+  totalStroops: bigint;
+  /** Total amount successfully paid, in stroops. */
+  paidStroops: bigint;
+  /** Per-participant results. */
+  results: VppPayoutResult[];
+  /** Number of successful payouts. */
+  successCount: number;
+  /** Number of failed payouts. */
+  failureCount: number;
+}
+
+/**
+ * #1044 — A revenue share entry used to compute VPP participant payouts.
+ * `shareBps` is the participant's share of the total revenue expressed in
+ * basis points (1 bps = 0.01%). Shares across a portfolio should sum to
+ * 10_000 (100%), but the helper tolerates rounding.
+ */
+export interface VppRevenueShare {
+  address: string;
+  shareBps: number;
+  reference?: string;
+}
+
+/**
+ * #1044 — Compute per-participant payout amounts from a total revenue pool
+ * and a set of revenue shares. Uses integer math on stroops to avoid floating
+ * point drift; any remainder from rounding is left undistributed (returned as
+ * `remainderStroops`) so callers can decide how to handle dust.
+ */
+export function computeVppPayouts(
+  totalStroops: bigint,
+  shares: VppRevenueShare[],
+): { payouts: VppPayout[]; remainderStroops: bigint } {
+  if (totalStroops < 0n) {
+    throw new Error("totalStroops must be non-negative");
+  }
+  const payouts: VppPayout[] = [];
+  let distributed = 0n;
+  for (const share of shares) {
+    if (!Number.isFinite(share.shareBps) || share.shareBps < 0) {
+      throw new Error(`Invalid shareBps for ${share.address}: ${share.shareBps}`);
+    }
+    const amount = (totalStroops * BigInt(Math.round(share.shareBps))) / 10_000n;
+    if (amount <= 0n) continue;
+    distributed += amount;
+    payouts.push({
+      address: share.address,
+      amountStroops: amount,
+      reference: share.reference,
+    });
+  }
+  return { payouts, remainderStroops: totalStroops - distributed };
+}
+
 export class StellarService {
   public readonly server: StellarSdk.SorobanRpc.Server;
   public readonly adminKeypair: StellarSdk.Keypair;
@@ -506,6 +591,157 @@ export class StellarService {
     }
   }
 
+  /**
+   * #1044 — Send a single payment from the admin account to a VPP participant.
+   *
+   * Builds, simulates, signs and submits a classic `payment` operation. The
+   * amount is expressed in stroops (1 XLM = 10_000_000 stroops) and converted
+   * to the Stellar 7-decimal string representation. Returns the transaction
+   * hash once the payment is confirmed.
+   */
+  async sendVppPayment(payout: VppPayout): Promise<string> {
+    if (!payout.address) throw new Error("VPP payout address is required");
+    if (payout.amountStroops <= 0n) {
+      throw new Error(`VPP payout amount must be positive (got ${payout.amountStroops})`);
+    }
+    // Validate the destination address up front so we fail fast before
+    // touching the network.
+    StellarSdk.Keypair.fromPublicKey(payout.address);
+
+    const requestId = getReqId();
+    return tracer.startActiveSpan("stellar.vpp_payment", async (span) => {
+      span.setAttribute("stellar.op", "vpp_payment");
+      span.setAttribute("vpp.destination", payout.address);
+      span.setAttribute("vpp.amount_stroops", payout.amountStroops.toString());
+      if (payout.reference) span.setAttribute("vpp.reference", payout.reference);
+      try {
+        const hash = await withRpcBreaker(async () => {
+          const account = await this.server.getAccount(this.adminKeypair.publicKey());
+
+          const builder = new StellarSdk.TransactionBuilder(account, {
+            fee: "100",
+            networkPassphrase: this.networkPassphrase,
+          })
+            .addOperation(
+              StellarSdk.Operation.payment({
+                destination: payout.address,
+                asset: StellarSdk.Asset.native(),
+                amount: stroopsToAmount(payout.amountStroops),
+              }),
+            )
+            .setTimeout(30);
+
+          if (payout.reference) {
+            // Memo text is limited to 28 bytes; truncate defensively.
+            builder.addMemo(
+              StellarSdk.Memo.text(payout.reference.slice(0, 28)),
+            );
+          }
+
+          const tx = builder.build();
+          tx.sign(this.adminKeypair);
+
+          const sendResult = await this.server.sendTransaction(tx);
+          const sentHash = (sendResult as any).hash;
+          if (!sentHash) {
+            throw new Error(
+              scrub(`VPP payment submission failed: ${JSON.stringify(sendResult)}`),
+            );
+          }
+          await this.waitForConfirmation(sentHash);
+          return sentHash as string;
+        });
+        span.setStatus({ code: SpanStatusCode.OK });
+        logger.info(
+          { requestId, destination: payout.address, amountStroops: payout.amountStroops.toString(), hash },
+          "VPP participant payment sent",
+        );
+        return hash;
+      } catch (err: any) {
+        span.recordException(err);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message });
+        throw new Error(scrub(err?.message ?? String(err)));
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * #1044 — Distribute VPP revenue to participants in a batch.
+   *
+   * Each payout is submitted as an independent payment so a single bad
+   * destination cannot block the rest of the fleet. Payouts are processed
+   * sequentially to keep nonce handling simple and to avoid overwhelming the
+   * RPC pool; callers that need higher throughput should shard the batch.
+   *
+   * Returns an aggregate result describing which payouts succeeded and which
+   * failed, along with the total amount actually paid.
+   */
+  async distributeVppEarnings(payouts: VppPayout[]): Promise<VppBatchPayoutResult> {
+    const results: VppPayoutResult[] = [];
+    let totalStroops = 0n;
+    let paidStroops = 0n;
+
+    for (const payout of payouts) {
+      totalStroops += payout.amountStroops > 0n ? payout.amountStroops : 0n;
+      try {
+        const txHash = await this.sendVppPayment(payout);
+        paidStroops += payout.amountStroops;
+        results.push({
+          address: payout.address,
+          amountStroops: payout.amountStroops,
+          reference: payout.reference,
+          success: true,
+          txHash,
+        });
+      } catch (err: any) {
+        logger.warn(
+          {
+            address: payout.address,
+            amountStroops: payout.amountStroops.toString(),
+            error: scrub(err?.message ?? String(err)),
+          },
+          "VPP participant payment failed",
+        );
+        results.push({
+          address: payout.address,
+          amountStroops: payout.amountStroops,
+          reference: payout.reference,
+          success: false,
+          error: scrub(err?.message ?? String(err)),
+        });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    return {
+      totalStroops,
+      paidStroops,
+      results,
+      successCount,
+      failureCount: results.length - successCount,
+    };
+  }
+
+  /**
+   * #1044 — Compute and distribute VPP revenue shares in one call.
+   *
+   * Given a total revenue pool (in stroops) and a set of participant revenue
+   * shares (in basis points), computes each participant's payout and submits
+   * the batch via {@link distributeVppEarnings}. The rounding remainder is
+   * returned alongside the batch result so the caller can record it (e.g.
+   * retain it in the VPP treasury).
+   */
+  async distributeVppRevenueShares(
+    totalStroops: bigint,
+    shares: VppRevenueShare[],
+  ): Promise<VppBatchPayoutResult & { remainderStroops: bigint }> {
+    const { payouts, remainderStroops } = computeVppPayouts(totalStroops, shares);
+    const result = await this.distributeVppEarnings(payouts);
+    return { ...result, remainderStroops };
+  }
+
   private rememberQueryResult(key: string, value: unknown): void {
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
 
@@ -559,6 +795,20 @@ export class StellarService {
   }
 }
 
+/**
+ * #1044 — Convert an integer stroop amount to the Stellar 7-decimal string
+ * representation used by `Operation.payment`. Avoids floating point by
+ * formatting the integer directly.
+ */
+export function stroopsToAmount(stroops: bigint): string {
+  if (stroops < 0n) throw new Error("stroops must be non-negative");
+  const whole = stroops / 10_000_000n;
+  const frac = stroops % 10_000_000n;
+  if (frac === 0n) return whole.toString();
+  const fracStr = frac.toString().padStart(7, "0").replace(/0+$/, "");
+  return `${whole}.${fracStr}`;
+}
+
 // Singleton instance — created once at startup and injected into routes.
 export const stellarService = new StellarService({
   rpcUrl: RPC_URL,
@@ -578,3 +828,8 @@ export const getReputationScore = stellarService.getReputationScore.bind(stellar
 export const setDid = stellarService.setDid.bind(stellarService);
 export const getDid = stellarService.getDid.bind(stellarService);
 export const resolveDid = stellarService.resolveDid.bind(stellarService);
+
+// #1044 — VPP earnings distribution aliases.
+export const sendVppPayment = stellarService.sendVppPayment.bind(stellarService);
+export const distributeVppEarnings = stellarService.distributeVppEarnings.bind(stellarService);
+export const distributeVppRevenueShares = stellarService.distributeVppRevenueShares.bind(stellarService);

@@ -161,6 +161,24 @@ pub enum ContractError {
     ReputationNotFound = 75,
     /// A DID string is empty or exceeds MAX_DID_LEN (#1070).
     InvalidDid = 76,
+    /// No state channel exists with the supplied id (#1045).
+    ChannelNotFound = 77,
+    /// The state channel is not open for new updates (#1045).
+    ChannelNotOpen = 78,
+    /// The state channel has already been closed/settled (#1045).
+    ChannelClosed = 79,
+    /// A channel state update has a non-increasing nonce (#1045).
+    ChannelNonceTooLow = 80,
+    /// A channel state update is not signed by both parties (#1045).
+    ChannelInvalidSignature = 81,
+    /// The channel dispute window has not elapsed yet (#1045).
+    ChannelDisputePeriodActive = 82,
+    /// The channel is not currently in dispute (#1045).
+    ChannelNotInDispute = 83,
+    /// The channel dispute window has already elapsed (#1045).
+    ChannelDisputePeriodElapsed = 84,
+    /// A channel deposit/withdrawal amount is invalid (#1045).
+    ChannelInvalidAmount = 85,
 }
 
 pub mod algo_market;
@@ -256,6 +274,19 @@ const REP_ON_TIME_WINDOW_SECS: u64 = 3 * SECONDS_PER_DAY;
 /// Minimum number of recorded payments before a score is considered
 /// meaningful; below this the score is scaled down proportionally.
 const REP_MIN_PAYMENTS: u32 = 3;
+
+// ── Blockchain state channels (#1045) ────────────────────────────────────────
+
+/// Sequential counter for state channels.
+const CHANNEL_COUNT: Symbol = symbol_short!("CH_CNT");
+/// Default dispute window (seconds) during which a close can be challenged.
+const DEFAULT_CHANNEL_DISPUTE_SECS: u64 = 24 * 60 * 60;
+/// Maximum number of off-chain updates retained per channel for dispute
+/// resolution. Older updates are pruned; only the latest state matters for
+/// settlement, but a bounded history lets a challenger prove misbehaviour.
+const MAX_CHANNEL_UPDATES: u32 = 32;
+/// Maximum number of channels a single participant may have open at once.
+const MAX_OPEN_CHANNELS_PER_PARTY: u32 = 16;
 
 /// An announced emergency withdrawal can only be executed once this many
 /// seconds have elapsed since it was announced (#686).
@@ -768,6 +799,73 @@ pub enum DataKey {
     InstallmentPlanList,
     /// Installment plan ids belonging to a payer (#987).
     PayerInstallments(Address),
+    /// State channel definition keyed by channel id (#1045).
+    Channel(u64),
+    /// Global list of state channel ids (#1045).
+    ChannelList,
+    /// Channel ids a participant is party to (#1045).
+    PartyChannels(Address),
+}
+
+/// Lifecycle status of a state channel (#1045).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChannelStatus {
+    /// Channel is open and accepts off-chain state updates.
+    Open,
+    /// A close has been requested; the dispute window is running.
+    Closing,
+    /// A close was challenged; awaiting resolution by the admin.
+    Disputed,
+    /// Final balances have been settled on-chain.
+    Settled,
+}
+
+/// A single off-chain state update for a channel (#1045).
+///
+/// The update is co-signed by both parties; the contract only verifies the
+/// signatures and monotonic nonce, so the actual micro-transactions happen
+/// entirely off-chain and cost nothing until settlement.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelUpdate {
+    /// Monotonically increasing sequence number.
+    pub nonce: u64,
+    /// Balance owed to the payer (depositor) at this state.
+    pub payer_balance: i128,
+    /// Balance owed to the payee (service provider) at this state.
+    pub payee_balance: i128,
+    /// Ledger timestamp at which the update was signed.
+    pub timestamp: u64,
+    /// Commitment hash of the off-chain payload backing this update.
+    pub state_hash: BytesN<32>,
+}
+
+/// A bidirectional payment/usage channel between a payer and a payee (#1045).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Channel {
+    pub id: u64,
+    /// Party funding the channel (e.g. the meter owner).
+    pub payer: Address,
+    /// Party receiving payments (e.g. the service provider).
+    pub payee: Address,
+    /// Total amount deposited into the channel.
+    pub deposit: i128,
+    /// Latest agreed state.
+    pub latest: ChannelUpdate,
+    /// Bounded history of recent updates for dispute resolution.
+    pub history: Vec<ChannelUpdate>,
+    pub status: ChannelStatus,
+    pub opened_at: u64,
+    /// Timestamp after which a requested close can be finalized.
+    pub dispute_deadline: u64,
+    /// Length of the dispute window for this channel.
+    pub dispute_secs: u64,
+    /// Set when a close has been challenged.
+    pub challenged_by: Option<Address>,
+    /// Reason hash supplied by the challenger, if any.
+    pub challenge_reason: Option<BytesN<32>>,
 }
 
 /// Lifecycle state of an installment payment plan (#987).
@@ -1091,6 +1189,352 @@ impl SolarGridContract {
             .instance()
             .get(&CONTRACT_VERSION)
             .unwrap_or_else(|| String::from_str(&env, CURRENT_CONTRACT_VERSION))
+    }
+
+    // ── Issue #1045: blockchain state channels ──────────────────────────────
+
+    /// Open a state channel by depositing `deposit` tokens from `payer`.
+    ///
+    /// The deposit is escrowed by the contract; the payer and payee then
+    /// exchange co-signed [`ChannelUpdate`]s off-chain at zero on-chain cost.
+    /// Only the final balances are settled on-chain when the channel closes.
+    pub fn open_channel(
+        env: Env,
+        payer: Address,
+        payee: Address,
+        deposit: i128,
+        dispute_secs: Option<u64>,
+    ) -> Result<u64, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if deposit <= 0 {
+            return Err(ContractError::ChannelInvalidAmount);
+        }
+        if payer == payee {
+            return Err(ContractError::Unauthorized);
+        }
+        payer.require_auth();
+
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        // Cap the number of concurrently open channels per party.
+        let payer_channels: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PartyChannels(payer.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut open_count: u32 = 0;
+        for id in payer_channels.iter() {
+            if let Some(ch) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Channel>(&DataKey::Channel(id))
+            {
+                if ch.status == ChannelStatus::Open || ch.status == ChannelStatus::Closing {
+                    open_count += 1;
+                }
+            }
+        }
+        if open_count >= MAX_OPEN_CHANNELS_PER_PARTY {
+            return Err(ContractError::DailyLimitReached);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN)
+            .ok_or(ContractError::NotInitialized)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&payer, &env.current_contract_address(), &deposit);
+
+        let now = env.ledger().timestamp();
+        let id: u64 = env.storage().instance().get(&CHANNEL_COUNT).unwrap_or(0);
+        env.storage().instance().set(&CHANNEL_COUNT, &(id + 1));
+
+        let initial = ChannelUpdate {
+            nonce: 0,
+            payer_balance: deposit,
+            payee_balance: 0,
+            timestamp: now,
+            state_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        let mut history = Vec::new(&env);
+        history.push_back(initial.clone());
+
+        let channel = Channel {
+            id,
+            payer: payer.clone(),
+            payee: payee.clone(),
+            deposit,
+            latest: initial,
+            history,
+            status: ChannelStatus::Open,
+            opened_at: now,
+            dispute_deadline: 0,
+            dispute_secs: dispute_secs.unwrap_or(DEFAULT_CHANNEL_DISPUTE_SECS),
+            challenged_by: None,
+            challenge_reason: None,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(id), &channel);
+
+        let mut list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ChannelList)
+            .unwrap_or_else(|| Vec::new(&env));
+        list.push_back(id);
+        env.storage().persistent().set(&DataKey::ChannelList, &list);
+
+        let mut payer_channels = payer_channels;
+        payer_channels.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PartyChannels(payer.clone()), &payer_channels);
+        let mut payee_channels: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PartyChannels(payee.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        payee_channels.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PartyChannels(payee.clone()), &payee_channels);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_open"), id),
+            (payer, payee, deposit),
+        );
+        Ok(id)
+    }
+
+    /// Submit a co-signed off-chain state update for a channel.
+    ///
+    /// Both parties must authorize the update. The update's nonce must be
+    /// strictly greater than the latest recorded nonce and the balances must
+    /// sum to the channel deposit. No tokens move here — this only records
+    /// the latest agreed state so it can be settled later.
+    pub fn submit_channel_update(
+        env: Env,
+        channel_id: u64,
+        update: ChannelUpdate,
+    ) -> Result<(), ContractError> {
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Open {
+            return Err(ContractError::ChannelNotOpen);
+        }
+        if update.nonce <= channel.latest.nonce {
+            return Err(ContractError::ChannelNonceTooLow);
+        }
+        if update.payer_balance < 0
+            || update.payee_balance < 0
+            || update.payer_balance + update.payee_balance != channel.deposit
+        {
+            return Err(ContractError::ChannelInvalidAmount);
+        }
+
+        // Both parties must co-sign the off-chain state.
+        channel.payer.require_auth();
+        channel.payee.require_auth();
+
+        channel.latest = update.clone();
+        if channel.history.len() >= MAX_CHANNEL_UPDATES {
+            let mut pruned = Vec::new(&env);
+            for (i, u) in channel.history.iter().enumerate() {
+                if i > 0 {
+                    pruned.push_back(u);
+                }
+            }
+            channel.history = pruned;
+        }
+        channel.history.push_back(update.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel_id), &channel);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_upd"), channel_id),
+            (update.nonce, update.payer_balance, update.payee_balance),
+        );
+        Ok(())
+    }
+
+    /// Request to close a channel and settle the latest agreed balances.
+    ///
+    /// Starts the dispute window. After `dispute_deadline` elapses, either
+    /// party may call [`Self::settle_channel`] to move funds on-chain.
+    pub fn close_channel(env: Env, channel_id: u64) -> Result<(), ContractError> {
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Open {
+            return Err(ContractError::ChannelNotOpen);
+        }
+        channel.payer.require_auth();
+
+        let now = env.ledger().timestamp();
+        channel.status = ChannelStatus::Closing;
+        channel.dispute_deadline = now.saturating_add(channel.dispute_secs);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel_id), &channel);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_close"), channel_id),
+            channel.dispute_deadline,
+        );
+        Ok(())
+    }
+
+    /// Challenge a pending close during the dispute window.
+    ///
+    /// Either party may challenge with a reason hash (e.g. a commitment to a
+    /// newer state). The channel enters `Disputed` and can only be resolved
+    /// by the admin via [`Self::resolve_channel_dispute`].
+    pub fn challenge_channel_close(
+        env: Env,
+        channel_id: u64,
+        challenger: Address,
+        reason: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Closing {
+            return Err(ContractError::ChannelNotInDispute);
+        }
+        if env.ledger().timestamp() > channel.dispute_deadline {
+            return Err(ContractError::ChannelDisputePeriodElapsed);
+        }
+        if challenger != channel.payer && challenger != channel.payee {
+            return Err(ContractError::Unauthorized);
+        }
+        challenger.require_auth();
+
+        channel.status = ChannelStatus::Disputed;
+        channel.challenged_by = Some(challenger.clone());
+        channel.challenge_reason = Some(reason.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel_id), &channel);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_chal"), channel_id),
+            (challenger, reason),
+        );
+        Ok(())
+    }
+
+    /// Admin resolution of a disputed channel, settling the supplied state.
+    ///
+    /// The admin may settle using any co-signed state that the challenger
+    /// proved (or the latest recorded state). Funds are released immediately.
+    pub fn resolve_channel_dispute(
+        env: Env,
+        channel_id: u64,
+        final_update: ChannelUpdate,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "resolve_channel_dispute", "channel")?;
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Disputed {
+            return Err(ContractError::ChannelNotInDispute);
+        }
+        if final_update.payer_balance < 0
+            || final_update.payee_balance < 0
+            || final_update.payer_balance + final_update.payee_balance != channel.deposit
+        {
+            return Err(ContractError::ChannelInvalidAmount);
+        }
+
+        channel.latest = final_update;
+        Self::settle_channel_internal(&env, channel)
+    }
+
+    /// Finalize a channel after the dispute window has elapsed.
+    ///
+    /// Settles the latest agreed balances on-chain, releasing escrowed funds
+    /// to the payer and payee. Either party may call this.
+    pub fn settle_channel(env: Env, channel_id: u64) -> Result<(), ContractError> {
+        let _guard = ReentrancyGuard::enter(&env)?;
+        let channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Closing {
+            return Err(ContractError::ChannelNotOpen);
+        }
+        if env.ledger().timestamp() < channel.dispute_deadline {
+            return Err(ContractError::ChannelDisputePeriodActive);
+        }
+        Self::settle_channel_internal(&env, channel)
+    }
+
+    /// Internal settlement: transfer final balances and mark the channel settled.
+    fn settle_channel_internal(env: &Env, mut channel: Channel) -> Result<(), ContractError> {
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN)
+            .ok_or(ContractError::NotInitialized)?;
+        let token_client = token::Client::new(env, &token_address);
+        let contract = env.current_contract_address();
+
+        // Effects first: mark settled before external transfers.
+        channel.status = ChannelStatus::Settled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel.id), &channel);
+
+        if channel.latest.payer_balance > 0 {
+            token_client.transfer(&contract, &channel.payer, &channel.latest.payer_balance);
+        }
+        if channel.latest.payee_balance > 0 {
+            token_client.transfer(&contract, &channel.payee, &channel.latest.payee_balance);
+        }
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_settle"), channel.id),
+            (channel.latest.payer_balance, channel.latest.payee_balance),
+        );
+        Ok(())
+    }
+
+    /// Fetch a channel by id.
+    pub fn get_channel(env: Env, channel_id: u64) -> Result<Channel, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)
+    }
+
+    /// Total number of channels ever opened.
+    pub fn get_channel_count(env: Env) -> u64 {
+        env.storage().instance().get(&CHANNEL_COUNT).unwrap_or(0)
+    }
+
+    /// List channel ids a participant is party to.
+    pub fn get_party_channels(env: Env, party: Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PartyChannels(party))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Register a new smart meter for an owner with optional metadata (Issue #691).
@@ -9470,6 +9914,142 @@ mod tests {
         assert_eq!(
             client.try_record_reputation_payment(&subject, &0_i128, &hash),
             Err(Ok(ContractError::InvalidAmount))
+        );
+    }
+
+    // ── Issue #1045: state channel lifecycle ─────────────────────────────────
+
+    #[test]
+    fn test_channel_open_and_settle_after_dispute_window() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &10_000_i128);
+
+        let id = client.open_channel(&payer, &payee, &1_000_i128, &Some(100_u64));
+        assert_eq!(id, 0);
+        assert_eq!(client.get_channel_count(), 1);
+
+        let ch = client.get_channel(&id);
+        assert_eq!(ch.status, ChannelStatus::Open);
+        assert_eq!(ch.deposit, 1_000);
+        assert_eq!(ch.latest.payer_balance, 1_000);
+        assert_eq!(ch.latest.payee_balance, 0);
+
+        // Off-chain update: payee earns 300.
+        let update = ChannelUpdate {
+            nonce: 1,
+            payer_balance: 700,
+            payee_balance: 300,
+            timestamp: env.ledger().timestamp(),
+            state_hash: BytesN::from_array(&env, &[1u8; 32]),
+        };
+        client.submit_channel_update(&id, &update);
+        assert_eq!(client.get_channel(&id).latest.payee_balance, 300);
+
+        // Close starts the dispute window.
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.close_channel(&id);
+        assert_eq!(client.get_channel(&id).status, ChannelStatus::Closing);
+
+        // Cannot settle before the window elapses.
+        assert_eq!(
+            client.try_settle_channel(&id),
+            Err(Ok(ContractError::ChannelDisputePeriodActive))
+        );
+
+        env.ledger().with_mut(|li| li.timestamp = 1_200);
+        client.settle_channel(&id);
+        assert_eq!(client.get_channel(&id).status, ChannelStatus::Settled);
+    }
+
+    #[test]
+    fn test_channel_rejects_stale_nonce_and_bad_balances() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &10_000_i128);
+        let id = client.open_channel(&payer, &payee, &1_000_i128, &None);
+
+        let stale = ChannelUpdate {
+            nonce: 0,
+            payer_balance: 500,
+            payee_balance: 500,
+            timestamp: 0,
+            state_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        assert_eq!(
+            client.try_submit_channel_update(&id, &stale),
+            Err(Ok(ContractError::ChannelNonceTooLow))
+        );
+
+        let bad = ChannelUpdate {
+            nonce: 1,
+            payer_balance: 500,
+            payee_balance: 400,
+            timestamp: 0,
+            state_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        assert_eq!(
+            client.try_submit_channel_update(&id, &bad),
+            Err(Ok(ContractError::ChannelInvalidAmount))
+        );
+    }
+
+    #[test]
+    fn test_channel_dispute_and_admin_resolution() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &10_000_i128);
+        let id = client.open_channel(&payer, &payee, &1_000_i128, &Some(100_u64));
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.close_channel(&id);
+
+        let reason = BytesN::from_array(&env, &[9u8; 32]);
+        client.challenge_channel_close(&id, &payee, &reason);
+        let ch = client.get_channel(&id);
+        assert_eq!(ch.status, ChannelStatus::Disputed);
+        assert_eq!(ch.challenged_by, Some(payee.clone()));
+
+        // Settle cannot run while disputed.
+        assert_eq!(
+            client.try_settle_channel(&id),
+            Err(Ok(ContractError::ChannelNotOpen))
+        );
+
+        let final_update = ChannelUpdate {
+            nonce: 2,
+            payer_balance: 600,
+            payee_balance: 400,
+            timestamp: 1_000,
+            state_hash: BytesN::from_array(&env, &[2u8; 32]),
+        };
+        client.resolve_channel_dispute(&id, &final_update);
+        assert_eq!(client.get_channel(&id).status, ChannelStatus::Settled);
+    }
+
+    #[test]
+    fn test_channel_open_rejects_invalid_deposit() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        assert_eq!(
+            client.try_open_channel(&payer, &payee, &0_i128, &None),
+            Err(Ok(ContractError::ChannelInvalidAmount))
+        );
+    }
+
+    #[test]
+    fn test_channel_unknown_id_errors() {
+        let (_env, client, _admin, _token_address) = setup_with_token();
+        assert_eq!(
+            client.try_get_channel(&42_u64),
+            Err(Ok(ContractError::ChannelNotFound))
         );
     }
 

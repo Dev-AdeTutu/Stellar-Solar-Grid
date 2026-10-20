@@ -16,6 +16,9 @@
  *   POST /api/vpp/bids/:bidId/settle   — settle and distribute revenue
  *   GET  /api/vpp/:vppId/settlements   — revenue distributions
  *   GET  /api/vpp/:vppId/performance   — real-time performance
+ *   GET  /api/vpp/performance          — fleet-wide performance metrics
+ *   POST /api/vpp/dispatch             — receive a grid operator dispatch signal
+ *   POST /api/vpp/distribute           — distribute earnings to participants
  */
 import { Router, Request, Response } from "express";
 import { z } from "zod";
@@ -26,6 +29,8 @@ import {
   availableCapacityKw,
   committedCapacityKw,
   createVpp,
+  dispatchSignal,
+  distributeEarnings,
   getPerformance,
   getResource,
   getVpp,
@@ -86,6 +91,21 @@ const SettleBody = z.object({
   deliveredKwhByResource: z.record(z.string(), z.number().min(0)),
 });
 
+const DispatchBody = z.object({
+  vppId: z.string().min(1).max(128),
+  service: z.enum(GridServices),
+  direction: z.enum(["up", "down"]),
+  targetKw: z.number().positive(),
+  durationMinutes: z.number().int().positive().optional(),
+  signalId: z.string().min(1).max(128).optional(),
+});
+
+const DistributeBody = z.object({
+  vppId: z.string().min(1).max(128),
+  totalRevenueXlm: z.number().min(0),
+  periodId: z.string().min(1).max(128).optional(),
+});
+
 function validationError(res: Response, error: z.ZodError) {
   return res.status(400).json({ error: "Invalid request", code: "VALIDATION_ERROR", details: error.flatten() });
 }
@@ -124,6 +144,47 @@ vppRouter.post(
     if (!body.success) return validationError(res, body.error);
     try {
       res.status(201).json(createVpp(body.data));
+    } catch (err) {
+      return domainError(res, err);
+    }
+  }),
+);
+
+vppRouter.get(
+  "/performance",
+  asyncHandler(async (_req: Request, res: Response) => {
+    const vpps = listVpps();
+    const metrics = vpps.map((vpp) => {
+      try {
+        return getPerformance(vpp.id);
+      } catch {
+        return { vppId: vpp.id, name: vpp.name };
+      }
+    });
+    res.json({ performance: metrics, count: metrics.length });
+  }),
+);
+
+vppRouter.post(
+  "/dispatch",
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = DispatchBody.safeParse(req.body);
+    if (!body.success) return validationError(res, body.error);
+    try {
+      res.status(202).json(dispatchSignal(body.data));
+    } catch (err) {
+      return domainError(res, err);
+    }
+  }),
+);
+
+vppRouter.post(
+  "/distribute",
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = DistributeBody.safeParse(req.body);
+    if (!body.success) return validationError(res, body.error);
+    try {
+      res.status(201).json(distributeEarnings(body.data));
     } catch (err) {
       return domainError(res, err);
     }

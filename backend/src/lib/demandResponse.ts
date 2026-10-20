@@ -37,6 +37,73 @@ export interface ProgramStats {
   roi: number;
 }
 
+/**
+ * Grid operator dispatch signal (VPP)
+ */
+export interface DispatchSignal {
+  id: string;
+  /** Direction of the requested grid service */
+  direction: 'charge' | 'discharge' | 'curtail';
+  /** Total power requested across the fleet, in kW */
+  requestedPowerKw: number;
+  /** Duration of the dispatch window, in minutes */
+  durationMinutes: number;
+  /** When the dispatch window begins */
+  startTime: Date;
+  /** Optional grid operator reference / market event id */
+  gridOperatorRef?: string;
+  /** Priority hint for allocation (higher = served first) */
+  priority?: number;
+}
+
+/**
+ * Meter-level dispatch command derived from a grid operator signal
+ */
+export interface MeterDispatchCommand {
+  signalId: string;
+  meterId: string;
+  owner: string;
+  action: 'charge' | 'discharge' | 'curtail';
+  /** Power allocated to this meter, in kW */
+  powerKw: number;
+  startTime: Date;
+  endTime: Date;
+  createdAt: Date;
+}
+
+/**
+ * Aggregated fleet response to a dispatch signal
+ */
+export interface DispatchAggregate {
+  signalId: string;
+  direction: DispatchSignal['direction'];
+  requestedPowerKw: number;
+  allocatedPowerKw: number;
+  /** Fraction of requested power that could be allocated (0..1) */
+  fulfillmentRatio: number;
+  commandCount: number;
+  meterCount: number;
+  startTime: Date;
+  endTime: Date;
+  commands: MeterDispatchCommand[];
+}
+
+/**
+ * Per-meter capability used when allocating dispatch commands
+ */
+interface MeterCapability {
+  meterId: string;
+  owner: string;
+  /** Available flexible power in kW (positive magnitude) */
+  availableKw: number;
+  /** Current state of charge (0..1) when known, for storage meters */
+  stateOfCharge?: number;
+}
+
+const DEFAULT_METER_FLEX_KW = 5; // fallback flexible capacity per meter
+const MIN_ALLOCATION_KW = 0.1; // ignore allocations below this
+=======
+
 const PEAK_DEMAND_THRESHOLD = 0.85; // 85% of grid capacity
 const NOTIFICATION_ADVANCE_HOURS = 1;
 const REWARD_RATE_PER_KWH = 0.5; // $0.50 per kWh reduced
@@ -558,6 +625,199 @@ export function updateEventStatus(peakEventId: string, status: PeakEvent['status
     logger.info('Peak event status updated', { peakEventId, status });
   } catch (error) {
     logger.error('Error updating event status', { peakEventId, status, error });
+  }
+}
+
+/**
+ * Determine flexible capacity available from each active meter.
+ * Uses current power readings and metadata when available, falling
+ * back to a conservative default per meter.
+ */
+function getMeterCapabilities(): MeterCapability[] {
+  try {
+    const rows = db.prepare(`
+      SELECT meter_id, owner, current_power
+      FROM meter_metadata
+      WHERE last_seen > ?
+    `).all(Date.now() - 24 * 60 * 60 * 1000) as Array<{
+      meter_id: string;
+      owner: string;
+      current_power: number | null;
+    }>;
+
+    return rows.map(row => {
+      const current = Math.abs(row.current_power || 0);
+      // Flexible headroom: meters already drawing power can shed it,
+      // otherwise assume the default flexible capacity.
+      const availableKw = current > 0
+        ? Math.min(current, DEFAULT_METER_FLEX_KW * 2)
+        : DEFAULT_METER_FLEX_KW;
+
+      return {
+        meterId: row.meter_id,
+        owner: row.owner,
+        availableKw
+      };
+    });
+  } catch (error) {
+    logger.error('Error getting meter capabilities', { error });
+    return [];
+  }
+}
+
+/**
+ * Translate a grid operator dispatch signal into meter-level commands.
+ * Allocates the requested power across the fleet proportionally to each
+ * meter's available flexible capacity.
+ */
+export function translateDispatchSignal(signal: DispatchSignal): DispatchAggregate {
+  const startTime = signal.startTime;
+  const endTime = new Date(startTime.getTime() + signal.durationMinutes * 60 * 1000);
+
+  const emptyAggregate: DispatchAggregate = {
+    signalId: signal.id,
+    direction: signal.direction,
+    requestedPowerKw: signal.requestedPowerKw,
+    allocatedPowerKw: 0,
+    fulfillmentRatio: 0,
+    commandCount: 0,
+    meterCount: 0,
+    startTime,
+    endTime,
+    commands: []
+  };
+
+  try {
+    const capabilities = getMeterCapabilities();
+    if (capabilities.length === 0 || signal.requestedPowerKw <= 0) {
+      logger.warn('No meters available for dispatch signal', { signalId: signal.id });
+      return emptyAggregate;
+    }
+
+    const totalAvailable = capabilities.reduce((sum, c) => sum + c.availableKw, 0);
+    if (totalAvailable <= 0) {
+      return emptyAggregate;
+    }
+
+    const commands: MeterDispatchCommand[] = [];
+    let allocated = 0;
+
+    for (const cap of capabilities) {
+      const share = (cap.availableKw / totalAvailable) * signal.requestedPowerKw;
+      const powerKw = Math.min(share, cap.availableKw);
+
+      if (powerKw < MIN_ALLOCATION_KW) {
+        continue;
+      }
+
+      const roundedPower = Math.round(powerKw * 100) / 100;
+      allocated += roundedPower;
+
+      commands.push({
+        signalId: signal.id,
+        meterId: cap.meterId,
+        owner: cap.owner,
+        action: signal.direction,
+        powerKw: roundedPower,
+        startTime,
+        endTime,
+        createdAt: new Date()
+      });
+    }
+
+    const allocatedPowerKw = Math.round(allocated * 100) / 100;
+    const fulfillmentRatio = signal.requestedPowerKw > 0
+      ? Math.min(1, allocatedPowerKw / signal.requestedPowerKw)
+      : 0;
+
+    const aggregate: DispatchAggregate = {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw,
+      fulfillmentRatio,
+      commandCount: commands.length,
+      meterCount: new Set(commands.map(c => c.meterId)).size,
+      startTime,
+      endTime,
+      commands
+    };
+
+    logger.info('Dispatch signal translated to meter commands', {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw,
+      fulfillmentRatio,
+      commandCount: commands.length
+    });
+
+    return aggregate;
+  } catch (error) {
+    logger.error('Error translating dispatch signal', { signalId: signal.id, error });
+    return emptyAggregate;
+  }
+}
+
+/**
+ * Aggregate meter-level responses back into a fleet-level response.
+ * `responses` maps meterId to the actual power delivered (kW, positive magnitude).
+ */
+export function aggregateDispatchResponses(
+  signal: DispatchSignal,
+  responses: Record<string, number>
+): DispatchAggregate {
+  const startTime = signal.startTime;
+  const endTime = new Date(startTime.getTime() + signal.durationMinutes * 60 * 1000);
+
+  try {
+    const commands: MeterDispatchCommand[] = Object.entries(responses)
+      .filter(([, power]) => power >= MIN_ALLOCATION_KW)
+      .map(([meterId, power]) => ({
+        signalId: signal.id,
+        meterId,
+        owner: '',
+        action: signal.direction,
+        powerKw: Math.round(power * 100) / 100,
+        startTime,
+        endTime,
+        createdAt: new Date()
+      }));
+
+    const allocatedPowerKw = Math.round(
+      commands.reduce((sum, c) => sum + c.powerKw, 0) * 100
+    ) / 100;
+
+    const fulfillmentRatio = signal.requestedPowerKw > 0
+      ? Math.min(1, allocatedPowerKw / signal.requestedPowerKw)
+      : 0;
+
+    return {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw,
+      fulfillmentRatio,
+      commandCount: commands.length,
+      meterCount: commands.length,
+      startTime,
+      endTime,
+      commands
+    };
+  } catch (error) {
+    logger.error('Error aggregating dispatch responses', { signalId: signal.id, error });
+    return {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw: 0,
+      fulfillmentRatio: 0,
+      commandCount: 0,
+      meterCount: 0,
+      startTime,
+      endTime,
+      commands: []
+    };
   }
 }
 
