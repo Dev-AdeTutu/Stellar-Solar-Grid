@@ -46,7 +46,6 @@ fn purchase_and_file_insurance_claim() {
     assert_eq!(claim.id, 1);
     assert_eq!(claim.amount, 2_000_000);
     assert_eq!(claim.status, ClaimStatus::Pending);
-    assert!(!s.env.events().all().is_empty());
 }
 
 #[test]

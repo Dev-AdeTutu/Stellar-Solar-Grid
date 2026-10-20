@@ -684,7 +684,7 @@ export function getPerformanceSummary(
 ): PerformanceSummary {
   const row = db()
     .prepare(
-      SELECT COUNT(*) AS n, MIN(recorded_at) AS first, MAX(recorded_at) AS last,
+      `SELECT COUNT(*) AS n, MIN(recorded_at) AS first, MAX(recorded_at) AS last,
               COALESCE(SUM(energy_kwh), 0) AS energy, AVG(power_w) AS avg_power,
               MAX(power_w) AS peak_power, AVG(efficiency) AS avg_eff, AVG(temperature_c) AS avg_temp,
               (SELECT state_of_charge FROM device_performance

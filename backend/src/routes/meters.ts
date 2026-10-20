@@ -33,6 +33,7 @@ import {
   extractLocation,
 } from "../lib/meterMetadataIndex.js";
 import { getBatteryStats } from "../lib/batteryStats.js";
+import { getEdgeStatus } from "../lib/edgeComputing.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -643,6 +644,35 @@ export function createMeterRouter(stellar: StellarService) {
         });
       }
       return res.json(stats);
+    }),
+  );
+
+  /**
+   * GET /api/meters/:meterId/edge-status — edge computing runtime status.
+   *
+   * Returns the deployed ML model version, the timestamp of the last local
+   * inference, the number of buffered (not yet synced) results, and the most
+   * recent anomalies detected on the meter's edge device. Registered BEFORE
+   * the generic /:id route so it is not shadowed.
+   */
+  meterRouter.get(
+    "/:meterId/edge-status",
+    asyncHandler(async (req, res) => {
+      const { meterId } = req.params;
+      const limit = Math.min(
+        100,
+        Math.max(1, parseInt((req.query.limit as string) ?? "10", 10) || 10),
+      );
+
+      const status = getEdgeStatus(meterId, limit);
+      if (!status) {
+        return res.status(404).json({
+          error: "No edge runtime registered for this meter",
+          code: "EDGE_NOT_FOUND",
+        });
+      }
+
+      return res.json(status);
     }),
   );
 

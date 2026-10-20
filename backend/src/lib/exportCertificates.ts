@@ -29,6 +29,21 @@ export type ExportCertificateView = {
   readingHash: string;
   retiredAt: string | null;
   status: "active" | "retired";
+  /** Certificate authority fields (#1065). */
+  standard: string;
+  standardVersion: string;
+  proof: string;
+  attestations: CertificateAttestation[];
+  revokedAt: string | null;
+  revocationReason: string | null;
+};
+
+export type CertificateAttestation = {
+  verifier: string;
+  /** Unix seconds when the attestation was recorded. */
+  attestedAt: string;
+  /** SHA-256 (hex) of the verifier's signed attestation payload. */
+  attestationHash: string;
 };
 
 export type ExportReading = {
@@ -77,8 +92,24 @@ export function decodeCertificate(raw: StellarSdk.xdr.ScVal): ExportCertificateV
     issuer: string;
     reading_hash: Uint8Array;
     retired_at?: bigint | null;
+    standard?: string;
+    standard_version?: string;
+    proof?: Uint8Array;
+    attestations?: Array<{
+      verifier: string;
+      attested_at: bigint;
+      attestation_hash: Uint8Array;
+    }>;
+    revoked_at?: bigint | null;
+    revocation_reason?: string | null;
   };
   const retiredAt = native.retired_at == null ? null : toIso(native.retired_at);
+  const revokedAt = native.revoked_at == null ? null : toIso(native.revoked_at);
+  const attestations: CertificateAttestation[] = (native.attestations ?? []).map((a) => ({
+    verifier: a.verifier,
+    attestedAt: toIso(a.attested_at),
+    attestationHash: Buffer.from(a.attestation_hash).toString("hex"),
+  }));
   return {
     id: native.id.toString(),
     meterId: native.meter_id,
@@ -93,6 +124,12 @@ export function decodeCertificate(raw: StellarSdk.xdr.ScVal): ExportCertificateV
     readingHash: Buffer.from(native.reading_hash).toString("hex"),
     retiredAt,
     status: retiredAt ? "retired" : "active",
+    standard: native.standard ?? "I-REC",
+    standardVersion: native.standard_version ?? "1.0",
+    proof: native.proof ? Buffer.from(native.proof).toString("hex") : "",
+    attestations,
+    revokedAt,
+    revocationReason: native.revocation_reason ?? null,
   };
 }
 
@@ -112,6 +149,12 @@ export function createCertificatePdf(
     "",
     { text: `Certificate #${cert.id}`, size: 16, bold: true },
     `Status: ${cert.status === "retired" ? `Retired on ${cert.retiredAt}` : "Active"}`,
+    ...(cert.revokedAt
+      ? [
+          { text: `REVOKED on ${cert.revokedAt}`, size: 12, bold: true } as PdfLine,
+          `Revocation reason: ${cert.revocationReason ?? "unspecified"}`,
+        ]
+      : []),
     "",
     { text: "Energy exported to the grid", bold: true },
     `${cert.energyKwh.toLocaleString("en-US", { maximumFractionDigits: 3 })} kWh (${cert.energyWh} Wh)`,
@@ -125,11 +168,24 @@ export function createCertificatePdf(
     { text: "Issuance", bold: true },
     `Issued at: ${cert.issuedAt}`,
     `Issuer: ${cert.issuer}`,
+    `Standard: ${cert.standard} v${cert.standardVersion}`,
+    "",
+    { text: "Third-party attestations", bold: true },
+    ...(cert.attestations.length === 0
+      ? [{ text: "None recorded", size: 10 } as PdfLine]
+      : cert.attestations.map(
+          (a) =>
+            ({
+              text: `${a.verifier} at ${a.attestedAt} (${a.attestationHash})`,
+              size: 9,
+            }) as PdfLine,
+        )),
     "",
     { text: "On-chain verification", bold: true },
     { text: `Network: ${verification.network}`, size: 10 },
     { text: `Contract: ${verification.contractId}`, size: 10 },
     { text: `Reading SHA-256: ${cert.readingHash}`, size: 9 },
+    ...(cert.proof ? [{ text: `Proof: ${cert.proof}`, size: 9 } as PdfLine] : []),
     {
       text: `Verify: call verify_export_certificate(${cert.id}, <reading SHA-256>) on the contract.`,
       size: 9,

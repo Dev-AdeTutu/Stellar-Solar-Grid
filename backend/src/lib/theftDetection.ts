@@ -8,6 +8,7 @@ import { logger } from "./logger.js";
 import { scoreUsageAnomaly } from "./theftScoring.js";
 import { listDevices } from "./deviceRegistry.js";
 import { notifyEmergencyContacts } from "./emergencyContacts.js";
+import { listPendingEdgeAnomalies, markEdgeAnomalySynced, type EdgeAnomalyResult } from "./edgeComputingBridge.js";
 
 const DB_PATH = process.env.THEFT_DETECTION_DB_PATH ?? path.resolve(process.cwd(), "data", "theft-detection.sqlite");
 const SCAN_INTERVAL_MS = Number(process.env.THEFT_SCAN_INTERVAL_MS ?? 60_000);
@@ -93,6 +94,17 @@ function db(): Database.Database {
         generated_at TEXT NOT NULL,
         report_json TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS theft_edge_anomalies (
+        edge_result_id TEXT PRIMARY KEY,
+        meter_id TEXT NOT NULL,
+        observed_units REAL NOT NULL,
+        baseline_median REAL NOT NULL,
+        anomaly_score REAL NOT NULL,
+        severity TEXT NOT NULL,
+        detected_at TEXT NOT NULL,
+        synced_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_theft_edge_anomalies_meter ON theft_edge_anomalies (meter_id, detected_at DESC);
     `);
   }
   return database;
@@ -174,6 +186,78 @@ export async function scanRecentUsage(): Promise<number> {
   }
 }
 
+/**
+ * #1069 — Persist anomaly scores computed locally on the meter edge runtime.
+ * Edge devices run inference offline and queue results; when connectivity is
+ * restored the bridge hands them to us here so they are recorded alongside
+ * cloud-detected alerts. Each edge result is idempotent (keyed by its
+ * edge_result_id) and marked synced in the bridge once persisted.
+ */
+export function recordEdgeAnomalies(results: EdgeAnomalyResult[]): number {
+  let recorded = 0;
+  const insert = db().prepare(
+    "INSERT OR IGNORE INTO theft_edge_anomalies (edge_result_id, meter_id, observed_units, baseline_median, anomaly_score, severity, detected_at, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  const now = new Date().toISOString();
+  for (const result of results) {
+    const inserted = insert.run(
+      result.id,
+      result.meterId,
+      result.observedUnits,
+      result.baselineMedian,
+      result.anomalyScore,
+      result.severity,
+      result.detectedAt,
+      now,
+    );
+    if (inserted.changes) {
+      recorded++;
+      markEdgeAnomalySynced(result.id);
+    }
+  }
+  return recorded;
+}
+
+/**
+ * #1069 — Drain anomalies queued by offline edge meters and persist them.
+ * Called from the periodic scan so reconnected meters are reconciled without
+ * waiting for a full cloud re-scan.
+ */
+export function syncEdgeAnomalies(): number {
+  const pending = listPendingEdgeAnomalies();
+  if (!pending.length) return 0;
+  const recorded = recordEdgeAnomalies(pending);
+  if (recorded) logger.info({ recorded }, "Synced edge-detected anomalies");
+  return recorded;
+}
+
+export function listEdgeAnomalies(options: { meterId?: string; limit?: number } = {}): Array<{
+  edge_result_id: string;
+  meter_id: string;
+  observed_units: number;
+  baseline_median: number;
+  anomaly_score: number;
+  severity: string;
+  detected_at: string;
+  synced_at: string;
+}> {
+  const limit = Math.min(500, Math.max(1, Math.trunc(options.limit ?? 100)));
+  const where = options.meterId ? "WHERE meter_id = ?" : "";
+  const args = options.meterId ? [options.meterId] : [];
+  return db().prepare(
+    `SELECT * FROM theft_edge_anomalies ${where} ORDER BY detected_at DESC LIMIT ?`,
+  ).all(...args, limit) as Array<{
+    edge_result_id: string;
+    meter_id: string;
+    observed_units: number;
+    baseline_median: number;
+    anomaly_score: number;
+    severity: string;
+    detected_at: string;
+    synced_at: string;
+  }>;
+}
+
 export function startTheftMonitor(): void {
   if (scanTimer) return;
   const generatePreviousMonth = () => {
@@ -184,10 +268,18 @@ export function startTheftMonitor(): void {
     generateTheftMonthlyReport(previous);
     lastGeneratedMonth = previous;
   };
-  void scanRecentUsage().catch((error) => logger.error({ error }, "Theft scan failed"));
+  const runScan = () => {
+    void scanRecentUsage().catch((error) => logger.error({ error }, "Theft scan failed"));
+    try {
+      syncEdgeAnomalies();
+    } catch (error) {
+      logger.error({ error }, "Edge anomaly sync failed");
+    }
+  };
+  runScan();
   generatePreviousMonth();
   scanTimer = setInterval(() => {
-    void scanRecentUsage().catch((error) => logger.error({ error }, "Theft scan failed"));
+    runScan();
     generatePreviousMonth();
   }, SCAN_INTERVAL_MS);
 }

@@ -1,6 +1,6 @@
 //! Meter rental and lease-to-own agreements (#1020).
-use crate::{ContractError, SolarGridContract};
-use soroban_sdk::{contractimpl, contracttype, symbol_short, Address, Env, String};
+use crate::{ContractError, SolarGridContract, SolarGridContractArgs, SolarGridContractClient};
+use soroban_sdk::{contractimpl, contracttype, symbol_short, Address, Env, String, Symbol};
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LeaseStatus { Active, Completed, BoughtOut }
@@ -38,14 +38,14 @@ impl SolarGridContract {
         lessee.require_auth(); let mut agreement = load(&env, lease_id)?;
         if agreement.status != LeaseStatus::Active || agreement.lessee != lessee || amount < agreement.monthly_payment { return Err(ContractError::InvalidAmount); }
         agreement.payments_made += 1; env.events().publish((symbol_short!("solar"), symbol_short!("lease_pmt"), lease_id), (lessee.clone(), amount, agreement.payments_made));
-        if agreement.payments_made >= agreement.total_payments { let previous_owner = agreement.owner.clone(); agreement.status = LeaseStatus::Completed; agreement.completed_at = env.ledger().timestamp(); agreement.owner = agreement.lessee.clone(); env.events().publish((symbol_short!("solar"), symbol_short!("lease_done"), lease_id), (previous_owner, agreement.owner.clone(), agreement.meter_id.clone())); }
+        if agreement.payments_made >= agreement.total_payments { let previous_owner = agreement.owner.clone(); agreement.status = LeaseStatus::Completed; agreement.completed_at = env.ledger().timestamp(); agreement.owner = agreement.lessee.clone(); env.events().publish((symbol_short!("solar"), Symbol::new(&env, "lease_done"), lease_id), (previous_owner, agreement.owner.clone(), agreement.meter_id.clone())); }
         env.storage().persistent().set(&LeaseKey::Agreement(lease_id), &agreement); Ok(agreement)
     }
     /// Complete a lease early at the agreed buyout amount.
     pub fn buyout_lease(env: Env, lease_id: u32, lessee: Address, amount: i128) -> Result<LeaseAgreement, ContractError> {
         lessee.require_auth(); let mut agreement = load(&env, lease_id)?;
         if agreement.status != LeaseStatus::Active || agreement.lessee != lessee || amount < agreement.buyout_amount { return Err(ContractError::InvalidAmount); }
-        let previous_owner = agreement.owner.clone(); agreement.status = LeaseStatus::BoughtOut; agreement.completed_at = env.ledger().timestamp(); agreement.owner = agreement.lessee.clone(); env.storage().persistent().set(&LeaseKey::Agreement(lease_id), &agreement); env.events().publish((symbol_short!("solar"), symbol_short!("lease_done"), lease_id), (previous_owner, agreement.owner.clone(), agreement.meter_id.clone())); Ok(agreement)
+        let previous_owner = agreement.owner.clone(); agreement.status = LeaseStatus::BoughtOut; agreement.completed_at = env.ledger().timestamp(); agreement.owner = agreement.lessee.clone(); env.storage().persistent().set(&LeaseKey::Agreement(lease_id), &agreement); env.events().publish((symbol_short!("solar"), Symbol::new(&env, "lease_done"), lease_id), (previous_owner, agreement.owner.clone(), agreement.meter_id.clone())); Ok(agreement)
     }
     pub fn get_lease(env: Env, lease_id: u32) -> Result<LeaseAgreement, ContractError> { load(&env, lease_id) }
 }

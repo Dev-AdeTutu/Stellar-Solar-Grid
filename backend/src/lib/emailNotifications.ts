@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { sendEmail, type EmailAttachment, type EmailResult } from "./mailer.js";
 
-export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "surveys"] as const;
+export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "surveys", "nudges"] as const;
 export type EmailEvent = (typeof EMAIL_EVENTS)[number];
 
 const DB_PATH = process.env.EMAIL_PREFERENCES_DB_PATH ?? path.resolve(process.cwd(), "data", "email-preferences.sqlite");
@@ -88,6 +88,78 @@ export async function sendNotificationEmail(input: {
     text: `${input.text}\n\nEmail preferences: ${preferencesUrl}\nUnsubscribe: ${unsubscribeUrl}`,
     html: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:24px;font-family:Arial,sans-serif;color:#222"><main style="max-width:600px;margin:0 auto;line-height:1.5">${input.html}<hr><p><a href="${preferencesUrl}">Email preferences</a> | <a href="${unsubscribeUrl}">Unsubscribe</a></p></main></body></html>`,
     attachments: input.attachments,
+  });
+}
+
+export type NudgeEmailKind = "social_comparison" | "loss_aversion" | "default_option" | "commitment";
+
+export interface NudgeEmailItem {
+  kind: NudgeEmailKind;
+  title: string;
+  message: string;
+  actionUrl?: string;
+  actionLabel?: string;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderNudgeItem(item: NudgeEmailItem): { text: string; html: string } {
+  const action = item.actionUrl
+    ? `\n${item.actionLabel ?? "Take action"}: ${item.actionUrl}`
+    : "";
+  const htmlAction = item.actionUrl
+    ? `<p><a href="${escapeHtml(item.actionUrl)}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">${escapeHtml(item.actionLabel ?? "Take action")}</a></p>`
+    : "";
+  return {
+    text: `${item.title}\n${item.message}${action}`,
+    html: `<section style="margin-bottom:20px"><h3 style="margin:0 0 6px">${escapeHtml(item.title)}</h3><p style="margin:0 0 10px">${escapeHtml(item.message)}</p>${htmlAction}</section>`,
+  };
+}
+
+export async function sendNudgeDigestEmail(input: {
+  to: string;
+  nudges: NudgeEmailItem[];
+  periodLabel?: string;
+}): Promise<EmailResult> {
+  if (input.nudges.length === 0) return { delivered: false, provider: "no-nudges" };
+  const period = input.periodLabel?.trim() || "this week";
+  const rendered = input.nudges.map(renderNudgeItem);
+  return sendNotificationEmail({
+    to: input.to,
+    event: "nudges",
+    subject: `Your energy-saving nudges for ${period}`,
+    text: `Hi,\n\nHere are your personalized energy-saving nudges for ${period}:\n\n${rendered.map((item) => item.text).join("\n\n")}\n\nSmall changes add up.`,
+    html: `<h2>Your energy-saving nudges for ${escapeHtml(period)}</h2>${rendered.map((item) => item.html).join("")}<p>Small changes add up.</p>`,
+  });
+}
+
+export async function sendCommitmentReminderEmail(input: {
+  to: string;
+  pledgeDescription: string;
+  targetReductionPercent: number;
+  progressPercent: number;
+  deadline?: string;
+  actionUrl?: string;
+}): Promise<EmailResult> {
+  const progress = Math.max(0, Math.min(100, Math.round(input.progressPercent)));
+  const deadline = input.deadline ? ` Deadline: ${input.deadline}.` : "";
+  const action = input.actionUrl ? `\nReview your pledge: ${input.actionUrl}` : "";
+  const htmlAction = input.actionUrl
+    ? `<p><a href="${escapeHtml(input.actionUrl)}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Review your pledge</a></p>`
+    : "";
+  return sendNotificationEmail({
+    to: input.to,
+    event: "nudges",
+    subject: `Keep your commitment: ${input.targetReductionPercent}% reduction pledge`,
+    text: `Hi,\n\nYou pledged to ${input.pledgeDescription} (target: ${input.targetReductionPercent}% reduction).${deadline}\n\nYou're ${progress}% of the way to your goal. Staying on track protects the credits you've already earned.${action}`,
+    html: `<h2>Keep your commitment</h2><p>You pledged to ${escapeHtml(input.pledgeDescription)} (target: ${input.targetReductionPercent}% reduction).${escapeHtml(deadline)}</p><p>You're <strong>${progress}%</strong> of the way to your goal. Staying on track protects the credits you've already earned.</p>${htmlAction}`,
   });
 }
 

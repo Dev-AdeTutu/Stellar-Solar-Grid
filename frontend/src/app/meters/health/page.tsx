@@ -6,7 +6,6 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { env } from "@/lib/env";
-import { getPowerQuality, type PowerQualityResponse } from "@/services/meterService";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 
@@ -54,8 +53,6 @@ const LOG_STATUS: Record<DiagnosticLog["status"], string> = {
 export default function MeterHealthPage() {
   const [data, setData] = useState<{ summary: Record<Status, number>; meters: MeterHealth[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedMeter, setSelectedMeter] = useState<string | null>(null);
-
   const [selectedMeter, setSelectedMeter] = useState<string | null>(null);
   const [logs, setLogs] = useState<DiagnosticLog[]>([]);
   const [logsError, setLogsError] = useState<string | null>(null);

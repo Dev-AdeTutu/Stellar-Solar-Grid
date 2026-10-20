@@ -16,10 +16,32 @@ import { publishCommand } from "./mqttBridge.js";
 
 export type HealthStatus = "green" | "yellow" | "red";
 
+/**
+ * Edge runtime status reported by a meter running the edge computing runtime
+ * (#1069). Meters include this block in their heartbeat payload so operators
+ * can see which meters are running local inference and whether they are
+ * currently offline (buffering results until connectivity returns).
+ */
+export type EdgeStatusInput = {
+  modelVersion?: string;
+  lastInferenceAt?: number;
+  bufferSize?: number;
+  offline?: boolean;
+};
+
 export type HeartbeatInput = {
   responseTimeMs?: number;
   error?: boolean;
   receivedAt?: number;
+  edge?: EdgeStatusInput;
+};
+
+type EdgeRuntimeState = {
+  modelVersion: string | null;
+  lastInferenceAt: number | null;
+  bufferSize: number;
+  offline: boolean;
+  updatedAt: number;
 };
 
 type MeterHealthState = {
@@ -31,6 +53,16 @@ type MeterHealthState = {
   totalResponseTimeMs: number;
   responseSamples: number;
   alerted: boolean;
+  edge?: EdgeRuntimeState;
+};
+
+export type EdgeRuntimeHealth = {
+  modelVersion: string | null;
+  lastInferenceAt: string | null;
+  secondsSinceInference: number | null;
+  bufferSize: number;
+  offline: boolean;
+  updatedAt: string;
 };
 
 export type MeterHealth = {
@@ -42,6 +74,7 @@ export type MeterHealth = {
   errorRate: number;
   avgResponseTimeMs: number | null;
   uptimePercent: number;
+  edge: EdgeRuntimeHealth | null;
 };
 
 const YELLOW_AFTER_MS = Number(process.env.HEALTH_YELLOW_AFTER_MS ?? 60 * 60 * 1000);
@@ -74,8 +107,43 @@ export function recordHeartbeat(meterId: string, input: HeartbeatInput = {}): Me
     state.totalResponseTimeMs += input.responseTimeMs;
     state.responseSamples += 1;
   }
+  if (input.edge) {
+    const prev = state.edge;
+    state.edge = {
+      modelVersion:
+        typeof input.edge.modelVersion === "string"
+          ? input.edge.modelVersion
+          : (prev?.modelVersion ?? null),
+      lastInferenceAt:
+        typeof input.edge.lastInferenceAt === "number" && input.edge.lastInferenceAt >= 0
+          ? input.edge.lastInferenceAt
+          : (prev?.lastInferenceAt ?? null),
+      bufferSize:
+        typeof input.edge.bufferSize === "number" && input.edge.bufferSize >= 0
+          ? Math.floor(input.edge.bufferSize)
+          : (prev?.bufferSize ?? 0),
+      offline: typeof input.edge.offline === "boolean" ? input.edge.offline : (prev?.offline ?? false),
+      updatedAt: now,
+    };
+  }
   state.alerted = false;
   return state;
+}
+
+function parseEdgeStatus(body: Record<string, unknown>): EdgeStatusInput | undefined {
+  const raw = body.edge;
+  if (!raw || typeof raw !== "object") return undefined;
+  const edge = raw as Record<string, unknown>;
+  const result: EdgeStatusInput = {};
+  if (typeof edge.modelVersion === "string") result.modelVersion = edge.modelVersion;
+  if (typeof edge.lastInferenceAt === "number") result.lastInferenceAt = edge.lastInferenceAt;
+  else if (typeof edge.lastInferenceAt === "string") {
+    const parsed = Date.parse(edge.lastInferenceAt);
+    if (!Number.isNaN(parsed)) result.lastInferenceAt = parsed;
+  }
+  if (typeof edge.bufferSize === "number") result.bufferSize = edge.bufferSize;
+  if (typeof edge.offline === "boolean") result.offline = edge.offline;
+  return result;
 }
 
 /** Parse an MQTT heartbeat payload (JSON, optional fields) and record it. */
@@ -91,6 +159,7 @@ export function handleHeartbeatMessage(meterId: string | undefined, payload: Buf
   recordHeartbeat(meterId, {
     responseTimeMs: typeof body.responseTimeMs === "number" ? body.responseTimeMs : undefined,
     error: body.error === true || body.status === "error",
+    edge: parseEdgeStatus(body),
   });
 }
 
@@ -100,6 +169,21 @@ export function classify(state: MeterHealthState, now = Date.now()): HealthStatu
   const errorRate = state.heartbeatCount ? state.errorCount / state.heartbeatCount : 0;
   if (age >= YELLOW_AFTER_MS || errorRate >= ERROR_RATE_WARN) return "yellow";
   return "green";
+}
+
+function toEdgeHealth(edge: EdgeRuntimeState, now: number): EdgeRuntimeHealth {
+  return {
+    modelVersion: edge.modelVersion,
+    lastInferenceAt:
+      edge.lastInferenceAt !== null ? new Date(edge.lastInferenceAt).toISOString() : null,
+    secondsSinceInference:
+      edge.lastInferenceAt !== null
+        ? Math.max(0, Math.floor((now - edge.lastInferenceAt) / 1000))
+        : null,
+    bufferSize: edge.bufferSize,
+    offline: edge.offline,
+    updatedAt: new Date(edge.updatedAt).toISOString(),
+  };
 }
 
 function toHealth(state: MeterHealthState, now = Date.now()): MeterHealth {
@@ -115,6 +199,7 @@ function toHealth(state: MeterHealthState, now = Date.now()): MeterHealth {
       ? state.totalResponseTimeMs / state.responseSamples
       : null,
     uptimePercent: Math.min(100, (state.heartbeatCount / expected) * 100),
+    edge: state.edge ? toEdgeHealth(state.edge, now) : null,
   };
 }
 
@@ -127,7 +212,18 @@ export function getAllMeterHealth(now = Date.now()) {
   const all = [...meters.values()].map((s) => toHealth(s, now));
   const summary = { green: 0, yellow: 0, red: 0 } as Record<HealthStatus, number>;
   for (const m of all) summary[m.status] += 1;
-  return { summary, meters: all };
+  const edge = {
+    withEdge: 0,
+    offline: 0,
+    buffering: 0,
+  };
+  for (const m of all) {
+    if (!m.edge) continue;
+    edge.withEdge += 1;
+    if (m.edge.offline) edge.offline += 1;
+    if (m.edge.bufferSize > 0) edge.buffering += 1;
+  }
+  return { summary, edge, meters: all };
 }
 
 /** Raise (log) an alert once per meter that has been silent for 24h. Returns alerted IDs. */

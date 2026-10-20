@@ -6,6 +6,13 @@
  *   GET  /api/certificates/:id/pdf                         downloadable PDF certificate
  *   GET  /api/certificates/:id/verify?readingHash=<hex>    on-chain verification
  *   POST /api/certificates                                 mint (admin only)
+ *
+ * Certificate authority (#1065):
+ *
+ *   POST /api/certificates/issue                           issue from verified generation (admin only)
+ *   POST /api/certificates/:id/attest                      submit third-party verification (admin only)
+ *   POST /api/certificates/:id/revoke                      revoke a certificate (admin only)
+ *   GET  /api/certificates/standards                       supported international standards
  */
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
@@ -46,6 +53,71 @@ const MintSchema = z
   });
 
 const u64 = (value: string | number | bigint) => StellarSdk.nativeToScVal(BigInt(value), { type: "u64" });
+
+/** International standards the certificate authority can attest compliance against. */
+export const SUPPORTED_STANDARDS = [
+  { id: "I-REC", name: "International REC Standard", scope: "global" },
+  { id: "REC", name: "US Renewable Energy Certificate", scope: "us" },
+  { id: "GO", name: "EU Guarantee of Origin", scope: "eu" },
+  { id: "TIGR", name: "Tradable Instrument for Global Renewables", scope: "global" },
+] as const;
+
+const STANDARD_IDS = SUPPORTED_STANDARDS.map((s) => s.id) as [string, ...string[]];
+
+const IssueSchema = z
+  .object({
+    meterId: z.string().min(1).max(64),
+    energyWh: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    periodStart: z.number().int().nonnegative(),
+    periodEnd: z.number().int().positive(),
+    readings: z.unknown().optional(),
+    generationHash: z.string().regex(HEX_64, "generationHash must be a 64-character hex SHA-256").optional(),
+    standard: z.enum(STANDARD_IDS).optional(),
+    verifier: z.string().min(1).max(128).optional(),
+  })
+  .refine((v) => v.periodStart < v.periodEnd, {
+    message: "periodStart must be before periodEnd",
+    path: ["periodEnd"],
+  })
+  .refine((v) => v.periodEnd <= Math.floor(Date.now() / 1000), {
+    message: "periodEnd cannot be in the future",
+    path: ["periodEnd"],
+  });
+
+const AttestSchema = z.object({
+  verifier: z.string().min(1).max(128),
+  standard: z.enum(STANDARD_IDS).optional(),
+  attestationHash: z.string().regex(HEX_64, "attestationHash must be a 64-character hex SHA-256"),
+  verified: z.boolean().optional(),
+});
+
+const RevokeSchema = z.object({
+  reason: z.string().min(1).max(256),
+});
+
+/**
+ * Cryptographic proof of authenticity for a certificate: the on-chain reading
+ * hash plus the contract/network it is anchored to. Anyone can recompute the
+ * reading hash from the source generation data and compare it.
+ */
+function certificateProof(cert: ExportCertificateView) {
+  return {
+    algorithm: "sha256",
+    readingHash: cert.readingHash,
+    contractId: CONTRACT_ID,
+    network: networkName(NETWORK_PASSPHRASE),
+    anchored: true,
+  };
+}
+
+function standardMetadata(standard?: string) {
+  const match = SUPPORTED_STANDARDS.find((s) => s.id === standard);
+  return {
+    standard: match?.id ?? null,
+    standardName: match?.name ?? null,
+    supportedStandards: SUPPORTED_STANDARDS.map((s) => s.id),
+  };
+}
 
 function isNotFound(err: unknown): boolean {
   // CertificateNotFound = #50 in the contract's error enum.
@@ -99,6 +171,8 @@ certificatesRouter.get(
     if (!cert) return res.status(404).json({ error: "Certificate not found", code: "CERTIFICATE_NOT_FOUND" });
     return res.json({
       certificate: cert,
+      proof: certificateProof(cert),
+      compliance: standardMetadata(),
       verification: {
         contractId: CONTRACT_ID,
         network: networkName(NETWORK_PASSPHRASE),
@@ -107,6 +181,10 @@ certificatesRouter.get(
     });
   }),
 );
+
+certificatesRouter.get("/standards", (_req, res) => {
+  return res.json({ standards: SUPPORTED_STANDARDS });
+});
 
 certificatesRouter.get(
   "/:id/pdf",
@@ -165,6 +243,92 @@ certificatesRouter.post(
       StellarSdk.nativeToScVal(Buffer.from(hash, "hex"), { type: "bytes" }),
     ]);
     return res.status(201).json({ hash: txHash, readingHash: hash });
+  }),
+);
+
+certificatesRouter.post(
+  "/issue",
+  requireAdminKey,
+  asyncHandler(async (req, res) => {
+    const parsed = IssueSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", code: "VALIDATION_ERROR", details: parsed.error.flatten() });
+    }
+    const generation = parsed.data;
+    // Prefer the caller-supplied generation hash (proving the verified source
+    // data) but fall back to hashing the reading payload.
+    const hash = generation.generationHash?.toLowerCase() ?? readingHash(generation);
+    const txHash = await adminInvoke("mint_export_certificate", [
+      StellarSdk.nativeToScVal(stellarService.adminKeypair.publicKey(), { type: "address" }),
+      StellarSdk.nativeToScVal(generation.meterId, { type: "string" }),
+      u64(generation.energyWh),
+      u64(generation.periodStart),
+      u64(generation.periodEnd),
+      StellarSdk.nativeToScVal(Buffer.from(hash, "hex"), { type: "bytes" }),
+    ]);
+    return res.status(201).json({
+      hash: txHash,
+      readingHash: hash,
+      proof: {
+        algorithm: "sha256",
+        readingHash: hash,
+        contractId: CONTRACT_ID,
+        network: networkName(NETWORK_PASSPHRASE),
+        anchored: true,
+      },
+      compliance: standardMetadata(generation.standard),
+      verifier: generation.verifier ?? null,
+    });
+  }),
+);
+
+certificatesRouter.post(
+  "/:id/attest",
+  requireAdminKey,
+  asyncHandler(async (req, res) => {
+    const id = IdSchema.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ error: id.error.issues[0].message, code: "VALIDATION_ERROR" });
+    const parsed = AttestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", code: "VALIDATION_ERROR", details: parsed.error.flatten() });
+    }
+    const cert = await fetchCertificate(id.data);
+    if (!cert) return res.status(404).json({ error: "Certificate not found", code: "CERTIFICATE_NOT_FOUND" });
+    const attestation = parsed.data;
+    const txHash = await adminInvoke("attest_export_certificate", [
+      u64(id.data),
+      StellarSdk.nativeToScVal(attestation.verifier, { type: "string" }),
+      StellarSdk.nativeToScVal(Buffer.from(attestation.attestationHash, "hex"), { type: "bytes" }),
+      StellarSdk.nativeToScVal(attestation.verified ?? true, { type: "bool" }),
+    ]);
+    return res.status(201).json({
+      hash: txHash,
+      id: id.data,
+      verifier: attestation.verifier,
+      attestationHash: attestation.attestationHash.toLowerCase(),
+      verified: attestation.verified ?? true,
+      compliance: standardMetadata(attestation.standard),
+    });
+  }),
+);
+
+certificatesRouter.post(
+  "/:id/revoke",
+  requireAdminKey,
+  asyncHandler(async (req, res) => {
+    const id = IdSchema.safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ error: id.error.issues[0].message, code: "VALIDATION_ERROR" });
+    const parsed = RevokeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid request", code: "VALIDATION_ERROR", details: parsed.error.flatten() });
+    }
+    const cert = await fetchCertificate(id.data);
+    if (!cert) return res.status(404).json({ error: "Certificate not found", code: "CERTIFICATE_NOT_FOUND" });
+    const txHash = await adminInvoke("revoke_export_certificate", [
+      u64(id.data),
+      StellarSdk.nativeToScVal(parsed.data.reason, { type: "string" }),
+    ]);
+    return res.json({ hash: txHash, id: id.data, revoked: true, reason: parsed.data.reason });
   }),
 );
 

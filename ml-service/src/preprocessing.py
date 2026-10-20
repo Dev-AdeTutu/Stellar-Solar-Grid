@@ -351,6 +351,69 @@ class DataPreprocessor:
         
         return df
     
+    def prepare_edge_features(
+        self,
+        recent_readings: pd.DataFrame,
+        target_column: str = 'load',
+        lags: List[int] = [1, 2, 3, 24],
+        windows: List[int] = [3, 6, 12, 24],
+        feature_columns: Optional[List[str]] = None
+    ) -> pd.DataFrame:
+        """
+        Lightweight preprocessing path for edge inference.
+
+        Builds the same style of feature vector as the cloud pipeline from a
+        small window of recent meter readings, without requiring cloud-only
+        data sources such as the weather API. This allows edge devices to
+        construct model inputs locally and run inference offline.
+
+        Args:
+            recent_readings: DataFrame with a 'timestamp' column and the
+                target column (e.g. recent meter load readings)
+            target_column: Target column name
+            lags: List of lag periods to compute
+            windows: List of rolling window sizes to compute
+            feature_columns: Optional explicit list of feature columns to
+                return. If provided, missing columns are filled with 0.0 and
+                the output is restricted to this list (plus the target).
+
+        Returns:
+            DataFrame with engineered features for the most recent row(s)
+        """
+        df = recent_readings.copy()
+
+        # Ensure timestamp is datetime and sorted
+        if 'timestamp' in df.columns:
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
+            df = df.set_index('timestamp')
+
+        # Time-based features (no external data required)
+        df = self.engineer_features(df.reset_index())
+
+        # Lag features from local history only
+        df = self.add_lag_features(df, target_column, lags=lags)
+
+        # Rolling features from local history only
+        df = self.add_rolling_features(df, target_column, windows=windows)
+
+        # Keep only the most recent row (the one to infer on)
+        if len(df) == 0:
+            return df
+        latest = df.iloc[[-1]].copy()
+
+        # Restrict to the expected feature set if provided
+        if feature_columns is not None:
+            for col in feature_columns:
+                if col not in latest.columns:
+                    latest[col] = 0.0
+            keep = [c for c in feature_columns if c in latest.columns]
+            if target_column in latest.columns and target_column not in keep:
+                keep.append(target_column)
+            latest = latest[keep]
+
+        return latest
+
     def generate_synthetic_load_data(
         self,
         start_date: datetime,

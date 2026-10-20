@@ -118,7 +118,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "374339"
+                  "i128": "265190"
                 }
               ]
             }
@@ -143,7 +143,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "374339"
+                  "i128": "265190"
                 },
                 {
                   "vec": [
@@ -170,7 +170,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "374339"
+                      "i128": "265190"
                     }
                   ]
                 }
@@ -197,7 +197,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1376017"
+                  "i128": "109461"
                 }
               ]
             }
@@ -223,7 +223,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "351829"
+                  "i128": "1666672"
                 }
               ]
             }
@@ -249,7 +249,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1291886"
+                  "i128": "729417"
                 }
               ]
             }
@@ -275,7 +275,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "929673"
+                  "i128": "196784"
                 }
               ]
             }
@@ -840,7 +840,7 @@
                       "symbol": "day_spent"
                     },
                     "val": {
-                      "i128": "3949405"
+                      "i128": "2702334"
                     }
                   },
                   {
@@ -867,10 +867,26 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": {
                       "u64": "18446744073709551615"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "4"
                     }
                   },
                   {
@@ -930,7 +946,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -987,7 +1003,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -1048,7 +1064,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "374339"
+                "i128": "265190"
               }
             }
           },
@@ -1075,7 +1091,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "374339"
+                "i128": "265190"
               }
             }
           },
@@ -1191,7 +1207,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "374339"
+                        "i128": "265190"
                       }
                     }
                   ]
@@ -1248,7 +1264,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "374339"
+                      "i128": "265190"
                     }
                   },
                   {

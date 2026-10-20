@@ -65,7 +65,9 @@ def train_model(
     test_split: float = 0.1,
     weather_api_key: Optional[str] = None,
     lat: float = 37.7749,
-    lon: float = -122.4194
+    lon: float = -122.4194,
+    export_edge: bool = False,
+    edge_model_dir: Optional[str] = None
 ) -> Dict:
     """
     Train load forecasting model
@@ -80,6 +82,8 @@ def train_model(
         weather_api_key: Weather API key
         lat: Latitude for weather data
         lon: Longitude for weather data
+        export_edge: Whether to export an edge-optimized model artifact
+        edge_model_dir: Directory to save edge model (defaults to model_dir/edge)
         
     Returns:
         Training results and metrics
@@ -197,6 +201,25 @@ def train_model(
     print(f"Saving model to {model_dir}...")
     model.save(model_dir)
     
+    # Optionally export edge-optimized model artifact
+    edge_metadata = None
+    if export_edge:
+        edge_dir = edge_model_dir or os.path.join(model_dir, 'edge')
+        print(f"Exporting edge-optimized model to {edge_dir}...")
+        try:
+            edge_metadata = model.export_for_edge(edge_dir)
+            print(f"Edge model exported to {edge_dir}")
+        except AttributeError:
+            print(
+                "Warning: model does not support edge export "
+                "(export_for_edge not implemented); skipping",
+                file=sys.stderr
+            )
+            edge_metadata = None
+        except Exception as e:
+            print(f"Warning: edge model export failed: {e}", file=sys.stderr)
+            edge_metadata = None
+    
     # Save test results
     results_path = os.path.join(model_dir, 'test_results.json')
     with open(results_path, 'w') as f:
@@ -233,7 +256,15 @@ def train_model(
         'all_horizons_pass': all(
             metrics['accuracy'] >= 90.0 
             for metrics in test_results.values()
-        )
+        ),
+        'edge_export': {
+            'enabled': export_edge,
+            'exported': edge_metadata is not None,
+            'edge_model_dir': (
+                edge_model_dir or os.path.join(model_dir, 'edge')
+            ) if export_edge else None,
+            'metadata': edge_metadata
+        }
     }
     
     summary_path = os.path.join(model_dir, 'training_summary.json')
@@ -324,6 +355,19 @@ def main():
         help='Longitude for weather data'
     )
     
+    parser.add_argument(
+        '--export-edge',
+        action='store_true',
+        help='Export an edge-optimized model artifact for meter edge devices'
+    )
+    
+    parser.add_argument(
+        '--edge-model-dir',
+        type=str,
+        default=None,
+        help='Directory to save edge model (defaults to <model-dir>/edge)'
+    )
+    
     args = parser.parse_args()
     
     try:
@@ -336,7 +380,9 @@ def main():
             test_split=args.test_split,
             weather_api_key=args.weather_api_key,
             lat=args.lat,
-            lon=args.lon
+            lon=args.lon,
+            export_edge=args.export_edge,
+            edge_model_dir=args.edge_model_dir
         )
         
         # Exit with error if accuracy requirement not met

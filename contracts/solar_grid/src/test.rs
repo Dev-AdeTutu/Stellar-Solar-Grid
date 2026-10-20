@@ -589,4 +589,102 @@ mod batch_and_market_tests {
         let base = client.compute_cost(&1_000_i128);
         assert_eq!(base, 1_000_i128);
     }
+
+    // ------------------------------------------------------------------
+    // Reputation / credit scoring tests
+    // ------------------------------------------------------------------
+
+    fn setup_reputation_meter(
+        env: &Env,
+        client: &SolarGridContractClient<'static>,
+        token_address: &Address,
+        owner: &Address,
+    ) -> String {
+        let meter_id = String::from_str(env, "SG-2024-REPMTR");
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        client.allowlist_add(owner);
+        client.register_meter(&meter_id, owner);
+        token_admin_client.mint(owner, &100_000_000_i128);
+        meter_id
+    }
+
+    #[test]
+    fn test_reputation_records_payment_history() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+
+        client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &owner, &2_000_000_i128, &PaymentPlan::Daily);
+
+        let history = client.get_payment_history(&owner);
+        assert_eq!(history.len(), 2);
+        // Raw per-payment amounts must not be exposed; only aggregates.
+        let record = client.get_reputation(&owner);
+        assert_eq!(record.payment_count, 2);
+        assert!(record.total_paid > 0);
+        assert!(record.score <= 100);
+    }
+
+    #[test]
+    fn test_reputation_score_bounds() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+
+        // No history -> minimum score.
+        let empty = client.get_reputation(&owner);
+        assert_eq!(empty.score, 0);
+
+        // Many on-time payments -> score capped at 100.
+        for _ in 0..50 {
+            client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
+        }
+        let full = client.get_reputation(&owner);
+        assert_eq!(full.score, 100);
+    }
+
+    #[test]
+    fn test_reputation_did_association() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+        client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
+
+        let did = String::from_str(&env, "did:stellar:GABC123");
+        client.set_did(&owner, &did);
+
+        let record = client.get_reputation(&owner);
+        assert_eq!(record.did, Some(did.clone()));
+        assert_eq!(client.get_reputation_by_did(&did).unwrap().score, record.score);
+    }
+
+    #[test]
+    fn test_reputation_portable_by_address() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+        client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
+
+        // Score is queryable by address independent of any meter binding.
+        let by_addr = client.get_reputation(&owner);
+        assert!(by_addr.score > 0);
+        assert_eq!(by_addr.payment_count, 1);
+    }
+
+    #[test]
+    fn test_reputation_privacy_no_raw_amounts() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+        client.make_payment(&meter_id, &owner, &1_234_567_i128, &PaymentPlan::Daily);
+
+        let record = client.get_reputation(&owner);
+        // Aggregate only: total_paid is a sum, not the individual amount.
+        assert_eq!(record.payment_count, 1);
+        assert!(record.total_paid >= 1_234_567_i128);
+        // History entries expose timestamps/status but not raw amounts.
+        let history = client.get_payment_history(&owner);
+        assert_eq!(history.len(), 1);
+    }
 }

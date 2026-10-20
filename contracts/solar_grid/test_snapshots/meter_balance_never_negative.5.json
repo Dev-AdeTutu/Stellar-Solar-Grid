@@ -118,7 +118,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "2650661"
+                  "i128": "999982"
                 }
               ]
             }
@@ -143,7 +143,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "943692"
+                  "i128": "384019"
                 },
                 {
                   "vec": [
@@ -170,7 +170,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "943692"
+                      "i128": "384019"
                     }
                   ]
                 }
@@ -197,7 +197,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "890704"
+                  "i128": "129660"
                 },
                 {
                   "vec": [
@@ -224,7 +224,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "890704"
+                      "i128": "129660"
                     }
                   ]
                 }
@@ -251,7 +251,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                 },
                 {
-                  "i128": "816265"
+                  "i128": "486303"
                 },
                 {
                   "vec": [
@@ -278,7 +278,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "816265"
+                      "i128": "486303"
                     }
                   ]
                 }
@@ -305,7 +305,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "8085"
+                  "i128": "1059656"
                 }
               ]
             }
@@ -331,7 +331,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1906430"
+                  "i128": "1945436"
                 }
               ]
             }
@@ -357,7 +357,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "899195"
+                  "i128": "1802802"
                 }
               ]
             }
@@ -383,33 +383,7 @@
                   "u64": "1"
                 },
                 {
-                  "i128": "1067345"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "update_usage",
-              "args": [
-                {
-                  "string": "PROP"
-                },
-                {
-                  "u64": "1"
-                },
-                {
-                  "i128": "868204"
+                  "i128": "1302691"
                 }
               ]
             }
@@ -623,26 +597,6 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "6517132746326325848"
                 }
               },
               "durability": "temporary",
@@ -994,7 +948,7 @@
                       "symbol": "day_spent"
                     },
                     "val": {
-                      "i128": "4749259"
+                      "i128": "6110585"
                     }
                   },
                   {
@@ -1021,10 +975,26 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": {
                       "u64": "18446744073709551615"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "4"
                     }
                   },
                   {
@@ -1076,7 +1046,7 @@
                       "symbol": "units_used"
                     },
                     "val": {
-                      "u64": "5"
+                      "u64": "4"
                     }
                   },
                   {
@@ -1084,7 +1054,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -1141,7 +1111,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -1202,7 +1172,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "2650661"
+                "i128": "999982"
               }
             }
           },
@@ -1229,7 +1199,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "2650661"
+                "i128": "999982"
               }
             }
           },
@@ -1345,7 +1315,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "2650661"
+                        "i128": "999982"
                       }
                     }
                   ]
@@ -1442,7 +1412,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "2650661"
+                      "i128": "999982"
                     }
                   },
                   {

@@ -513,3 +513,28 @@ Analyzes real-time 24-hour grid prices and solar generation for `:meterId`, comp
   "alerts": []
 }
 ```
+
+## Tiered Rate Limiting (#1080)
+
+Routes under `/api/lifespan`, `/api/shadows` and `/api/forecast-dashboard` are limited per consumer according to subscription tier. Consumers are identified by `X-API-Key`, then `X-User-Id`, then IP. Unknown consumers are `free`.
+
+| Tier | Req/min | Req/day | Burst |
+|---|---|---|---|
+| free | 10 | 1,000 | 0 |
+| basic | 60 | 10,000 | 0 |
+| premium | 300 | 100,000 | +150 |
+| enterprise | 1,200 | 1,000,000 | +1,200 |
+
+A token bucket refills at the per-minute rate up to `rate + burst`, so premium/enterprise can absorb spikes.
+
+Response headers: `X-RateLimit-Tier`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Daily-Limit`, `X-RateLimit-Daily-Remaining`, and `X-RateLimit-Upgrade` (suggested tier once ≥80% of the daily quota is used). Over-limit requests get `429` with `Retry-After` and an `upgrade` prompt.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/rate-limits/tiers` | Tier definitions |
+| GET | `/api/rate-limits/usage` | Real-time usage for the caller (`requestsToday`, `quotaUsedPct`, `upgrade`) |
+| PUT | `/api/rate-limits/subscriptions/:consumerId` | Admin (`X-Admin-Key`): `{ "tier": "premium" }` |
+
+## Lifespan, Shadows, Forecast Dashboard (#1079, #1081, #1082)
+
+See `backend/LIFESPAN.md`, `backend/SHADOWS.md` and `frontend/FORECASTING.md`.

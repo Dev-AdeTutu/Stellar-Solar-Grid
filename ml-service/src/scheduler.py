@@ -5,6 +5,9 @@ Runs weekly to retrain models with latest data
 
 import os
 import sys
+import json
+import urllib.request
+import urllib.error
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -36,7 +39,10 @@ class ModelRetrainingScheduler:
         weather_api_key: str = None,
         lat: float = 37.7749,
         lon: float = -122.4194,
-        cron_schedule: str = '0 2 * * 0'  # Default: Every Sunday at 2 AM
+        cron_schedule: str = '0 2 * * 0',  # Default: Every Sunday at 2 AM
+        edge_export_dir: str = None,
+        backend_url: str = None,
+        backend_api_key: str = None
     ):
         """
         Initialize scheduler
@@ -48,6 +54,9 @@ class ModelRetrainingScheduler:
             lat: Latitude for weather data
             lon: Longitude for weather data
             cron_schedule: Cron expression for scheduling
+            edge_export_dir: Directory to export edge-optimized models to
+            backend_url: Backend base URL for publishing edge model versions
+            backend_api_key: API key for authenticating with the backend
         """
         self.model_dir = model_dir
         self.data_path = data_path
@@ -55,6 +64,9 @@ class ModelRetrainingScheduler:
         self.lat = lat
         self.lon = lon
         self.cron_schedule = cron_schedule
+        self.edge_export_dir = edge_export_dir or os.path.join(model_dir, 'edge')
+        self.backend_url = backend_url or os.environ.get('BACKEND_URL')
+        self.backend_api_key = backend_api_key or os.environ.get('BACKEND_API_KEY')
         
         self.scheduler = BackgroundScheduler()
         self.is_running = False
@@ -111,6 +123,15 @@ class ModelRetrainingScheduler:
                     shutil.copytree(versioned_model_dir, latest_dir)
                     logger.info(f"Copied model to 'latest' directory (symlink not available)")
                 
+                # Export edge-optimized model and notify backend so meters can update
+                try:
+                    edge_info = self.export_edge_model(versioned_model_dir, timestamp)
+                    self.publish_edge_model(edge_info)
+                except Exception as edge_error:
+                    logger.error(f"Edge model export/publish failed: {edge_error}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                
                 # Cleanup old versions (keep last 5)
                 self.cleanup_old_versions(keep=5)
                 
@@ -161,6 +182,100 @@ class ModelRetrainingScheduler:
                 
         except Exception as e:
             logger.error(f"Error cleaning up old versions: {e}")
+    
+    def export_edge_model(self, versioned_model_dir: str, timestamp: str) -> dict:
+        """
+        Export an edge-optimized model bundle for deployment to meter edge devices.
+        
+        Args:
+            versioned_model_dir: Directory containing the newly trained models
+            timestamp: Timestamp string used for the model version
+            
+        Returns:
+            Dictionary describing the exported edge model
+        """
+        import shutil
+        
+        os.makedirs(self.edge_export_dir, exist_ok=True)
+        edge_version = f'edge_{timestamp}'
+        edge_version_dir = os.path.join(self.edge_export_dir, edge_version)
+        
+        # Copy trained model artifacts into the edge bundle directory
+        if os.path.isdir(edge_version_dir):
+            shutil.rmtree(edge_version_dir)
+        shutil.copytree(versioned_model_dir, edge_version_dir)
+        
+        # Write edge manifest describing the bundle
+        manifest = {
+            'version': edge_version,
+            'source_version': os.path.basename(versioned_model_dir),
+            'created_at': datetime.now().isoformat(),
+            'target': 'meter-edge',
+            'artifacts': sorted(os.listdir(edge_version_dir))
+        }
+        manifest_path = os.path.join(edge_version_dir, 'edge_manifest.json')
+        with open(manifest_path, 'w') as f:
+            json.dump(manifest, f, indent=2)
+        
+        logger.info(f"Exported edge model bundle to {edge_version_dir}")
+        
+        return {
+            'version': edge_version,
+            'path': edge_version_dir,
+            'manifest': manifest
+        }
+    
+    def publish_edge_model(self, edge_info: dict):
+        """
+        Notify the backend of a new edge model version so meters can be updated.
+        
+        Args:
+            edge_info: Edge model info returned by export_edge_model
+        """
+        if not self.backend_url:
+            logger.warning(
+                "No backend URL configured; skipping edge model publish notification"
+            )
+            return
+        
+        url = self.backend_url.rstrip('/') + '/api/edge/models'
+        payload = json.dumps({
+            'version': edge_info['version'],
+            'source_version': edge_info['manifest']['source_version'],
+            'created_at': edge_info['manifest']['created_at'],
+            'target': edge_info['manifest']['target'],
+            'artifacts': edge_info['manifest']['artifacts']
+        }).encode('utf-8')
+        
+        request = urllib.request.Request(
+            url,
+            data=payload,
+            method='POST',
+            headers={'Content-Type': 'application/json'}
+        )
+        if self.backend_api_key:
+            request.add_header('Authorization', f'Bearer {self.backend_api_key}')
+        
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                status = response.status
+                body = response.read().decode('utf-8', errors='replace')
+            logger.info(
+                f"Published edge model {edge_info['version']} to backend "
+                f"(status={status}): {body}"
+            )
+        except urllib.error.HTTPError as e:
+            logger.error(
+                f"Backend rejected edge model publish for {edge_info['version']}: "
+                f"{e.code} {e.reason}"
+            )
+            raise
+        except urllib.error.URLError as e:
+            logger.error(
+                f"Failed to reach backend to publish edge model "
+                f"{edge_info['version']}: {e.reason}"
+            )
+            raise
     
     def start(self):
         """Start the scheduler"""
@@ -266,6 +381,27 @@ def main():
         help='Run retraining immediately on startup'
     )
     
+    parser.add_argument(
+        '--edge-export-dir',
+        type=str,
+        default=None,
+        help='Directory to export edge-optimized models to (default: <model-dir>/edge)'
+    )
+    
+    parser.add_argument(
+        '--backend-url',
+        type=str,
+        default=None,
+        help='Backend base URL for publishing edge model versions (default: $BACKEND_URL)'
+    )
+    
+    parser.add_argument(
+        '--backend-api-key',
+        type=str,
+        default=None,
+        help='API key for backend authentication (default: $BACKEND_API_KEY)'
+    )
+    
     args = parser.parse_args()
     
     # Create logs directory
@@ -278,7 +414,10 @@ def main():
         weather_api_key=args.weather_api_key,
         lat=args.lat,
         lon=args.lon,
-        cron_schedule=args.cron
+        cron_schedule=args.cron,
+        edge_export_dir=args.edge_export_dir,
+        backend_url=args.backend_url,
+        backend_api_key=args.backend_api_key
     )
     
     # Set up signal handlers for graceful shutdown

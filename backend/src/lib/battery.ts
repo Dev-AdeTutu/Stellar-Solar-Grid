@@ -350,6 +350,3 @@ export function handleBatteryTelemetry(
     cycleCount,
   });
 }
-</｜｜DSML｜｜ parameter>
-</｜｜DSML｜｜ invoke>
-</｜｜DSML｜｜ calls>
