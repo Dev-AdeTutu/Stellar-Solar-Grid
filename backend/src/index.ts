@@ -298,6 +298,16 @@ app.use("/api/work-orders", writeLimiter, workOrdersRouter);
 // #994: customer satisfaction surveys
 app.use("/api/surveys", writeLimiter, surveysRouter);
 
+// #1064: Regulatory sandbox mode. The sandbox middleware tags every request
+// with its sandbox context so downstream compliance flows can isolate
+// sandbox traffic from production. Sandbox routes are only mounted when the
+// sandbox environment is explicitly enabled.
+app.use(sandboxMiddleware);
+if (isSandboxEnabled()) {
+  app.use("/api/sandbox", writeLimiter, sandboxRouter);
+  logger.info("Regulatory sandbox mode enabled");
+}
+
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);
 startMaintenanceScheduler();

@@ -322,3 +322,93 @@ export async function getSeasonalHistory(years?: number): Promise<SeasonalHistor
   const { history } = (await res.json()) as { history: SeasonalHistoryEntry[] };
   return history;
 }
+
+// ---------------------------------------------------------------------------
+// Energy credit derivatives
+// ---------------------------------------------------------------------------
+
+export type DerivativeType = "future" | "call" | "put";
+export type DerivativeStatus = "open" | "settled" | "liquidated" | "expired";
+
+export interface Derivative {
+  id: string;
+  type: DerivativeType;
+  holder: string;
+  underlying: string;
+  quantity: number;
+  strikePrice: number;
+  premium: number;
+  margin: number;
+  expiry: string;
+  status: DerivativeStatus;
+  settlementPrice?: number;
+  settlementAmount?: number;
+  createdAt: string;
+}
+
+export interface CreateDerivativePayload {
+  type: DerivativeType;
+  underlying: string;
+  quantity: number;
+  strikePrice: number;
+  expiry: string;
+}
+
+export interface DerivativeFilters {
+  type?: DerivativeType;
+  status?: DerivativeStatus;
+  holder?: string;
+}
+
+export interface SettlementResult {
+  derivative: Derivative;
+  settlementPrice: number;
+  settlementAmount: number;
+}
+
+export interface MarginStatus {
+  holder: string;
+  requiredMargin: number;
+  postedMargin: number;
+  maintenanceMargin: number;
+  equity: number;
+  liquidatable: boolean;
+}
+
+export async function listDerivatives(filters: DerivativeFilters = {}): Promise<Derivative[]> {
+  const params = new URLSearchParams();
+  if (filters.type) params.set("type", filters.type);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.holder) params.set("holder", filters.holder);
+  const queryString = params.toString();
+  const res = await fetch(`${API_BASE}/derivatives${queryString ? `?${queryString}` : ""}`);
+  if (!res.ok) await parseError(res, "Failed to fetch derivatives");
+  const { derivatives } = (await res.json()) as { derivatives: Derivative[] };
+  return derivatives;
+}
+
+export async function createDerivative(payload: CreateDerivativePayload): Promise<Derivative> {
+  const res = await fetch(`${API_BASE}/derivatives`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to create derivative");
+  const { derivative } = (await res.json()) as { derivative: Derivative };
+  return derivative;
+}
+
+export async function settleDerivative(id: string): Promise<SettlementResult> {
+  const res = await fetch(`${API_BASE}/derivatives/${encodeURIComponent(id)}/settle`, {
+    method: "POST",
+  });
+  if (!res.ok) await parseError(res, "Failed to settle derivative");
+  return (await res.json()) as SettlementResult;
+}
+
+export async function getMarginStatus(holder: string): Promise<MarginStatus> {
+  const res = await fetch(`${API_BASE}/derivatives/margin/${encodeURIComponent(holder)}`);
+  if (!res.ok) await parseError(res, "Failed to fetch margin status");
+  const { margin } = (await res.json()) as { margin: MarginStatus };
+  return margin;
+}

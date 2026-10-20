@@ -81,6 +81,80 @@ tradingRouter.delete("/orders/:id", botLimiter, requireApiKey, (req, res) => {
   res.status(204).end();
 });
 
+// ── Derivatives ───────────────────────────────────────────────────────────────
+interface DerivativePosition {
+  id: string;
+  owner: string;
+  kind: "future" | "call" | "put";
+  side: "long" | "short";
+  quantity: number;
+  strike: number;
+  margin: number;
+  status: "open" | "settled" | "liquidated";
+  createdAt: number;
+  expiry: number;
+  settlementPrice?: number;
+  payout?: number;
+}
+const derivatives: DerivativePosition[] = [];
+
+const derivativeSchema = z.object({
+  kind: z.enum(["future", "call", "put"]),
+  side: z.enum(["long", "short"]),
+  quantity: z.number().positive(),
+  strike: z.number().positive(),
+  margin: z.number().nonnegative(),
+  expiry: z.number().int().positive(),
+});
+
+tradingRouter.get("/derivatives", botLimiter, requireApiKey, (_req, res) => {
+  res.json(derivatives.filter((d) => d.owner === res.locals.owner));
+});
+
+tradingRouter.post("/derivatives", botLimiter, requireApiKey, (req, res) => {
+  const p = derivativeSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: p.error.issues });
+  const position: DerivativePosition = {
+    id: crypto.randomUUID(),
+    owner: res.locals.owner,
+    status: "open",
+    createdAt: Date.now(),
+    ...p.data,
+  };
+  derivatives.push(position);
+  broadcast("derivative.created", position);
+  res.status(201).json(position);
+});
+
+tradingRouter.post("/derivatives/:id/settle", botLimiter, requireApiKey, (req, res) => {
+  const p = z.object({ settlementPrice: z.number().positive() }).safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: p.error.issues });
+  const position = derivatives.find((d) => d.id === req.params.id && d.owner === res.locals.owner);
+  if (!position) return res.status(404).json({ error: "Position not found" });
+  if (position.status !== "open") return res.status(409).json({ error: "Position already closed" });
+  const price = p.data.settlementPrice;
+  let payout = 0;
+  if (position.kind === "future") {
+    payout = (price - position.strike) * position.quantity * (position.side === "long" ? 1 : -1);
+  } else if (position.kind === "call") {
+    payout = Math.max(price - position.strike, 0) * position.quantity * (position.side === "long" ? 1 : -1);
+  } else {
+    payout = Math.max(position.strike - price, 0) * position.quantity * (position.side === "long" ? 1 : -1);
+  }
+  position.status = "settled";
+  position.settlementPrice = price;
+  position.payout = payout;
+  broadcast("derivative.settled", position);
+  res.json(position);
+});
+
+tradingRouter.get("/derivatives/margin", botLimiter, requireApiKey, (_req, res) => {
+  const open = derivatives.filter((d) => d.owner === res.locals.owner && d.status === "open");
+  const required = open.reduce((sum, d) => sum + d.strike * d.quantity * 0.1, 0);
+  const posted = open.reduce((sum, d) => sum + d.margin, 0);
+  res.json({ required, posted, shortfall: Math.max(required - posted, 0), positions: open.length });
+});
+
 /** Attach WebSocket feed at /api/trading/ws (auth via ?apiKey=). */
 export function attachTradingWebSocket(server: Server) {
   wss = new WebSocketServer({ noServer: true });
