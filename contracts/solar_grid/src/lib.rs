@@ -16,12 +16,14 @@ mod quantum_crypto;
 mod recs;
 mod scheduling;
 mod staking;
+mod dynamic_pricing;
 mod warranty;
 mod loyalty;
 mod load_shedding;
 mod p2p_trading;
 #[cfg(test)]
 mod test_assets_warranty;
+pub use dynamic_pricing::*;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use commons::{
     CommonsConflict, CommonsMember, CommonsResource, CommonsRule, CommonsSanction,
