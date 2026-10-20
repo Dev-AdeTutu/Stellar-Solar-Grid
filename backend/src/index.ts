@@ -192,6 +192,9 @@ app.use("/api/education", educationRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/lake", lakeRouter);
+app.use("/api/algos", algosRouter);
+app.use("/api/batch", batchRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/social", socialRouter);
 startLeaderboardScheduler();
@@ -362,6 +365,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
+app.listen(PORT, () => {
+  startDataLakeWorker(initUsageEventStore());
 const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
