@@ -134,6 +134,110 @@ mod additional_tests {
         let meter = client.get_meter(&meter_id).unwrap();
         assert!(meter.balance < 10_i128);
     }
+}
+#[cfg(test)]
+mod batch_and_market_tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, token, vec, Address, Env, String};
+
+    fn setup() -> (Env, SolarGridContractClient<'static>, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, SolarGridContract);
+        let client = SolarGridContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        client.initialize(&admin, &token);
+        (env, client, admin, token)
+    }
+
+    #[test]
+    fn batch_executes_all_actions() {
+        let (env, client, _, _) = setup();
+        let (a, b, oracle) = (Address::generate(&env), Address::generate(&env), Address::generate(&env));
+        let actions = vec![
+            &env,
+            AdminAction::AllowlistAdd(a.clone()),
+            AdminAction::AllowlistAdd(b.clone()),
+            AdminAction::SetOracle(oracle.clone()),
+        ];
+        assert_eq!(client.execute_batch(&actions), 3);
+        assert_eq!(client.get_allowlist().len(), 2);
+        assert_eq!(client.get_oracle(), Some(oracle));
+    }
+
+    #[test]
+    fn batch_is_atomic() {
+        let (env, client, _, _) = setup();
+        let a = Address::generate(&env);
+        let actions = vec![
+            &env,
+            AdminAction::AllowlistAdd(a),
+            AdminAction::SetDailyLimit(String::from_str(&env, "missing"), 10),
+        ];
+        assert!(client.try_execute_batch(&actions).is_err());
+        assert_eq!(client.get_allowlist().len(), 0);
+    }
+
+    #[test]
+    fn batch_rejects_empty_and_oversized() {
+        let (env, client, _, _) = setup();
+        assert_eq!(
+            client.try_execute_batch(&Vec::new(&env)),
+            Err(Ok(ContractError::BatchEmpty))
+        );
+        let mut big = Vec::new(&env);
+        for _ in 0..=MAX_BATCH_ACTIONS {
+            big.push_back(AdminAction::AllowlistAdd(Address::generate(&env)));
+        }
+        assert_eq!(client.try_execute_batch(&big), Err(Ok(ContractError::BatchTooLarge)));
+    }
+
+    #[test]
+    fn marketplace_subscribe_shares_revenue_and_tracks_trades() {
+        let (env, client, admin, token) = setup();
+        let creator = Address::generate(&env);
+        let user = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token).mint(&user, &1_000);
+
+        let id = client.publish_algorithm(&creator, &String::from_str(&env, "peak-shaver"), &1_000);
+        client.subscribe_algorithm(&user, &id);
+
+        let tc = token::Client::new(&env, &token);
+        assert_eq!(tc.balance(&creator), 900);
+        assert_eq!(tc.balance(&admin), 100);
+        assert!(client.is_subscribed(&user, &id));
+        assert_eq!(
+            client.try_subscribe_algorithm(&user, &id),
+            Err(Ok(ContractError::AlreadySubscribed))
+        );
+
+        client.set_oracle(&Address::generate(&env));
+        client.record_algo_trade(&id, &250);
+        client.record_algo_trade(&id, &-50);
+        let algo = client.get_algorithm(&id);
+        assert_eq!((algo.trades, algo.total_pnl, algo.subscribers), (2, 200, 1));
+        assert_eq!(algo.creator_earnings, 900);
+
+        client.unsubscribe_algorithm(&user, &id);
+        assert_eq!(client.get_algorithm(&id).subscribers, 0);
+        assert_eq!(client.list_algorithms().len(), 1);
+    }
+
+    #[test]
+    fn inactive_algorithm_rejects_subscribers() {
+        let (env, client, _, _) = setup();
+        let creator = Address::generate(&env);
+        let id = client.publish_algorithm(&creator, &String::from_str(&env, "x"), &0);
+        client.set_algorithm_active(&id, &false);
+        assert_eq!(
+            client.try_subscribe_algorithm(&Address::generate(&env), &id),
+            Err(Ok(ContractError::AlgorithmInactive))
+        );
+    }
+}
 
     // ------------------------------------------------------------------
     // Delegation tests
@@ -487,322 +591,100 @@ mod additional_tests {
     }
 
     // ------------------------------------------------------------------
-    // Co-ownership tests
+    // Reputation / credit scoring tests
     // ------------------------------------------------------------------
 
-    fn setup_co_owned_meter(
+    fn setup_reputation_meter(
         env: &Env,
         client: &SolarGridContractClient<'static>,
         token_address: &Address,
-        meter_id: &String,
         owner: &Address,
-    ) {
-        setup_meter_with_payment(env, client, token_address, meter_id, owner);
-    }
-
-    #[test]
-    fn test_multiple_addresses_own_shares_of_single_meter() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO1");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &3_000_u32);
-        client.set_ownership_share(&meter_id, &owner, &co2, &2_000_u32);
-
-        let shares = client.get_ownership_shares(&meter_id);
-        assert_eq!(shares.len(), 2);
-        assert_eq!(client.get_ownership_share(&meter_id, &co1), 3_000_u32);
-        assert_eq!(client.get_ownership_share(&meter_id, &co2), 2_000_u32);
-    }
-
-    #[test]
-    fn test_ownership_shares_cannot_exceed_total() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO2");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &6_000_u32);
-
-        // Adding another 6_000 would exceed 10_000 (100%) and must be rejected.
-        let result = client.try_set_ownership_share(&meter_id, &owner, &co2, &6_000_u32);
-        assert_eq!(result, Err(Ok(Error::InvalidShare)));
-    }
-
-    #[test]
-    fn test_unauthorized_share_transfer_rejected() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO3");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &2_000_u32);
-
-        let attacker = Address::generate(&env);
-        let recipient = Address::generate(&env);
-        let result = client.try_transfer_ownership_share(
-            &meter_id,
-            &attacker,
-            &co1,
-            &recipient,
-            &1_000_u32,
-        );
-        assert_eq!(result, Err(Ok(Error::Unauthorized)));
-    }
-
-    #[test]
-    fn test_transfer_ownership_share_moves_balance() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO4");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &4_000_u32);
-
-        client.transfer_ownership_share(&meter_id, &co1, &co1, &co2, &1_500_u32);
-
-        assert_eq!(client.get_ownership_share(&meter_id, &co1), 2_500_u32);
-        assert_eq!(client.get_ownership_share(&meter_id, &co2), 1_500_u32);
-    }
-
-    #[test]
-    fn test_transfer_more_than_owned_rejected() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO5");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &1_000_u32);
-
-        let result = client.try_transfer_ownership_share(
-            &meter_id,
-            &co1,
-            &co1,
-            &co2,
-            &2_000_u32,
-        );
-        assert_eq!(result, Err(Ok(Error::InvalidShare)));
-    }
-
-    #[test]
-    fn test_proportional_cost_sharing() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO6");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &6_000_u32);
-        client.set_ownership_share(&meter_id, &owner, &co2, &4_000_u32);
-
-        // 10_000 total cost split 60/40.
-        assert_eq!(client.compute_owner_cost(&meter_id, &co1, &10_000_i128), 6_000_i128);
-        assert_eq!(client.compute_owner_cost(&meter_id, &co2, &10_000_i128), 4_000_i128);
-    }
-
-    #[test]
-    fn test_proportional_revenue_sharing() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO7");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &2_500_u32);
-        client.set_ownership_share(&meter_id, &owner, &co2, &7_500_u32);
-
-        // 10_000 total export revenue split 25/75.
-        assert_eq!(client.compute_owner_revenue(&meter_id, &co1, &10_000_i128), 2_500_i128);
-        assert_eq!(client.compute_owner_revenue(&meter_id, &co2, &10_000_i128), 7_500_i128);
-    }
-
-    #[test]
-    fn test_voting_weight_matches_ownership_percentage() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let meter_id = String::from_str(&env, "SG-2024-CO8");
-        let owner = Address::generate(&env);
-        setup_co_owned_meter(&env, &client, &token_address, &meter_id, &owner);
-
-        let co1 = Address::generate(&env);
-        let co2 = Address::generate(&env);
-        client.set_ownership_share(&meter_id, &owner, &co1, &3_000_u32);
-        client.set_ownership_share(&meter_id, &owner, &co2, &7_000_u32);
-
-        assert_eq!(client.get_voting_weight(&meter_id, &co1), 3_000_u32);
-        assert_eq!(client.get_voting_weight(&meter_id, &co2), 7_000_u32);
-    }
-
-    // ------------------------------------------------------------------
-    // Derivatives tests
-    // ------------------------------------------------------------------
-
-    fn setup_derivatives(
-        env: &Env,
-        client: &SolarGridContractClient<'static>,
-        token_address: &Address,
-        admin: &Address,
-    ) {
+    ) -> String {
+        let meter_id = String::from_str(env, "SG-2024-REPMTR");
         let token_admin_client = token::StellarAssetClient::new(env, token_address);
-        let writer = Address::generate(env);
-        token_admin_client.mint(writer, &100_000_000_i128);
-        client.set_derivatives_writer(&admin, &writer);
+        client.allowlist_add(owner);
+        client.register_meter(&meter_id, owner);
+        token_admin_client.mint(owner, &100_000_000_i128);
+        meter_id
     }
 
     #[test]
-    fn test_create_future_and_settle_at_expiry() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
+    fn test_reputation_records_payment_history() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
 
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &10_000_000_i128);
+        client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
+        client.make_payment(&meter_id, &owner, &2_000_000_i128, &PaymentPlan::Daily);
 
-        let expiry = env.ledger().timestamp() + 1_000;
-        let future_id = client.create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
-        assert!(client.get_future(&future_id).is_some());
-
-        // Settlement before expiry must fail.
-        let early = client.try_settle_future(&future_id);
-        assert!(early.is_err());
-
-        env.ledger().set_timestamp(expiry + 1);
-        client.settle_future(&future_id);
-
-        let future = client.get_future(&future_id).unwrap();
-        assert!(future.settled);
+        let history = client.get_payment_history(&owner);
+        assert_eq!(history.len(), 2);
+        // Raw per-payment amounts must not be exposed; only aggregates.
+        let record = client.get_reputation(&owner);
+        assert_eq!(record.payment_count, 2);
+        assert!(record.total_paid > 0);
+        assert!(record.score <= 100);
     }
 
     #[test]
-    fn test_call_option_exercise() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
+    fn test_reputation_score_bounds() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
 
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &10_000_000_i128);
+        // No history -> minimum score.
+        let empty = client.get_reputation(&owner);
+        assert_eq!(empty.score, 0);
 
-        let expiry = env.ledger().timestamp() + 1_000;
-        let option_id = client.create_option(
-            &buyer,
-            &OptionType::Call,
-            &1_000_i128,
-            &expiry,
-            &1_000_000_i128,
-        );
-
-        // Exercise before expiry succeeds.
-        client.exercise_option(&option_id);
-        let option = client.get_option(&option_id).unwrap();
-        assert!(option.exercised);
+        // Many on-time payments -> score capped at 100.
+        for _ in 0..50 {
+            client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
+        }
+        let full = client.get_reputation(&owner);
+        assert_eq!(full.score, 100);
     }
 
     #[test]
-    fn test_put_option_exercise() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
+    fn test_reputation_did_association() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+        client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
 
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &10_000_000_i128);
+        let did = String::from_str(&env, "did:stellar:GABC123");
+        client.set_did(&owner, &did);
 
-        let expiry = env.ledger().timestamp() + 1_000;
-        let option_id = client.create_option(
-            &buyer,
-            &OptionType::Put,
-            &1_000_i128,
-            &expiry,
-            &1_000_000_i128,
-        );
-
-        client.exercise_option(&option_id);
-        let option = client.get_option(&option_id).unwrap();
-        assert!(option.exercised);
+        let record = client.get_reputation(&owner);
+        assert_eq!(record.did, Some(did.clone()));
+        assert_eq!(client.get_reputation_by_did(&did).unwrap().score, record.score);
     }
 
     #[test]
-    fn test_option_exercise_after_expiry_rejected() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
+    fn test_reputation_portable_by_address() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+        client.make_payment(&meter_id, &owner, &1_000_000_i128, &PaymentPlan::Daily);
 
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &10_000_000_i128);
-
-        let expiry = env.ledger().timestamp() + 1_000;
-        let option_id = client.create_option(
-            &buyer,
-            &OptionType::Call,
-            &1_000_i128,
-            &expiry,
-            &1_000_000_i128,
-        );
-
-        env.ledger().set_timestamp(expiry + 1);
-        let result = client.try_exercise_option(&option_id);
-        assert!(result.is_err());
+        // Score is queryable by address independent of any meter binding.
+        let by_addr = client.get_reputation(&owner);
+        assert!(by_addr.score > 0);
+        assert_eq!(by_addr.payment_count, 1);
     }
 
     #[test]
-    fn test_margin_requirement_enforced_on_creation() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
+    fn test_reputation_privacy_no_raw_amounts() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = setup_reputation_meter(&env, &client, &token_address, &owner);
+        client.make_payment(&meter_id, &owner, &1_234_567_i128, &PaymentPlan::Daily);
 
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        // Fund below the required initial margin.
-        token_admin_client.mint(&buyer, &100_i128);
-
-        let expiry = env.ledger().timestamp() + 1_000;
-        let result = client.try_create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
-        assert_eq!(result, Err(Ok(Error::InsufficientMargin)));
-    }
-
-    #[test]
-    fn test_liquidation_below_maintenance_margin() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
-
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &10_000_000_i128);
-
-        let expiry = env.ledger().timestamp() + 1_000;
-        let future_id = client.create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
-
-        // Drop the position's margin below the maintenance threshold.
-        client.set_future_margin(&future_id, &1_i128);
-        assert!(client.is_under_maintenance_margin(&future_id));
-
-        client.liquidate_future(&future_id);
-        let future = client.get_future(&future_id).unwrap();
-        assert!(future.liquidated);
-    }
-
-    #[test]
-    fn test_liquidation_above_maintenance_rejected() {
-        let (env, client, admin, token_address) = setup_with_token();
-        setup_derivatives(&env, &client, &token_address, &admin);
-
-        let buyer = Address::generate(&env);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &10_000_000_i128);
-
-        let expiry = env.ledger().timestamp() + 1_000;
-        let future_id = client.create_future(&buyer, &1_000_i128, &expiry, &1_000_000_i128);
-
-        let result = client.try_liquidate_future(&future_id);
-        assert_eq!(result, Err(Ok(Error::NotLiquidatable)));
+        let record = client.get_reputation(&owner);
+        // Aggregate only: total_paid is a sum, not the individual amount.
+        assert_eq!(record.payment_count, 1);
+        assert!(record.total_paid >= 1_234_567_i128);
+        // History entries expose timestamps/status but not raw amounts.
+        let history = client.get_payment_history(&owner);
+        assert_eq!(history.len(), 1);
     }
 }

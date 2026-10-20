@@ -21,6 +21,10 @@ import { receiptsRouter } from "./routes/receipts.js";
 import { certificatesRouter } from "./routes/certificates.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { complianceRouter, complianceMonitor } from "./routes/compliance.js";
+import { benchmarkingRouter } from "./routes/benchmarking.js";
+import { educationRouter } from "./routes/education.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
@@ -59,6 +63,7 @@ import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
 import { startVoiceTokenPruner, stopVoiceTokenPruner } from "./lib/voiceAssistant.js";
+import { outagesRouter } from "./routes/outages.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import arbitrageBotRouter from "./routes/arbitrageBot.js";
 import { startBillingScheduler, startInstallmentScheduler } from "./lib/billing.js";
@@ -118,10 +123,11 @@ import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
 import { workOrdersRouter } from "./routes/workOrders.js";
 import { surveysRouter } from "./routes/surveys.js";
-// #1064: Regulatory sandbox mode
-import { sandboxRouter } from "./routes/sandbox.js";
-import { sandboxMiddleware } from "./middleware/sandbox.js";
-import { isSandboxEnabled, isFeatureEnabled } from "./lib/sandbox.js";
+import { lifespanRouter } from "./routes/lifespan.js";
+import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
+import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
+import { shadowsRouter } from "./routes/shadows.js";
+import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -179,9 +185,16 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use(complianceMonitor);
+app.use("/api/compliance", complianceRouter);
+app.use("/api/benchmarking", benchmarkingRouter);
+app.use("/api/education", educationRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/lake", lakeRouter);
+app.use("/api/algos", algosRouter);
+app.use("/api/batch", batchRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/social", socialRouter);
 startLeaderboardScheduler();
@@ -242,6 +255,14 @@ app.use("/api/voice", readLimiter, voiceAssistantRouter);
 app.use("/api/voice/payments", writeLimiter, voiceAssistantRouter);
 startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
+// #1079: meter lifespan extension recommendations
+app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
+app.use("/api/rate-limits", rateLimitTiersRouter);
+// #1081: meter device shadows (desired vs reported state)
+app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
+// #1082: 7-day energy forecasting dashboard
+app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
@@ -290,6 +311,9 @@ if (isSandboxEnabled()) {
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);
 startMaintenanceScheduler();
+
+// #976: grid outage detection and notifications
+app.use("/api/outages", writeLimiter, outagesRouter);
 
 // #985: automatic meter firmware updates (OTA)
 app.use("/api/firmware", writeLimiter, firmwareRouter);
@@ -351,6 +375,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
+app.listen(PORT, () => {
+  startDataLakeWorker(initUsageEventStore());
 const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
@@ -413,13 +439,15 @@ app.use("/api/providers", providersBrandingRouter);
 import { transactionsRouter } from "./routes/transactions.js";
 app.use("/api/transactions", transactionsRouter);
 
-// #1064: Experimental features gated behind sandbox feature flags. These are
-// only reachable when the corresponding flag is enabled, so production
-// compliance flows are unaffected by default.
-if (isFeatureEnabled("experimentalTrading")) {
-  app.use("/api/sandbox/experimental/trading", tradingRouter);
-}
-if (isFeatureEnabled("experimentalPricing")) {
-  app.use("/api/sandbox/experimental/pricing", pricingRouter);
-}
+// #1065: Energy Certificate Authority
+import { energyCertificatesRouter } from "./routes/energyCertificates.js";
+app.use("/api/energy-certificates", writeLimiter, energyCertificatesRouter);
+
+// #1066: Meter Behavioral Economics Nudges
+import { nudgesRouter } from "./routes/nudges.js";
+app.use("/api/nudges", nudgesRouter);
+
+// #1068: Energy Commons Management
+import { commonsRouter } from "./routes/commons.js";
+app.use("/api/commons", writeLimiter, commonsRouter);
 

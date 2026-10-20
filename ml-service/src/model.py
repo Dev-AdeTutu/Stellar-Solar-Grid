@@ -13,6 +13,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
 import joblib
 import os
+import json
 from datetime import datetime, timedelta
 
 class LoadForecastingModel:
@@ -361,3 +362,222 @@ class LoadForecastingModel:
             self.models[horizon] = keras.models.load_model(model_path)
         
         print(f"Models loaded from {model_dir}")
+
+    def export_edge_model(
+        self,
+        edge_dir: str,
+        quantize: bool = True,
+        reduced_units: Optional[int] = 32,
+        representative_data: Optional[np.ndarray] = None
+    ) -> Dict:
+        """
+        Export a lightweight, edge-deployable version of the trained models.
+
+        The exported artifacts are intended to be loaded by the backend edge
+        runtime on meter devices for local inference without cloud connectivity.
+        This produces:
+          - Reduced-size LSTM models per horizon (fewer units) when
+            ``reduced_units`` is provided.
+          - Optional post-training quantization (float16 / int8 dynamic range)
+            to shrink model size and reduce inference latency.
+          - Scalers and metadata serialized as JSON-friendly artifacts so the
+            edge runtime can pre/post-process inputs and outputs.
+
+        Args:
+            edge_dir: Directory to write edge artifacts into.
+            quantize: Whether to apply post-training quantization.
+            reduced_units: Target number of units for the reduced LSTM layers.
+                If None, the original model architectures are exported as-is.
+            representative_data: Optional representative input array of shape
+                (n_samples, sequence_length, n_features) used for full
+                integer quantization calibration. If omitted, dynamic-range
+                quantization is used instead.
+
+        Returns:
+            Dictionary describing the exported artifacts and their sizes.
+        """
+        if not self.models:
+            raise ValueError("No trained models available to export")
+
+        os.makedirs(edge_dir, exist_ok=True)
+
+        export_info: Dict = {
+            'edge_dir': edge_dir,
+            'quantized': bool(quantize),
+            'reduced_units': reduced_units,
+            'horizons': {},
+            'timestamp': datetime.now().isoformat(),
+        }
+
+        for horizon, model in self.models.items():
+            # Build a lightweight reduced model when requested.
+            if reduced_units is not None:
+                edge_model = self._build_reduced_model(horizon, reduced_units)
+                # Transfer weights from the full model where shapes match.
+                self._transfer_weights(model, edge_model)
+            else:
+                edge_model = model
+
+            model_path = os.path.join(edge_dir, f'edge_model_{horizon}h.keras')
+            edge_model.save(model_path)
+
+            size_bytes = os.path.getsize(model_path)
+
+            # Apply post-training quantization for a smaller footprint.
+            if quantize:
+                quantized_path = os.path.join(
+                    edge_dir, f'edge_model_{horizon}h_quantized.tflite'
+                )
+                try:
+                    self._quantize_model(
+                        edge_model,
+                        quantized_path,
+                        representative_data=representative_data,
+                    )
+                    size_bytes = os.path.getsize(quantized_path)
+                    model_path = quantized_path
+                except Exception as exc:  # pragma: no cover - defensive
+                    print(
+                        f"Quantization failed for horizon {horizon}h: {exc}. "
+                        "Falling back to unquantized edge model."
+                    )
+
+            export_info['horizons'][horizon] = {
+                'model_path': model_path,
+                'size_bytes': size_bytes,
+            }
+
+        # Persist scalers in a portable JSON format for the edge runtime.
+        scaler_meta = {
+            'scaler_X': {
+                'mean': self.scaler_X.mean_.tolist()
+                if hasattr(self.scaler_X, 'mean_') else None,
+                'scale': self.scaler_X.scale_.tolist()
+                if hasattr(self.scaler_X, 'scale_') else None,
+                'var': self.scaler_X.var_.tolist()
+                if hasattr(self.scaler_X, 'var_') else None,
+            },
+            'scaler_y': {
+                'data_min': self.scaler_y.data_min_.tolist()
+                if hasattr(self.scaler_y, 'data_min_') else None,
+                'data_max': self.scaler_y.data_max_.tolist()
+                if hasattr(self.scaler_y, 'data_max_') else None,
+                'scale': self.scaler_y.scale_.tolist()
+                if hasattr(self.scaler_y, 'scale_') else None,
+                'min': self.scaler_y.min_.tolist()
+                if hasattr(self.scaler_y, 'min_') else None,
+            },
+        }
+        with open(os.path.join(edge_dir, 'scalers.json'), 'w') as f:
+            json.dump(scaler_meta, f)
+
+        # Also keep pickled scalers for convenience / backward compatibility.
+        joblib.dump(self.scaler_X, os.path.join(edge_dir, 'scaler_X.pkl'))
+        joblib.dump(self.scaler_y, os.path.join(edge_dir, 'scaler_y.pkl'))
+
+        metadata = {
+            'sequence_length': self.sequence_length,
+            'n_features': self.n_features,
+            'horizons': self.horizons,
+            'feature_names': self.feature_names,
+            'quantized': bool(quantize),
+            'reduced_units': reduced_units,
+            'timestamp': datetime.now().isoformat(),
+        }
+        with open(os.path.join(edge_dir, 'metadata.json'), 'w') as f:
+            json.dump(metadata, f, indent=2)
+        joblib.dump(metadata, os.path.join(edge_dir, 'metadata.pkl'))
+
+        export_info['metadata_path'] = os.path.join(edge_dir, 'metadata.json')
+        export_info['scalers_path'] = os.path.join(edge_dir, 'scalers.json')
+
+        print(f"Edge models exported to {edge_dir}")
+        return export_info
+
+    def _build_reduced_model(self, horizon: int, units: int) -> keras.Model:
+        """
+        Build a reduced-size LSTM model suitable for edge deployment.
+
+        Args:
+            horizon: Prediction horizon in hours.
+            units: Base number of units for the first LSTM layer.
+
+        Returns:
+            Compiled lightweight Keras model.
+        """
+        model = keras.Sequential([
+            layers.LSTM(
+                units,
+                return_sequences=True,
+                input_shape=(self.sequence_length, self.n_features),
+            ),
+            layers.LSTM(max(units // 2, 8), return_sequences=False),
+            layers.Dense(max(units // 2, 8), activation='relu'),
+            layers.Dense(horizon),
+        ])
+        model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+        return model
+
+    @staticmethod
+    def _transfer_weights(source: keras.Model, target: keras.Model):
+        """
+        Best-effort transfer of weights from a full model to a reduced model.
+
+        Only layers with matching weight shapes are copied; mismatched layers
+        keep their freshly initialized weights.
+
+        Args:
+            source: Full-size trained model.
+            target: Reduced-size target model.
+        """
+        source_layers = source.layers
+        target_layers = target.layers
+        for src_layer, tgt_layer in zip(source_layers, target_layers):
+            try:
+                src_weights = src_layer.get_weights()
+                tgt_weights = tgt_layer.get_weights()
+                if not src_weights or not tgt_weights:
+                    continue
+                if all(
+                    sw.shape == tw.shape
+                    for sw, tw in zip(src_weights, tgt_weights)
+                ):
+                    tgt_layer.set_weights(src_weights)
+            except Exception:  # pragma: no cover - defensive
+                continue
+
+    @staticmethod
+    def _quantize_model(
+        model: keras.Model,
+        output_path: str,
+        representative_data: Optional[np.ndarray] = None,
+    ):
+        """
+        Convert a Keras model to a quantized TFLite model for edge inference.
+
+        Args:
+            model: Keras model to convert.
+            output_path: Destination path for the .tflite file.
+            representative_data: Optional calibration data for full integer
+                quantization. When omitted, dynamic-range quantization is used.
+        """
+        converter = tf.lite.TFLiteConverter.from_keras_model(model)
+
+        if representative_data is not None:
+            def _representative_dataset():
+                for sample in representative_data:
+                    yield [sample.reshape(1, *sample.shape).astype(np.float32)]
+
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            converter.representative_dataset = _representative_dataset
+            converter.target_spec.supported_ops = [
+                tf.lite.OpsSet.TFLITE_BUILTINS_INT8
+            ]
+            converter.inference_input_type = tf.float32
+            converter.inference_output_type = tf.float32
+        else:
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+        tflite_model = converter.convert()
+        with open(output_path, 'wb') as f:
+            f.write(tflite_model)

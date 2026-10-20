@@ -36,6 +36,11 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, contractEventsProcessed } from "../lib/metrics.js";
 import { recordFrequencyReading, setFrequencyRelaySender } from "../lib/frequencyRegulation.js";
 import { verifyMeterLocation } from "../lib/geofencing.js";
+import {
+  runEdgeInference,
+  flushEdgeResults,
+  isEdgeRuntimeAvailable,
+} from "../lib/edgeRuntime.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -593,6 +598,10 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     cost,
   });
 
+  // Issue #1069: run local edge inference / anomaly detection before cloud
+  // submission. Edge failures must never block billing, so this is best-effort.
+  await runEdgeInferenceSafely(meterId, { units, cost });
+
   const event = await persistAndSubmitUsageEvent({
     meterId,
     units,
@@ -613,6 +622,41 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
       meterId,
       eventId: event.id,
     });
+  }
+}
+
+/**
+ * Issue #1069: invoke the edge runtime's local inference + anomaly detection
+ * for a meter reading. Swallows all errors (including "edge runtime
+ * unavailable") so the cloud billing path is never affected.
+ */
+async function runEdgeInferenceSafely(
+  meterId: string,
+  reading: { units: number; cost: number },
+): Promise<void> {
+  try {
+    if (!isEdgeRuntimeAvailable()) return;
+    await runEdgeInference(meterId, reading);
+  } catch (err) {
+    logger.warn("Edge inference failed, continuing with cloud processing", {
+      meterId,
+      err,
+    });
+  }
+}
+
+/**
+ * Issue #1069: flush buffered edge results to the cloud after reconnect.
+ * Best-effort — logs and swallows failures.
+ */
+function flushEdgeResultsSafely(): void {
+  try {
+    if (!isEdgeRuntimeAvailable()) return;
+    void flushEdgeResults().catch((err) => {
+      logger.warn("Edge result flush failed", { err });
+    });
+  } catch (err) {
+    logger.warn("Edge result flush failed", { err });
   }
 }
 
@@ -703,6 +747,10 @@ function startMqttBridge() {
     reconnectAttempts = 0;
     client.options.reconnectPeriod = 1000;
     logger.info(`IoT bridge connected to ${BROKER}`);
+    // Issue #1069: on (re)connect, sync any edge results buffered while the
+    // meter/bridge was offline. Best-effort so a sync failure can't break
+    // the MQTT session.
+    flushEdgeResultsSafely();
     // Issue #731: subscribe at QoS 2 (exactly-once, ordered) for meter usage so
     // the broker guarantees delivery AND ordering for billing-critical data.
     client.subscribe(TOPIC, { qos: 2 }, (err) => {
@@ -795,6 +843,10 @@ function startMqttBridge() {
         timestamp,
         sequence,
       });
+
+      // Issue #1069: run local edge inference / anomaly detection before cloud
+      // submission. Best-effort — never blocks the billing path.
+      await runEdgeInferenceSafely(meterId, { units, cost });
 
       const event = await persistAndSubmitUsageEvent({
         meterId,

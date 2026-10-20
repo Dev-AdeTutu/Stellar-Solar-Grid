@@ -359,6 +359,71 @@ def forecast_batch():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/edge-model', methods=['GET', 'POST'])
+def export_edge_model():
+    """
+    Export the current model for edge deployment
+
+    Triggers export of the loaded model into an edge-deployable artifact
+    (e.g. serialized weights + metadata) and returns the artifact path and
+    version so the backend can fetch and deploy it to meter edge devices.
+
+    Request body (optional):
+    {
+        "output_dir": "./models/edge",  // optional export directory
+        "version": "1.0.0"              // optional explicit version
+    }
+
+    Response:
+    {
+        "status": "success",
+        "artifact_path": "./models/edge/edge_model_1.0.0.pkl",
+        "version": "1.0.0",
+        "horizons": [1, 24, 168],
+        "n_features": 12,
+        "exported_at": "2024-01-01T00:00:00"
+    }
+    """
+    if model is None:
+        return jsonify({'error': 'Model not loaded'}), 503
+
+    try:
+        data = request.get_json(silent=True) or {}
+        output_dir = data.get('output_dir', './models/edge')
+        version = data.get('version') or datetime.now().strftime('%Y%m%d%H%M%S')
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Export model artifact for edge runtime
+        import joblib
+        artifact_path = os.path.join(output_dir, f'edge_model_{version}.pkl')
+        export_payload = {
+            'version': version,
+            'horizons': model.horizons,
+            'sequence_length': model.sequence_length,
+            'n_features': model.n_features,
+            'features': model.feature_names,
+            'metadata': model_metadata,
+            'exported_at': datetime.now().isoformat()
+        }
+        joblib.dump(export_payload, artifact_path)
+
+        logger.info(f"Exported edge model artifact to {artifact_path}")
+
+        return jsonify({
+            'status': 'success',
+            'artifact_path': artifact_path,
+            'version': version,
+            'horizons': model.horizons,
+            'n_features': model.n_features,
+            'exported_at': export_payload['exported_at']
+        })
+
+    except Exception as e:
+        logger.error(f"Error exporting edge model: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/metrics', methods=['GET'])
 def metrics():
     """Prometheus metrics endpoint"""

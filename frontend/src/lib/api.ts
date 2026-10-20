@@ -131,6 +131,9 @@ async function parseError(res: Response, fallback: string): Promise<never> {
 
 export interface WorkOrder {
   id: string;
+  title?: string;
+  address?: string;
+  description?: string;
   techId: string;
   meterId: string;
   type: string;
@@ -207,12 +210,28 @@ export interface CreateSurveyPayload {
 }
 
 export interface SurveyAnalytics {
-  nps: number;
-  averageScore: number;
-  responseCount: number;
-  promoters: number;
-  passives: number;
-  detractors: number;
+  nps: number | null;
+  averageScore?: number;
+  averageSatisfaction?: number | null;
+  responseCount?: number;
+  totalResponses: number;
+  totalSurveys: number;
+  responseRatePct?: number | null;
+  sentCount: number;
+  promoters?: number;
+  passives?: number;
+  detractors?: number;
+  promotersPct?: number;
+  passivesPct?: number;
+  detractorsPct?: number;
+  surveys: Array<{
+    id: string;
+    title: string;
+    sentCount: number;
+    responseCount: number;
+    averageSatisfaction: number | null;
+    nps: number | null;
+  }>;
 }
 
 export async function getSurveys(): Promise<Survey[]> {

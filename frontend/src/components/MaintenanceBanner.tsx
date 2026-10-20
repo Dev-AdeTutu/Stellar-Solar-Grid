@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { env } from '@/config/env';
+import { env } from '@/lib/env';
 
 interface MaintenanceWindow {
   id: string;
@@ -208,3 +208,5 @@ export default function MaintenanceBanner({
 
   return null;
 }
+
+export { MaintenanceBanner };

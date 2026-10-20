@@ -530,3 +530,56 @@ adds the included kWh, and carries unused kWh forward up to the tier's
 `rollover_limit`. `SubscriptionRenewed(owner, tier_id, price)` is emitted for
 enrollment, changes, and monthly renewal. `consume_subscription_kwh` is the
 usage-accounting hook used by the billing integration.
+
+## Loyalty Rewards Program (#975)
+
+Points-based rewards system rewarding users for payments and energy usage. Implemented in `solar_grid/src/loyalty.rs`.
+
+- **Points Accumulation:** Users earn 1 loyalty point per 1 XLM (10,000,000 stroops) spent.
+- **Tiers & Benefits:**
+  - `Bronze` (0 - 499 points): Base tier, 0% discount.
+  - `Silver` (500 - 1,999 points): 5% tariff discount.
+  - `Gold` (2,000+ points): 10% tariff discount.
+- **Functions:**
+  - `get_loyalty_account(user) -> LoyaltyAccount`: Returns points, tier, and lifetime stats.
+  - `add_loyalty_points(user, points) -> LoyaltyAccount`: Awards points and updates tier.
+  - `earn_points_on_payment(user, payment_stroops) -> LoyaltyAccount`: Calculates points from XLM spent.
+  - `redeem_points(user, points) -> LoyaltyAccount`: Burns points for tariff discounts.
+  - `get_loyalty_discount(user) -> u32`: Returns current discount percentage.
+- **Events:**
+  - `points_earned`: `(points, new_balance, tier)`
+  - `points_redeemed`: `(points, remaining_balance, tier)`
+
+## Priority-Based Load Shedding (#977)
+
+Multi-circuit priority management and automatic load shedding for smart meters. Implemented in `solar_grid/src/load_shedding.rs`.
+
+- **Circuit Priorities:**
+  - `Priority 1 (Essential)`: Medical equipment, refrigerators. Never automatically shed.
+  - `Priority 2 (High)`: Lighting, critical home devices.
+  - `Priority 3 (Medium)`: Washing machines, dishwashers.
+  - `Priority 4 (Low)`: EV charging, pool pumps, hot water heaters.
+- **Functions:**
+  - `set_load_priorities(meter_id, circuits)`: Owner configures priority levels across circuits.
+  - `get_load_priorities(meter_id) -> Vec<CircuitLoad>`: Retrieves circuit configuration.
+  - `evaluate_load_shedding(meter_id, current_balance, threshold)`: Evaluates meter balance; if `current_balance < threshold`, sheds non-essential circuits (`priority > 1`). Restores circuits when balance is replenished.
+  - `set_circuit_state(meter_id, circuit_id, is_shed)`: Toggles individual circuit state (supports MQTT IoT remote commands).
+- **Events:**
+  - `load_shed`: `circuit_id`
+  - `load_restored`: `circuit_id`
+
+## Peer-to-Peer (P2P) Energy Trading (#978)
+
+Decentralized marketplace allowing solar producers to sell excess generation directly to peer consumers. Implemented in `solar_grid/src/p2p_trading.rs`.
+
+- **Functions:**
+  - `list_energy_for_sale(seller, kwh_available, price_per_kwh) -> u64`: Lists energy credits for sale.
+  - `buy_energy_from_peer(buyer, listing_id, kwh_to_buy) -> i128`: Purchases energy from a specific listing with token settlement.
+  - `match_and_buy_energy(buyer, kwh_needed, max_price_per_kwh) -> i128`: Matching engine that finds and fills the lowest-priced active listing.
+  - `cancel_energy_listing(seller, listing_id)`: Cancels active listing and returns unused energy.
+  - `get_energy_listing(listing_id) -> EnergyListing`: Reads listing metadata.
+  - `get_active_energy_listings(offset, limit) -> Vec<EnergyListing>`: Paginated active order book.
+- **Events:**
+  - `energy_listed`: `(seller, kwh_available, price_per_kwh)`
+  - `energy_traded`: `(seller, buyer, kwh_traded, total_cost)`
+

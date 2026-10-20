@@ -14,6 +14,47 @@ const BACKOFF_MULTIPLIER = 2;
 
 let reconnectAttempts = 0;
 
+// Issue #1069: edge computing runtime needs to know when connectivity
+// returns so it can flush buffered inference results to the cloud.
+let connected = false;
+const reconnectCallbacks: Array<() => void> = [];
+
+/**
+ * Returns true when the MQTT client is currently connected to the broker.
+ */
+export function isMqttConnected(): boolean {
+  return connected;
+}
+
+/**
+ * Register a callback invoked whenever the MQTT client (re)connects to the
+ * broker. Used by the edge runtime to flush its offline buffer.
+ * Returns an unsubscribe function.
+ */
+export function onMqttReconnect(callback: () => void): () => void {
+  reconnectCallbacks.push(callback);
+  return () => {
+    const idx = reconnectCallbacks.indexOf(callback);
+    if (idx !== -1) reconnectCallbacks.splice(idx, 1);
+  };
+}
+
+/**
+ * Publish edge inference results for a meter to its dedicated topic.
+ * Topic: solargrid/meters/{id}/edge-results
+ */
+export function publishEdgeResults(meterId: string, results: unknown): void {
+  const topic = `solargrid/meters/${meterId}/edge-results`;
+  const mqttClient = getMqttClient();
+  mqttClient.publish(topic, JSON.stringify(results), { qos: 1 }, (err) => {
+    if (err) {
+      logger.error('Failed to publish edge results', { meterId, err });
+    } else {
+      logger.debug('Published edge results', { meterId, topic });
+    }
+  });
+}
+
 function getReconnectDelay(): number {
   const delay = Math.min(
     INITIAL_RECONNECT_DELAY * Math.pow(BACKOFF_MULTIPLIER, reconnectAttempts),
@@ -103,12 +144,21 @@ export function getMqttClient(): MqttClient {
 
     client.on('connect', () => {
       resetReconnectAttempts();
+      connected = true;
       logger.info('MQTT client connected to broker', { broker: BROKER });
       client?.publish(
         BRIDGE_STATUS_TOPIC,
         JSON.stringify({ status: 'online', timestamp: Date.now() }),
         { qos: 1, retain: true },
       );
+      // Issue #1069: notify edge runtime so it can flush offline buffer.
+      for (const cb of reconnectCallbacks) {
+        try {
+          cb();
+        } catch (err) {
+          logger.error('MQTT reconnect callback failed', { err });
+        }
+      }
     });
 
     // Issue #853: update last_seen on every inbound MQTT message so offline
@@ -135,6 +185,7 @@ export function getMqttClient(): MqttClient {
     });
 
     client.on('disconnect', () => {
+      connected = false;
       logger.info('MQTT client disconnected from broker');
       client?.publish(
         BRIDGE_STATUS_TOPIC,
@@ -152,6 +203,7 @@ export function getMqttClient(): MqttClient {
     });
 
     client.on('close', () => {
+      connected = false;
       logger.warn('MQTT connection closed, attempting reconnect with exponential backoff');
       const delay = getReconnectDelay();
       logger.info('Scheduling reconnect attempt', {
@@ -168,8 +220,39 @@ export function getMqttClient(): MqttClient {
     });
 
     client.on('offline', () => {
+      connected = false;
       logger.warn('MQTT client went offline');
     });
   }
   return client;
 }
+
+/**
+ * Publish MQTT command to control individual circuit state on an IoT meter (#977).
+ */
+export async function publishCircuitControl(
+  meterId: string,
+  circuitId: number,
+  state: 'shed' | 'restore'
+): Promise<void> {
+  const mqtt = getMqttClient();
+  const topic = `solargrid/meters/${meterId}/circuits/${circuitId}/command`;
+  const payload = JSON.stringify({
+    action: state,
+    circuitId,
+    meterId,
+    timestamp: Date.now(),
+  });
+
+  return new Promise((resolve, reject) => {
+    mqtt.publish(topic, payload, { qos: 1 }, (err) => {
+      if (err) {
+        logger.error('Failed to publish circuit command over MQTT', { meterId, circuitId, state, err });
+        return reject(err);
+      }
+      logger.info('Published circuit command over MQTT', { meterId, circuitId, state, topic });
+      resolve();
+    });
+  });
+}
+

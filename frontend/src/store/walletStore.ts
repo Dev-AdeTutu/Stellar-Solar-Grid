@@ -15,6 +15,7 @@ interface WalletState {
   connectError: string | null;
   networkError: string | null;
   isConnecting: boolean;
+  connectCancelled: boolean;
   isTransactionPending: boolean;
   lastTopUpPerMeter: Record<string, bigint>;
   connect: () => Promise<void>;
@@ -78,6 +79,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   connectError: null,
   networkError: null,
   isConnecting: false,
+  connectCancelled: false,
   isTransactionPending: false,
   lastTopUpPerMeter: {},
 
@@ -88,7 +90,17 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       throw new Error("Connection already in progress");
     }
 
-    set({ connectError: null, networkError: null, isConnecting: true });
+    set({ connectError: null, networkError: null, isConnecting: true, connectCancelled: false });
+
+    const CONNECTION_TIMEOUT_MS = 30_000;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error("Connection timeout. Wallet is locked — please unlock Freighter and try again."));
+      }, CONNECTION_TIMEOUT_MS);
+    });
+
     try {
       if (typeof window === "undefined" || !(window as any).freighter) {
         throw new Error("Freighter extension is not installed. Please install it to continue.");
@@ -132,6 +144,14 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     }
   },
 
+  cancelConnect: () => {
+    set({
+      isConnecting: false,
+      connectCancelled: true,
+      connectError: null,
+    });
+  },
+
   // Issue #694: Improved disconnect with proper cleanup
   disconnect: () => {
     set({
@@ -139,6 +159,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       kit: null,
       connectError: null,
       networkError: null,
+      connectCancelled: false,
       isTransactionPending: false,
       lastTopUpPerMeter: {},
     });
@@ -177,11 +198,6 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     } finally {
       set({ isTransactionPending: false });
     }
-    const { signedTxXdr } = await kit.signTransaction(xdr, {
-      address,
-      networkPassphrase: env.NEXT_PUBLIC_NETWORK_PASSPHRASE,
-    });
-    return signedTxXdr;
   },
 
   signAuthEntry: async (preimageXdr: string) => {

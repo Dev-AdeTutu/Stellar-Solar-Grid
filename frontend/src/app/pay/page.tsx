@@ -56,6 +56,7 @@ export default function PayPage() {
   const isOffline = useOffline();
 
   const [amount, setAmount] = useState("");
+  const [paymentMode, setPaymentMode] = useState<"standard" | "installment">("standard");
   // Issue #766: optional free-text note attached to the payment on-chain.
   const MEMO_MAX_LEN = 100;
   const [memo, setMemo] = useState("");
@@ -149,12 +150,17 @@ export default function PayPage() {
     (async () => {
       try {
         const delegates = await getDelegates(trimmed);
-        if (cancelled) return;
-        const match = delegates.find(
-          (d) => d.delegated_address === address && d.permissions !== "view-only"
-        );
+        const match = delegates.find((d) => {
+          if (d.delegated_address !== address) return false;
+          const perms = Array.isArray(d.permissions) ? d.permissions : [String(d.permissions)];
+          return perms.includes("pay") || perms.includes("admin") || !perms.includes("view-only");
+        });
         const expired = match?.expiry ? match.expiry <= Math.floor(Date.now() / 1000) : false;
-        setIsOwner(delegates.some((d) => d.delegated_address === address && d.permissions === "admin"));
+        setIsOwner(delegates.some((d) => {
+          if (d.delegated_address !== address) return false;
+          const perms = Array.isArray(d.permissions) ? d.permissions : [String(d.permissions)];
+          return perms.includes("admin");
+        }));
         setIsDelegate(Boolean(match) && !expired);
       } catch {
         if (!cancelled) {
@@ -354,7 +360,7 @@ export default function PayPage() {
 
           {paymentMode === "installment" ? (
             <div className="space-y-6">
-              <InstallmentCalculator meterId={meterId} />
+              <InstallmentCalculator walletAddress={address} />
               {address && <InstallmentTracker address={address} />}
             </div>
           ) : !address ? (

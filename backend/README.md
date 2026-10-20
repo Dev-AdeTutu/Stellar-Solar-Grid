@@ -63,3 +63,19 @@ GPS modules publish `{ "latitude": 6.5244, "longitude": 3.3792 }` on `solargrid/
 - `POST /api/grid-services/geofences/verify` — submit a periodic GPS reading
 - `GET /api/grid-services/geofences/:meterId` — status and verification history
 - `GET /api/grid-services/geofences` — data for the frontend map
+
+## Grid Outage Detection and Notifications (#976)
+
+Real-time power outage detection engine and notification dispatcher. Implemented in `backend/src/services/outageService.ts` and `backend/src/routes/outages.ts`.
+
+- **Telemetry Monitoring:** Ingests live voltage and frequency readings from IoT smart meters. Power collapse is identified when voltage drops below 50V or frequency drops to 0Hz.
+- **Regional Outage Detection:** When multiple meters within the same grid sector/region report collapsed power, an active outage incident is automatically created with estimated restoration time.
+- **Push & Email Alerts:** Automatically dispatches alerts to registered emergency contacts and affected users upon outage confirmation.
+- **Endpoints:**
+  - `GET /api/outages/current` — returns active outages with affected meters and estimated restoration
+  - `POST /api/outages` — creates a new outage record
+  - `POST /api/outages/telemetry` — inbounds IoT voltage/frequency telemetry and triggers auto-evaluation
+  - `GET /api/outages/:id` — returns single outage details
+  - `POST /api/outages/:id/resolve` — marks an outage resolved and records resolution timestamp
+  - `POST /api/outages/circuits/:meterId/:circuitId` — dispatches MQTT commands to shed/restore individual circuits (#977)
+

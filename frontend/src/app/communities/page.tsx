@@ -44,7 +44,64 @@ type Proposal = {
   eligibleVoters: number;
   myVote: "yes" | "no" | null;
 };
-type Dashboard = Community & { members: Member[]; energyTransactions: EnergyTransaction[]; proposals: Proposal[] };
+type CommonsBoundary = {
+  resourceType: string;
+  maxPoolKwh: number;
+  maxPerMemberKwh: number;
+  eligibleMembers: number;
+  description: string;
+};
+type CommonsRule = {
+  id: string;
+  title: string;
+  description: string;
+  status: "open" | "passed" | "rejected";
+  endsAt: string;
+  yesVotes: number;
+  noVotes: number;
+  eligibleVoters: number;
+  myVote: "yes" | "no" | null;
+};
+type MonitoringReport = {
+  id: string;
+  reporterAddress: string;
+  reportedAddress: string;
+  ruleViolated: string;
+  details: string;
+  status: "open" | "upheld" | "dismissed";
+  createdAt: string;
+};
+type Sanction = {
+  id: string;
+  memberAddress: string;
+  level: number;
+  reason: string;
+  status: "active" | "expired" | "appealed";
+  createdAt: string;
+  expiresAt: string;
+};
+type Conflict = {
+  id: string;
+  initiatorAddress: string;
+  respondentAddress: string;
+  subject: string;
+  details: string;
+  status: "open" | "resolved" | "escalated";
+  resolution: string | null;
+  createdAt: string;
+};
+type Dashboard = Community & {
+  members: Member[];
+  energyTransactions: EnergyTransaction[];
+  proposals: Proposal[];
+  commons: {
+    boundary: CommonsBoundary;
+    rules: CommonsRule[];
+    reports: MonitoringReport[];
+    sanctions: Sanction[];
+    conflicts: Conflict[];
+  };
+};
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API}${path}`, {
@@ -284,6 +341,153 @@ export default function CommunitiesPage() {
                   )}
                 </section>
 
+                <section className="space-y-4 border-t border-white/10 pt-6">
+                  <div>
+                    <h3 className="font-semibold">Commons governance</h3>
+                    <p className="text-xs text-white/50">Ostrom-style rules for the shared energy resource.</p>
+                  </div>
+
+                  <div className="rounded border border-white/10 p-4">
+                    <h4 className="text-sm font-semibold uppercase text-white/60">Resource boundaries</h4>
+                    <dl className="mt-3 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-4">
+                      <Metric label="Resource" value={dashboard.commons.boundary.resourceType} />
+                      <Metric label="Max pool" value={`${dashboard.commons.boundary.maxPoolKwh.toFixed(1)} kWh`} />
+                      <Metric label="Max per member" value={`${dashboard.commons.boundary.maxPerMemberKwh.toFixed(1)} kWh`} />
+                      <Metric label="Eligible members" value={String(dashboard.commons.boundary.eligibleMembers)} />
+                    </dl>
+                    {dashboard.commons.boundary.description && (
+                      <p className="mt-3 text-sm text-white/60">{dashboard.commons.boundary.description}</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="mb-2 text-sm font-semibold uppercase text-white/60">Usage rules</h4>
+                    {isMember && (
+                      <form className="mb-3 grid gap-2 sm:grid-cols-[1fr_2fr_auto]" onSubmit={(event) => submit(event, async (form) => {
+                        await mutate(`/api/communities/${dashboard.id}/commons/rules`, "POST", {
+                          title: form.get("title"),
+                          description: form.get("description"),
+                        });
+                      })}>
+                        <input name="title" minLength={3} maxLength={100} required placeholder="Rule title" className={INPUT} />
+                        <input name="description" maxLength={500} placeholder="Describe the usage rule" className={INPUT} />
+                        <button className={BUTTON} disabled={busy}>Propose rule</button>
+                      </form>
+                    )}
+                    {dashboard.commons.rules.length === 0 ? (
+                      <p className="text-sm text-white/55">No usage rules proposed yet.</p>
+                    ) : (
+                      <ul className="divide-y divide-white/10 border-y border-white/10">
+                        {dashboard.commons.rules.map((rule) => (
+                          <li key={rule.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                            <div className="min-w-0">
+                              <p className="font-medium">{rule.title}</p>
+                              {rule.description && <p className="text-sm text-white/60">{rule.description}</p>}
+                              <p className="mt-1 text-xs text-white/50">
+                                {rule.yesVotes} yes · {rule.noVotes} no · {rule.eligibleVoters} eligible · {rule.status}
+                              </p>
+                            </div>
+                            {rule.status === "open" && isMember && rule.myVote === null && (
+                              <div className="flex gap-2">
+                                <button className={BUTTON} disabled={busy} onClick={() => voteRule(rule.id, "yes")}>Yes</button>
+                                <button className={BUTTON} disabled={busy} onClick={() => voteRule(rule.id, "no")}>No</button>
+                              </div>
+                            )}
+                            {rule.status === "open" && isMember && rule.myVote && (
+                              <span className="text-xs text-white/55">Voted {rule.myVote}</span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="mb-2 text-sm font-semibold uppercase text-white/60">Monitoring &amp; reports</h4>
+                    {isMember && (
+                      <form className="mb-3 grid gap-2 sm:grid-cols-[1fr_1fr_2fr_auto]" onSubmit={(event) => submit(event, async (form) => {
+                        await mutate(`/api/communities/${dashboard.id}/commons/reports`, "POST", {
+                          reportedAddress: form.get("reportedAddress"),
+                          ruleViolated: form.get("ruleViolated"),
+                          details: form.get("details"),
+                        });
+                      })}>
+                        <input name="reportedAddress" required placeholder="Reported address" className={INPUT} />
+                        <input name="ruleViolated" required placeholder="Rule violated" className={INPUT} />
+                        <input name="details" maxLength={500} placeholder="What happened?" className={INPUT} />
+                        <button className={BUTTON} disabled={busy}>Report</button>
+                      </form>
+                    )}
+                    {dashboard.commons.reports.length === 0 ? (
+                      <p className="text-sm text-white/55">No monitoring reports.</p>
+                    ) : (
+                      <ul className="divide-y divide-white/10 border-y border-white/10">
+                        {dashboard.commons.reports.map((report) => (
+                          <li key={report.id} className="py-3 text-sm">
+                            <p className="font-medium">{report.ruleViolated} <span className="text-xs text-white/50">· {report.status}</span></p>
+                            {report.details && <p className="text-white/60">{report.details}</p>}
+                            <p className="mt-1 text-xs text-white/50">
+                              {report.reporterAddress.slice(0, 8)}… reported {report.reportedAddress.slice(0, 8)}… · {new Date(report.createdAt).toLocaleDateString()}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="mb-2 text-sm font-semibold uppercase text-white/60">Sanctions</h4>
+                    {dashboard.commons.sanctions.length === 0 ? (
+                      <p className="text-sm text-white/55">No sanctions recorded.</p>
+                    ) : (
+                      <ul className="divide-y divide-white/10 border-y border-white/10">
+                        {dashboard.commons.sanctions.map((sanction) => (
+                          <li key={sanction.id} className="flex flex-wrap justify-between gap-2 py-3 text-sm">
+                            <span>
+                              <span className="font-medium">Level {sanction.level}</span> · {sanction.memberAddress.slice(0, 8)}… · {sanction.reason}
+                            </span>
+                            <span className="text-white/50">{sanction.status} · until {new Date(sanction.expiresAt).toLocaleDateString()}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  <div>
+                    <h4 className="mb-2 text-sm font-semibold uppercase text-white/60">Conflict resolution</h4>
+                    {isMember && (
+                      <form className="mb-3 grid gap-2 sm:grid-cols-[1fr_1fr_2fr_auto]" onSubmit={(event) => submit(event, async (form) => {
+                        await mutate(`/api/communities/${dashboard.id}/commons/conflicts`, "POST", {
+                          respondentAddress: form.get("respondentAddress"),
+                          subject: form.get("subject"),
+                          details: form.get("details"),
+                        });
+                      })}>
+                        <input name="respondentAddress" required placeholder="Other party address" className={INPUT} />
+                        <input name="subject" required placeholder="Subject" className={INPUT} />
+                        <input name="details" maxLength={500} placeholder="Describe the dispute" className={INPUT} />
+                        <button className={BUTTON} disabled={busy}>Open dispute</button>
+                      </form>
+                    )}
+                    {dashboard.commons.conflicts.length === 0 ? (
+                      <p className="text-sm text-white/55">No open conflicts.</p>
+                    ) : (
+                      <ul className="divide-y divide-white/10 border-y border-white/10">
+                        {dashboard.commons.conflicts.map((conflict) => (
+                          <li key={conflict.id} className="py-3 text-sm">
+                            <p className="font-medium">{conflict.subject} <span className="text-xs text-white/50">· {conflict.status}</span></p>
+                            {conflict.details && <p className="text-white/60">{conflict.details}</p>}
+                            {conflict.resolution && <p className="text-emerald-300">Resolution: {conflict.resolution}</p>}
+                            <p className="mt-1 text-xs text-white/50">
+                              {conflict.initiatorAddress.slice(0, 8)}… vs {conflict.respondentAddress.slice(0, 8)}… · {new Date(conflict.createdAt).toLocaleDateString()}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </section>
+
                 <div className="grid gap-6 md:grid-cols-2">
                   <section>
                     <h3 className="mb-3 font-semibold">Members</h3>
@@ -339,6 +543,19 @@ export default function CommunitiesPage() {
     setError(null);
     try {
       await mutate(`/api/communities/${dashboard.id}/governance/proposals/${proposalId}/finalize`, "POST");
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function voteRule(ruleId: string, choice: "yes" | "no") {
+    if (!dashboard) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await mutate(`/api/communities/${dashboard.id}/commons/rules/${ruleId}/votes`, "POST", { choice });
     } catch (cause) {
       setError((cause as Error).message);
     } finally {

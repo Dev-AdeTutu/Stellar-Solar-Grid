@@ -147,6 +147,87 @@ export async function sendLowBalanceNotification(input: LowBalanceNotificationIn
   );
 }
 
+export type NudgePushKind =
+  | "SOCIAL_COMPARISON"
+  | "LOSS_AVERSION"
+  | "COMMITMENT_REMINDER"
+  | "DEFAULT_OPTION";
+
+export type NudgePushInput = {
+  ownerAddress: string;
+  kind: NudgePushKind;
+  title: string;
+  body: string;
+  /** Deep link the client should open when the notification is tapped. */
+  deepLink: string;
+  /** Stable identifier so repeated nudges collapse into one notification. */
+  nudgeId: string;
+  /** A/B experiment assignment, surfaced to analytics on tap. */
+  experimentKey?: string;
+  variant?: string;
+  /** Extra structured context (e.g. neighbor percentile, credits at risk). */
+  metadata?: Record<string, unknown>;
+};
+
+const NUDGE_ICONS: Record<NudgePushKind, string> = {
+  SOCIAL_COMPARISON: "/icons/push-social.svg",
+  LOSS_AVERSION: "/icons/push-warning.svg",
+  COMMITMENT_REMINDER: "/icons/push-commitment.svg",
+  DEFAULT_OPTION: "/icons/push-badge.svg",
+};
+
+/**
+ * Deliver a behavioral-economics nudge push notification.
+ *
+ * The payload carries `type: "NUDGE"` plus the nudge kind, deep link and
+ * experiment metadata so the client can route the tap and attribute the
+ * resulting behavior change to the correct A/B variant.
+ */
+export async function sendNudgePush(input: NudgePushInput): Promise<void> {
+  const data = {
+    type: "NUDGE",
+    nudgeKind: input.kind,
+    nudgeId: input.nudgeId,
+    deepLink: input.deepLink,
+    experimentKey: input.experimentKey ?? null,
+    variant: input.variant ?? null,
+    metadata: input.metadata ?? {},
+  };
+
+  await sendNativePush([input.ownerAddress], {
+    title: input.title,
+    body: input.body,
+    data,
+  });
+
+  if (!pushConfigured) return;
+
+  const payload = JSON.stringify({
+    title: input.title,
+    body: input.body,
+    icon: NUDGE_ICONS[input.kind],
+    badge: "/icons/push-badge.svg",
+    tag: `nudge-${input.nudgeId}`,
+    data,
+  });
+
+  await Promise.all(
+    listPushSubscriptionsByOwner(input.ownerAddress).map(async (record) => {
+      try {
+        await webpush.sendNotification(toWebPushSubscription(record), payload);
+      } catch (err) {
+        const status = (err as { statusCode?: number }).statusCode;
+        if (status === 404 || status === 410) {
+          deletePushSubscriptionByEndpoint(record.endpoint);
+          logger.info({ endpoint: record.endpoint }, "Deleted stale web push subscription");
+        } else {
+          logger.warn({ err, ownerAddress: input.ownerAddress, nudgeId: input.nudgeId }, "Nudge push failed");
+        }
+      }
+    }),
+  );
+}
+
 /** Send a generic push notification to every subscription owned by an address. */
 export async function sendPushToOwner(
   ownerAddress: string,

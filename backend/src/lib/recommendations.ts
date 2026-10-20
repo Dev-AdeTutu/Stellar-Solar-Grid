@@ -15,6 +15,12 @@ import { initUsageEventStore } from "./usageEvents.js";
 import { sendPushToOwner } from "./pushNotifications.js";
 import { logger } from "./logger.js";
 import { analyzeConsumption } from "./consumptionAnalytics.js";
+import {
+  selectNudge,
+  recordNudgeExposure,
+  recordNudgeResponse,
+  type Nudge,
+} from "./nudges.js";
 
 export type RecommendationStatus = "pending" | "accepted" | "dismissed";
 export type RecommendationPriority = "high" | "medium" | "low";
@@ -32,6 +38,8 @@ export interface Recommendation {
   createdAt: string;
   baselineWeeklyKwh: number | null;
   actualWeeklySavingKwh: number | null;
+  /** Behavioral nudge attached to this recommendation, if any. */
+  nudge: Nudge | null;
 }
 
 export interface UsageFeatures {
@@ -316,6 +324,14 @@ function score(meterId: string, c: Candidate, weeklyKwh: number): number {
 
 function mapRow(r: Record<string, unknown>, currentWeeklyKwh?: number): Recommendation {
   const baseline = r.baseline_weekly_kwh as number | null;
+  let nudge: Nudge | null = null;
+  if (r.nudge_id != null) {
+    try {
+      nudge = JSON.parse(String(r.nudge_json ?? "null")) as Nudge | null;
+    } catch {
+      nudge = null;
+    }
+  }
   return {
     id: Number(r.id),
     meterId: String(r.meter_id),
@@ -332,6 +348,7 @@ function mapRow(r: Record<string, unknown>, currentWeeklyKwh?: number): Recommen
       r.status === "accepted" && baseline !== null && currentWeeklyKwh !== undefined
         ? Math.max(0, baseline - currentWeeklyKwh)
         : null,
+    nudge,
   };
 }
 
@@ -360,7 +377,7 @@ export function generateWeekly(meterId: string, max = 3): Recommendation[] {
   const now = new Date().toISOString();
   for (const { c, s } of ranked) {
     const priority = c.priority ?? priorityFor(c.saving, f.weeklyKwh, c.feature);
-    insert.run(
+    const info = insert.run(
       meterId,
       c.kind,
       c.message,
@@ -370,8 +387,35 @@ export function generateWeekly(meterId: string, max = 3): Recommendation[] {
       week,
       now,
     );
+    // Only attach a nudge when the recommendation row was newly created.
+    if (info.changes > 0) {
+      attachNudge(meterId, Number(info.lastInsertRowid), c, f);
+    }
   }
   return listRecommendations(meterId);
+}
+
+/**
+ * Select a behavioral nudge for a freshly generated recommendation and record
+ * its exposure so the A/B test can measure behavior change later.
+ */
+function attachNudge(meterId: string, recommendationId: number, c: Candidate, f: UsageFeatures): void {
+  try {
+    const nudge = selectNudge(meterId, {
+      kind: c.kind,
+      message: c.message,
+      estimatedWeeklySavingKwh: c.saving,
+      peerRatio: f.peerRatio,
+      weeklyKwh: f.weeklyKwh,
+    });
+    if (!nudge) return;
+    db()
+      .prepare("UPDATE recommendations SET nudge_id = ?, nudge_json = ? WHERE id = ?")
+      .run(nudge.id, JSON.stringify(nudge), recommendationId);
+    recordNudgeExposure(meterId, recommendationId, nudge);
+  } catch (err) {
+    logger.warn({ err, meterId, recommendationId }, "Nudge attachment failed");
+  }
 }
 
 export function listRecommendations(meterId: string): Recommendation[] {
@@ -403,6 +447,14 @@ export function respond(meterId: string, id: number, action: "accept" | "dismiss
   );
   if (action === "accept") {
     recordAdoption(meterId, id, String(row.kind), baseline, Number(row.estimated_saving_kwh));
+  }
+  // Feed the response back into the nudge A/B test for impact measurement.
+  if (row.nudge_id != null) {
+    try {
+      recordNudgeResponse(meterId, id, Number(row.nudge_id), action);
+    } catch (err) {
+      logger.warn({ err, meterId, id }, "Nudge response recording failed");
+    }
   }
   return mapRow(d.prepare("SELECT * FROM recommendations WHERE id = ?").get(id), kwhBetween(meterId, 7, 0));
 }
@@ -630,9 +682,14 @@ export async function runWeeklyNotifications(): Promise<number> {
       const recs = generateWeekly(s.meter_id).filter((r) => r.status === "pending" && r.weekOf === weekOf());
       if (!recs.length) continue;
       const total = recs.reduce((a, r) => a + r.estimatedWeeklySavingKwh, 0);
+      // Lead with the nudge-framed message when one is attached.
+      const lead = recs.find((r) => r.nudge)?.nudge?.message;
+      const body = lead
+        ? `${lead} ${recs.length} tips could save ~${total.toFixed(1)} kWh this week.`
+        : `${recs.length} new tips could save ~${total.toFixed(1)} kWh this week.`;
       await sendPushToOwner(s.owner_address, {
         title: "Your weekly energy tips",
-        body: `${recs.length} new tips could save ~${total.toFixed(1)} kWh this week.`,
+        body,
         tag: `recs-${s.meter_id}-${weekOf()}`,
         url: `/dashboard?meter=${encodeURIComponent(s.meter_id)}`,
       });

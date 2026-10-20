@@ -4,6 +4,15 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useWalletStore } from "@/store/walletStore";
+
+const NAV_LINKS = [
+  { href: "/dashboard/user", label: "My Meter" },
+  { href: "/pay", label: "Pay" },
+  { href: "/dashboard/provider", label: "Provider" },
+  { href: "/history", label: "History" },
+  { href: "/marketplace", label: "Algos" },
+  { href: "/admin/batch", label: "Batch" },
+];
 import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
 import { useLocale, type Locale, LOCALE_OPTIONS } from "@/components/I18nProvider";
