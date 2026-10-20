@@ -124,6 +124,9 @@ import { startTheftMonitor } from "./lib/theftDetection.js";
 import { workOrdersRouter } from "./routes/workOrders.js";
 import { surveysRouter } from "./routes/surveys.js";
 import { lifespanRouter } from "./routes/lifespan.js";
+import { capacityPlanningRouter } from "./routes/capacityPlanning.js";
+import { storageOptimizationRouter } from "./routes/storageOptimization.js";
+import { impactRouter } from "./routes/impact.js";
 import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
 import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
 import { shadowsRouter } from "./routes/shadows.js";
@@ -257,6 +260,12 @@ startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
 // #1079: meter lifespan extension recommendations
 app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1050: predictive grid capacity planning
+app.use("/api/capacity-planning", capacityPlanningRouter);
+// #1053: energy storage optimization AI
+app.use("/api/storage-optimization", storageOptimizationRouter);
+// #1054: social impact measurement
+app.use("/api/impact", impactRouter);
 // #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
 app.use("/api/rate-limits", rateLimitTiersRouter);
 // #1081: meter device shadows (desired vs reported state)
