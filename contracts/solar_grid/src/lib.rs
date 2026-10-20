@@ -20,6 +20,8 @@ mod warranty;
 mod loyalty;
 mod load_shedding;
 mod p2p_trading;
+mod demand_response;
+mod lifecycle;
 #[cfg(test)]
 mod test_assets_warranty;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
@@ -42,6 +44,14 @@ pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 pub use loyalty::{LoyaltyAccount, LoyaltyTier};
 pub use load_shedding::{CircuitLoad, CircuitPriority};
 pub use p2p_trading::EnergyListing;
+pub use demand_response::{
+    DrEvent, DrEventStatus, DrLoadPreference, DrParticipation, DrPerformance, DrProgram,
+    DrProgramConfig, MAX_DR_CURTAILMENT_BPS, MAX_DR_EVENT_PAGE, MAX_DR_EVENTS,
+};
+pub use lifecycle::{
+    LifecycleEvent, LifecycleEventType, LifecycleStage, MaterialRecovery, MeterLifecycle,
+    RecyclingCertification, MAX_LIFECYCLE_EVENTS, MAX_LIFECYCLE_PAGE,
+};
 
 // ── Error types ───────────────────────────────────────────────────────────────
 

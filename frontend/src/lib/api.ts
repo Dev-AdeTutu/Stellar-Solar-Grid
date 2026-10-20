@@ -322,3 +322,151 @@ export async function getSeasonalHistory(years?: number): Promise<SeasonalHistor
   const { history } = (await res.json()) as { history: SeasonalHistoryEntry[] };
   return history;
 }
+
+// ---------------------------------------------------------------------------
+// Meter lifecycle / circular economy tracking
+// ---------------------------------------------------------------------------
+
+export type LifecycleEventType =
+  | "manufactured"
+  | "installed"
+  | "repaired"
+  | "upgraded"
+  | "decommissioned"
+  | "recycled";
+
+export interface LifecycleMaterial {
+  name: string;
+  /** Weight of the material in grams. */
+  weightGrams: number;
+  /** Whether the material was recovered during recycling. */
+  recovered?: boolean;
+  /** Weight of the material recovered in grams. */
+  recoveredGrams?: number;
+}
+
+export interface LifecycleEvent {
+  id: string;
+  meterId: string;
+  type: LifecycleEventType;
+  timestamp: string;
+  actor?: string;
+  location?: string;
+  notes?: string;
+  /** Manufacturing origin details (manufactured events). */
+  manufacturer?: string;
+  facility?: string;
+  /** Materials contained in the meter (manufactured events). */
+  materials?: LifecycleMaterial[];
+  /** Recycling certification reference (recycled events). */
+  certificationId?: string;
+  recycler?: string;
+  /** Material recovery details (recycled events). */
+  recoveredMaterials?: LifecycleMaterial[];
+  transactionHash?: string;
+}
+
+export interface MeterLifecycle {
+  meterId: string;
+  currentStage: LifecycleEventType | "unknown";
+  events: LifecycleEvent[];
+  manufacturedAt?: string;
+  installedAt?: string;
+  decommissionedAt?: string;
+  recycledAt?: string;
+  materials?: LifecycleMaterial[];
+  recoveredMaterials?: LifecycleMaterial[];
+  recyclingCertificationId?: string;
+}
+
+export interface RecordLifecycleEventPayload {
+  type: LifecycleEventType;
+  actor?: string;
+  location?: string;
+  notes?: string;
+  manufacturer?: string;
+  facility?: string;
+  materials?: LifecycleMaterial[];
+  certificationId?: string;
+  recycler?: string;
+  recoveredMaterials?: LifecycleMaterial[];
+}
+
+export interface RecyclingCertificationPayload {
+  certificationId: string;
+  recycler: string;
+  recycledAt?: string;
+  recoveredMaterials: LifecycleMaterial[];
+  notes?: string;
+}
+
+export interface CircularEconomyCompliance {
+  meterId: string;
+  compliant: boolean;
+  recycled: boolean;
+  recyclingCertificationId?: string;
+  /** Percentage of material weight recovered (0-100). */
+  materialRecoveryRatePct: number;
+  totalMaterialWeightGrams: number;
+  recoveredMaterialWeightGrams: number;
+  issues: string[];
+}
+
+/**
+ * Fetches the full lifecycle history for a meter.
+ */
+export async function getMeterLifecycle(meterId: string): Promise<MeterLifecycle> {
+  const res = await fetch(`${API_BASE}/meters/${encodeURIComponent(meterId)}/lifecycle`);
+  if (!res.ok) await parseError(res, "Failed to fetch meter lifecycle");
+  const { lifecycle } = (await res.json()) as { lifecycle: MeterLifecycle };
+  return lifecycle;
+}
+
+/**
+ * Records a lifecycle event (manufacturing, installation, repair, upgrade, ...)
+ * for a meter.
+ */
+export async function recordLifecycleEvent(
+  meterId: string,
+  payload: RecordLifecycleEventPayload,
+): Promise<LifecycleEvent> {
+  const res = await fetch(`${API_BASE}/meters/${encodeURIComponent(meterId)}/lifecycle/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to record lifecycle event");
+  const { event } = (await res.json()) as { event: LifecycleEvent };
+  return event;
+}
+
+/**
+ * Submits an end-of-life recycling certification for a meter.
+ */
+export async function certifyRecycling(
+  meterId: string,
+  payload: RecyclingCertificationPayload,
+): Promise<LifecycleEvent> {
+  const res = await fetch(`${API_BASE}/meters/${encodeURIComponent(meterId)}/lifecycle/recycle`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to certify recycling");
+  const { event } = (await res.json()) as { event: LifecycleEvent };
+  return event;
+}
+
+/**
+ * Fetches circular economy compliance status for a meter.
+ */
+export async function getCircularEconomyCompliance(
+  meterId: string,
+): Promise<CircularEconomyCompliance> {
+  const res = await fetch(
+    `${API_BASE}/meters/${encodeURIComponent(meterId)}/lifecycle/compliance`,
+  );
+  if (!res.ok) await parseError(res, "Failed to fetch circular economy compliance");
+  const { compliance } = (await res.json()) as { compliance: CircularEconomyCompliance };
+  return compliance;
+}

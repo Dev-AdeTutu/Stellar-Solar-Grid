@@ -2,6 +2,20 @@ import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { MeterStatusBadge } from "./MeterStatusBadge";
 import { formatXLM } from "@/lib/format";
+import {
+  getMeterLifecycle,
+  getMeterMaterials,
+  getMeterLifecycleEvents,
+  getRecyclingCertification,
+  getMaterialRecovery,
+  getCircularEconomyCompliance,
+  type MeterLifecycle,
+  type MeterMaterial,
+  type MeterLifecycleEvent,
+  type RecyclingCertification,
+  type MaterialRecovery,
+  type CircularEconomyCompliance,
+} from "@/lib/meterService";
 
 export interface MeterCardProps {
   meterId: string;
@@ -32,6 +46,17 @@ export function MeterCard({
   const [isEditing, setIsEditing] = useState(false);
   const [tempNickname, setTempNickname] = useState("");
 
+  // Lifecycle tracking state
+  const [lifecycle, setLifecycle] = useState<MeterLifecycle | null>(null);
+  const [materials, setMaterials] = useState<MeterMaterial[]>([]);
+  const [lifecycleEvents, setLifecycleEvents] = useState<MeterLifecycleEvent[]>([]);
+  const [recycling, setRecycling] = useState<RecyclingCertification | null>(null);
+  const [recovery, setRecovery] = useState<MaterialRecovery | null>(null);
+  const [compliance, setCompliance] = useState<CircularEconomyCompliance | null>(null);
+  const [lifecycleLoading, setLifecycleLoading] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
+  const [showLifecycle, setShowLifecycle] = useState(false);
+
   useEffect(() => {
     try {
       const saved = localStorage.getItem(`meter_nickname_${meterId}`);
@@ -42,6 +67,44 @@ export function MeterCard({
     } catch {
       // LocalStorage might be unavailable
     }
+  }, [meterId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLifecycle() {
+      setLifecycleLoading(true);
+      setLifecycleError(null);
+      try {
+        const [lc, mats, events, cert, rec, comp] = await Promise.all([
+          getMeterLifecycle(meterId),
+          getMeterMaterials(meterId),
+          getMeterLifecycleEvents(meterId),
+          getRecyclingCertification(meterId),
+          getMaterialRecovery(meterId),
+          getCircularEconomyCompliance(meterId),
+        ]);
+        if (cancelled) return;
+        setLifecycle(lc);
+        setMaterials(mats);
+        setLifecycleEvents(events);
+        setRecycling(cert);
+        setRecovery(rec);
+        setCompliance(comp);
+      } catch (err) {
+        if (cancelled) return;
+        setLifecycleError(
+          err instanceof Error ? err.message : "Failed to load lifecycle data"
+        );
+      } finally {
+        if (!cancelled) setLifecycleLoading(false);
+      }
+    }
+
+    loadLifecycle();
+    return () => {
+      cancelled = true;
+    };
   }, [meterId]);
 
   const handleSaveNickname = () => {
@@ -240,6 +303,220 @@ export function MeterCard({
       >
         Print Report
       </Link>
+
+      {/* Lifecycle Visualization */}
+      <div className="mt-4 border-t border-white/10 pt-3">
+        <button
+          onClick={() => setShowLifecycle((prev) => !prev)}
+          className="flex w-full items-center justify-between text-xs font-semibold text-gray-300 hover:text-white transition"
+          aria-expanded={showLifecycle}
+          aria-controls={`lifecycle-${meterId}`}
+        >
+          <span className="flex items-center gap-1.5">
+            ♻️ Lifecycle &amp; Circular Economy
+            {compliance && (
+              <span
+                className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                  compliance.compliant
+                    ? "bg-green-500/15 text-green-400 border border-green-500/30"
+                    : "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                }`}
+                title={compliance.details}
+              >
+                {compliance.compliant ? "Compliant" : "Non-compliant"}
+              </span>
+            )}
+          </span>
+          <span className="text-gray-500">{showLifecycle ? "▲" : "▼"}</span>
+        </button>
+
+        {showLifecycle && (
+          <div id={`lifecycle-${meterId}`} className="mt-3 space-y-4">
+            {lifecycleLoading && (
+              <p className="text-xs text-gray-400">Loading lifecycle data…</p>
+            )}
+
+            {lifecycleError && !lifecycleLoading && (
+              <p className="text-xs text-red-400">{lifecycleError}</p>
+            )}
+
+            {!lifecycleLoading && !lifecycleError && (
+              <>
+                {/* Manufacturing origin and materials */}
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+                    Manufacturing Origin
+                  </p>
+                  {lifecycle ? (
+                    <div className="rounded-lg bg-solar-dark/50 border border-white/10 p-2.5 text-xs text-gray-300 space-y-1">
+                      <p>
+                        <span className="text-gray-500">Manufacturer:</span>{" "}
+                        {lifecycle.manufacturer}
+                      </p>
+                      <p>
+                        <span className="text-gray-500">Origin:</span>{" "}
+                        {lifecycle.origin}
+                      </p>
+                      <p>
+                        <span className="text-gray-500">Manufactured:</span>{" "}
+                        {new Date(lifecycle.manufacturedAt * 1000).toLocaleDateString()}
+                      </p>
+                      {lifecycle.serialNumber && (
+                        <p>
+                          <span className="text-gray-500">Serial:</span>{" "}
+                          <span className="font-mono">{lifecycle.serialNumber}</span>
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">No manufacturing data recorded.</p>
+                  )}
+
+                  {materials.length > 0 && (
+                    <div className="mt-2">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+                        Materials
+                      </p>
+                      <ul className="space-y-1">
+                        {materials.map((m, i) => (
+                          <li
+                            key={`${m.name}-${i}`}
+                            className="flex items-center justify-between rounded bg-solar-dark/50 border border-white/10 px-2.5 py-1 text-xs text-gray-300"
+                          >
+                            <span>{m.name}</span>
+                            <span className="text-gray-400">
+                              {m.amount} {m.unit}
+                              {m.recyclable && (
+                                <span className="ml-1.5 text-green-400" title="Recyclable">
+                                  ♻️
+                                </span>
+                              )}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
+                {/* Lifecycle event timeline */}
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+                    Lifecycle Timeline
+                  </p>
+                  {lifecycleEvents.length > 0 ? (
+                    <ol className="relative border-l border-white/15 ml-1.5 space-y-2.5">
+                      {lifecycleEvents.map((ev, i) => (
+                        <li key={`${ev.eventType}-${ev.timestamp}-${i}`} className="ml-3">
+                          <span className="absolute -left-[5px] mt-1 h-2 w-2 rounded-full bg-solar-yellow" />
+                          <p className="text-xs font-medium text-white capitalize">
+                            {ev.eventType}
+                          </p>
+                          <p className="text-[10px] text-gray-500">
+                            {new Date(ev.timestamp * 1000).toLocaleString()}
+                          </p>
+                          {ev.description && (
+                            <p className="text-[10px] text-gray-400">{ev.description}</p>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="text-xs text-gray-500">No lifecycle events recorded.</p>
+                  )}
+                </div>
+
+                {/* Recycling certification */}
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+                    Recycling Certification
+                  </p>
+                  {recycling ? (
+                    <div className="rounded-lg bg-solar-dark/50 border border-white/10 p-2.5 text-xs text-gray-300 space-y-1">
+                      <p className="flex items-center gap-1.5">
+                        <span
+                          className={
+                            recycling.certified ? "text-green-400" : "text-amber-400"
+                          }
+                        >
+                          {recycling.certified ? "✅ Certified" : "⏳ Pending"}
+                        </span>
+                      </p>
+                      {recycling.certifier && (
+                        <p>
+                          <span className="text-gray-500">Certifier:</span>{" "}
+                          {recycling.certifier}
+                        </p>
+                      )}
+                      {recycling.certificateId && (
+                        <p>
+                          <span className="text-gray-500">Certificate:</span>{" "}
+                          <span className="font-mono">{recycling.certificateId}</span>
+                        </p>
+                      )}
+                      {recycling.certifiedAt > 0 && (
+                        <p>
+                          <span className="text-gray-500">Certified:</span>{" "}
+                          {new Date(recycling.certifiedAt * 1000).toLocaleDateString()}
+                        </p>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">Not yet recycled.</p>
+                  )}
+                </div>
+
+                {/* Material recovery */}
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+                    Material Recovery
+                  </p>
+                  {recovery && recovery.items.length > 0 ? (
+                    <div className="rounded-lg bg-solar-dark/50 border border-white/10 p-2.5 text-xs text-gray-300 space-y-1">
+                      {recovery.items.map((item, i) => (
+                        <p key={`${item.material}-${i}`} className="flex justify-between">
+                          <span>{item.material}</span>
+                          <span className="text-gray-400">
+                            {item.recovered} / {item.total} {item.unit}
+                          </span>
+                        </p>
+                      ))}
+                      <p className="pt-1 border-t border-white/10 text-gray-400">
+                        Recovery rate:{" "}
+                        <span className="text-green-400 font-semibold">
+                          {recovery.recoveryRate}%
+                        </span>
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">No material recovery recorded.</p>
+                  )}
+                </div>
+
+                {/* Compliance badge */}
+                {compliance && (
+                  <div
+                    className={`rounded-lg border p-2.5 text-xs ${
+                      compliance.compliant
+                        ? "border-green-500/30 bg-green-500/10 text-green-300"
+                        : "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                    }`}
+                  >
+                    <p className="font-semibold">
+                      {compliance.compliant
+                        ? "✅ Circular Economy Compliant"
+                        : "⚠️ Circular Economy Non-compliant"}
+                    </p>
+                    {compliance.details && (
+                      <p className="mt-0.5 text-[10px] opacity-80">{compliance.details}</p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
