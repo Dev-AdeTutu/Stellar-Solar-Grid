@@ -16,6 +16,7 @@ mod quantum_crypto;
 mod recs;
 mod scheduling;
 mod staking;
+mod dynamic_pricing;
 mod warranty;
 mod loyalty;
 mod load_shedding;
@@ -24,6 +25,7 @@ mod demand_response;
 mod lifecycle;
 #[cfg(test)]
 mod test_assets_warranty;
+pub use dynamic_pricing::*;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use commons::{
     CommonsConflict, CommonsMember, CommonsResource, CommonsRule, CommonsSanction,
@@ -176,6 +178,7 @@ pub enum ContractError {
 pub mod algo_market;
 pub mod batching;
 pub mod verification;
+pub mod oracle_network;
 
 use algo_market::{split_fee, AlgoKey, Algorithm};
 use batching::{AdminAction, MAX_BATCH_ACTIONS};

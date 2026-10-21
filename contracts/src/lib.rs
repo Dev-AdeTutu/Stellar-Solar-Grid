@@ -71,6 +71,73 @@ impl MeterContract {
         env.storage().instance().set(&Symbol::new(&env, "meters"), &meters);
     }
 
+    /// Transfer `share_percentage` basis points of ownership from `from` to `to`.
+    /// The sender must authorize the transfer. The recipient may be new or existing.
+    pub fn transfer_share(
+        env: Env,
+        meter_id: u64,
+        from: Address,
+        to: Address,
+        share_percentage: u32,
+    ) {
+        from.require_auth();
+        assert!(share_percentage > 0, "share percentage must be positive");
+
+        let mut meters: Map<u64, Meter> = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(&env, "meters"))
+            .expect("meter not found");
+        let mut meter = meters.get(meter_id).expect("meter not found");
+
+        let mut from_index: Option<u32> = None;
+        let mut to_index: Option<u32> = None;
+        for (i, s) in meter.shareholders.iter().enumerate() {
+            if s.address == from {
+                from_index = Some(i as u32);
+            }
+            if s.address == to {
+                to_index = Some(i as u32);
+            }
+        }
+
+        let from_index = from_index.expect("sender is not a shareholder");
+        let from_share = meter.shareholders.get(from_index).unwrap().share_percentage;
+        assert!(share_percentage <= from_share, "insufficient share to transfer");
+
+        let remaining = from_share - share_percentage;
+        let mut updated: Vec<MeterShareholder> = Vec::new(&env);
+        for (i, s) in meter.shareholders.iter().enumerate() {
+            let idx = i as u32;
+            if idx == from_index {
+                if remaining > 0 {
+                    updated.push_back(MeterShareholder {
+                        address: s.address.clone(),
+                        share_percentage: remaining,
+                    });
+                }
+            } else if Some(idx) == to_index {
+                updated.push_back(MeterShareholder {
+                    address: s.address.clone(),
+                    share_percentage: s.share_percentage + share_percentage,
+                });
+            } else {
+                updated.push_back(s);
+            }
+        }
+
+        if to_index.is_none() {
+            updated.push_back(MeterShareholder {
+                address: to,
+                share_percentage,
+            });
+        }
+
+        meter.shareholders = updated;
+        meters.set(meter_id, meter);
+        env.storage().instance().set(&Symbol::new(&env, "meters"), &meters);
+    }
+
     /// Query the shareholders of a meter.
     pub fn get_meter_shareholders(env: Env, meter_id: u64) -> Vec<MeterShareholder> {
         let meters: Map<u64, Meter> = env
@@ -83,6 +150,8 @@ impl MeterContract {
     }
 
     /// Deduct a usage cost proportionally from each co-payer balance.
+    /// Cost is split across all shareholders by basis points; any remainder
+    /// (from integer division) is charged to the owner so the full cost is covered.
     pub fn deduct_usage_cost(env: Env, meter_id: u64, cost: i128) {
         let mut meters: Map<u64, Meter> = env
             .storage()
@@ -99,10 +168,19 @@ impl MeterContract {
             .get(&Symbol::new(&env, "balances"))
             .unwrap_or(Map::new(&env));
 
+        let mut distributed: i128 = 0;
         for s in meter.shareholders.iter() {
             let share = (cost * s.share_percentage as i128) / 10000;
+            distributed += share;
             let current = balances.get(s.address.clone()).unwrap_or(0);
             balances.set(s.address.clone(), current - share);
+        }
+
+        // Charge the remainder to the owner so the full cost is distributed.
+        let remainder = cost - distributed;
+        if remainder > 0 {
+            let current = balances.get(meter.owner.clone()).unwrap_or(0);
+            balances.set(meter.owner.clone(), current - remainder);
         }
 
         meter.balance -= cost;
