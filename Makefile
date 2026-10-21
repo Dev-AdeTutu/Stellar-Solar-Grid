@@ -1,10 +1,10 @@
 .PHONY: build test deploy invoke-register invoke-allowlist migrate-all logs clean
 
 NETWORK  ?= testnet
-WASM     := contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm
+WASM     := contracts/target/wasm32v1-none/release/solar_grid.wasm
 
 build:
-	cd contracts && cargo build --target wasm32-unknown-unknown --release
+	cd contracts && cargo build --target wasm32v1-none --release
 
 test:
 	cd contracts && cargo test

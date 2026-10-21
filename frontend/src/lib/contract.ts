@@ -1,6 +1,7 @@
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { useWalletStore } from "@/store/walletStore";
 import { env } from "@/lib/env";
+import { padResourceFee as padFee } from "@/lib/fees";
 
 export interface MeterData {
   version: number;
@@ -13,9 +14,27 @@ export interface MeterData {
   balance: bigint;
   grace_expires_at?: bigint | null;
   meter_id?: string;
+  /** Max stroops deductible per day; 0 = unlimited (closes #758). */
+  daily_limit?: bigint;
+  /** Stroops spent in the current daily window (closes #758). */
+  day_spent?: bigint;
+  /** True (default) if exceeding daily_limit blocks usage; false = warn only. */
+  auto_deactivate?: boolean;
 }
 
 const REQUEST_TIMEOUT_MS = env.NEXT_PUBLIC_REQUEST_TIMEOUT_MS;
+
+/**
+ * #762 — Pad the assembled transaction fee (classic fee + simulated resource
+ * fee) by a safety margin before the wallet signs it. `simulateTransaction`'s
+ * resource-fee estimate is a point-in-time snapshot; actual cost can drift
+ * by submission time, and that drift scales with how many ledger entries the
+ * operation touches — a fixed percentage margin therefore scales with it too.
+ * Mirrors backend/src/lib/stellar.ts's padResourceFee.
+ */
+export function padResourceFee(assembledFee: string): string {
+  return padFee(assembledFee, env.NEXT_PUBLIC_FEE_SAFETY_MARGIN_PCT);
+}
 
 export class ContractClient {
   private server: StellarSdk.SorobanRpc.Server;
@@ -85,6 +104,10 @@ export class ContractClient {
     }
 
     tx = StellarSdk.SorobanRpc.assembleTransaction(tx, sim).build();
+    const paddedFee = padResourceFee(tx.fee);
+    if (paddedFee !== tx.fee) {
+      tx = StellarSdk.TransactionBuilder.cloneFrom(tx, { fee: paddedFee }).build();
+    }
 
     const { signTransaction } = useWalletStore.getState();
     const signedXdr = await signTransaction(tx.toXDR());
@@ -145,14 +168,307 @@ export async function isContractPaused(): Promise<boolean> {
 }
 
 export async function fetchAllMeters(): Promise<MeterData[]> {
-  const [dataRetval, idsRetval] = await Promise.all([
-    client.query("get_all_meters", []),
-    client.query("get_all_meters_paginated", [
-      StellarSdk.nativeToScVal(0, { type: "u32" }),
-      StellarSdk.nativeToScVal(100, { type: "u32" }),
-    ]).catch(() => null),
-  ]);
-  const rawMeters = StellarSdk.scValToNative(dataRetval) as MeterData[];
-  const meterIds: string[] = idsRetval ? (StellarSdk.scValToNative(idsRetval) as string[]) : [];
-  return rawMeters.map((m, i) => ({ ...m, balance: 0n, meter_id: meterIds[i] }));
+  const allMeters: MeterData[] = [];
+  const pageSize = 50; // Fetch 50 meters per page to respect Soroban read limits
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    try {
+      const pageIds = await fetchMetersPaginated(offset, pageSize);
+      if (pageIds.length === 0) {
+        hasMore = false;
+        break;
+      }
+
+      // Fetch full meter details for each ID on this page
+      const pageMeters = await Promise.all(
+        pageIds.map(async (meterId) => {
+          try {
+            const meter = await fetchMeter(meterId);
+            return meter;
+          } catch (error) {
+            console.warn(`Failed to fetch meter ${meterId}:`, error);
+            return null;
+          }
+        }),
+      );
+
+      // Filter out failed fetches and add to results
+      const validMeters = pageMeters.filter((m) => m !== null) as MeterData[];
+      allMeters.push(...validMeters);
+
+      // Check if we got less than a full page (means we reached the end)
+      if (pageIds.length < pageSize) {
+        hasMore = false;
+      }
+
+      offset += pageSize;
+    } catch (error) {
+      console.error("Error fetching meters page:", error);
+      hasMore = false;
+    }
+  }
+
+  return allMeters;
 }
+
+export async function fetchMetersPaginated(offset: number, limit: number): Promise<string[]> {
+  const retval = await client.query("get_all_meters_paginated", [
+    StellarSdk.nativeToScVal(offset, { type: "u32" }),
+    StellarSdk.nativeToScVal(limit, { type: "u32" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as string[];
+}
+
+export async function transferMeterOwnership(
+  sourceAddress: string,
+  meterId: string,
+  newOwnerAddress: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "transfer_meter_ownership", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    StellarSdk.nativeToScVal(newOwnerAddress, { type: "address" }),
+  ]);
+}
+
+// ── Energy token staking (#899) ─────────────────────────────────────────────
+
+const addrVal = (a: string) => StellarSdk.nativeToScVal(a, { type: "address" });
+const i128Val = (v: bigint) => StellarSdk.nativeToScVal(v, { type: "i128" });
+
+/** Stake `amount` (base units, 7 decimals) of the energy token. */
+export function stakeTokens(staker: string, amount: bigint): Promise<string> {
+  return contractInvoke(staker, "stake", [addrVal(staker), i128Val(amount)]);
+}
+
+/** Start the unstake cooldown for `amount`. */
+export function requestUnstake(staker: string, amount: bigint): Promise<string> {
+  return contractInvoke(staker, "request_unstake", [addrVal(staker), i128Val(amount)]);
+}
+
+/** Withdraw tokens whose cooldown has elapsed. */
+export function withdrawUnstaked(staker: string): Promise<string> {
+  return contractInvoke(staker, "withdraw_unstaked", [addrVal(staker)]);
+}
+
+/** Put cooling-down tokens back into the active stake. */
+export function cancelUnstake(staker: string): Promise<string> {
+  return contractInvoke(staker, "cancel_unstake", [addrVal(staker)]);
+}
+
+/** Claim all accrued staking rewards. */
+export function claimStakingRewards(staker: string): Promise<string> {
+  return contractInvoke(staker, "claim_staking_rewards", [addrVal(staker)]);
+}
+
+// ── Family/household account delegation (#981) ──────────────────────────────
+
+/** Permission level granted to a delegate. */
+export type DelegatePermission = "view" | "pay" | "admin";
+
+export interface Delegate {
+  delegated_address: string;
+  permissions: DelegatePermission[];
+  expiry: bigint;
+}
+
+/** List the delegates granted access to `meterId`. */
+export async function fetchDelegates(meterId: string): Promise<Delegate[]> {
+  const retval = await client.query("get_delegates", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+  ]);
+  const native = StellarSdk.scValToNative(retval) as any[];
+  if (!Array.isArray(native)) return [];
+  return native.map((d) => ({
+    delegated_address: d.delegated_address,
+    permissions: Array.isArray(d.permissions)
+      ? d.permissions
+      : typeof d.permissions === "string"
+        ? (d.permissions.split(",") as DelegatePermission[])
+        : [d.permissions],
+    expiry: d.expiry,
+  }));
+}
+
+/** Owner-only: grant `delegate` access to `meterId` until `expiry`. */
+export function addDelegate(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+  permissions: DelegatePermission,
+  expiry: bigint,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "add_delegate", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+    StellarSdk.nativeToScVal(permissions, { type: "symbol" }),
+    StellarSdk.nativeToScVal(expiry, { type: "u64" }),
+  ]);
+}
+
+/** Owner-only: revoke `delegate`'s access to `meterId`. */
+export function removeDelegate(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "remove_delegate", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+  ]);
+}
+
+/** Make a payment on `meterId` using a delegate's pay permission. */
+export function makeDelegatedPayment(
+  sourceAddress: string,
+  meterId: string,
+  delegate: string,
+  amountStroops: bigint,
+  plan: string,
+  memo: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "make_delegated_payment", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(delegate),
+    i128Val(amountStroops),
+    StellarSdk.nativeToScVal(plan, { type: "symbol" }),
+    StellarSdk.nativeToScVal(memo, { type: "symbol" }),
+  ]);
+}
+
+// ── Meter co-ownership (#1061) ──────────────────────────────────────────────
+
+export interface MeterShareholder {
+  address: string;
+  /** Ownership share in basis points (1/100 of a percent); all shares sum to 10_000. */
+  share_bps: number;
+}
+
+/** List the co-owners of `meterId` and their ownership shares. */
+export async function fetchMeterShareholders(meterId: string): Promise<MeterShareholder[]> {
+  const retval = await client.query("get_meter_shareholders", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as MeterShareholder[];
+}
+
+/** Owner-only: add `shareholder` as a co-owner of `meterId` with `shareBps` basis points. */
+export function addMeterShareholder(
+  sourceAddress: string,
+  meterId: string,
+  shareholder: string,
+  shareBps: number,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "add_meter_shareholder", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(shareholder),
+    StellarSdk.nativeToScVal(shareBps, { type: "u32" }),
+  ]);
+}
+
+/** Transfer `shareBps` basis points of `meterId` from `from` to `to`. */
+export function transferMeterShare(
+  sourceAddress: string,
+  meterId: string,
+  from: string,
+  to: string,
+  shareBps: number,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "transfer_meter_share", [
+    StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    addrVal(from),
+    addrVal(to),
+    StellarSdk.nativeToScVal(shareBps, { type: "u32" }),
+  ]);
+}
+
+// ── Seasonal pricing plans (#992) ───────────────────────────────────────────
+
+export interface SeasonalRate {
+  season: string;
+  start_date: bigint;
+  end_date: bigint;
+  multiplier: bigint;
+}
+
+/** Fetch all configured seasonal rates. */
+export async function fetchSeasonalRates(): Promise<SeasonalRate[]> {
+  const retval = await client.query("get_seasonal_rates", []);
+  return StellarSdk.scValToNative(retval) as SeasonalRate[];
+}
+
+/** Fetch the season currently in effect (and its rate). */
+export async function fetchCurrentSeason(): Promise<SeasonalRate> {
+  const retval = await client.query("get_current_season", []);
+  return StellarSdk.scValToNative(retval) as SeasonalRate;
+}
+
+// ── Scheduled energy usage (#1001) ──────────────────────────────────────────
+
+export interface Schedule {
+  circuit_id: string;
+  days: number;
+  start_time: number;
+  end_time: number;
+  enabled: boolean;
+}
+
+export async function getCircuitSchedule(meterId: string, circuitId: string): Promise<Schedule> {
+  const retval = await client.query("get_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "string" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "string" }),
+  ]);
+  return StellarSdk.scValToNative(retval) as Schedule;
+}
+
+export async function circuitShouldBeOn(meterId: string, circuitId: string, now: bigint): Promise<boolean> {
+  const retval = await client.query("circuit_should_be_on", [
+    StellarSdk.nativeToScVal(meterId, { type: "string" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "string" }),
+    StellarSdk.nativeToScVal(now, { type: "u64" }),
+  ]);
+  return Boolean(StellarSdk.scValToNative(retval));
+}
+
+export async function setCircuitSchedule(
+  sourceAddress: string,
+  meterId: string,
+  schedule: Schedule,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "set_circuit_schedule", [
+    StellarSdk.nativeToScVal(meterId, { type: "string" }),
+    StellarSdk.nativeToScVal(schedule.circuit_id, { type: "string" }),
+    StellarSdk.nativeToScVal(schedule.days, { type: "u32" }),
+    StellarSdk.nativeToScVal(schedule.start_time, { type: "u32" }),
+    StellarSdk.nativeToScVal(schedule.end_time, { type: "u32" }),
+    StellarSdk.nativeToScVal(schedule.enabled, { type: "bool" }),
+  ]);
+}
+
+export async function overrideCircuit(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+  forcedState: boolean,
+  until: bigint,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "override_circuit", [
+    StellarSdk.nativeToScVal(meterId, { type: "string" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "string" }),
+    StellarSdk.nativeToScVal(forcedState, { type: "bool" }),
+    StellarSdk.nativeToScVal(until, { type: "u64" }),
+  ]);
+}
+
+export async function clearCircuitOverride(
+  sourceAddress: string,
+  meterId: string,
+  circuitId: string,
+): Promise<string> {
+  return contractInvoke(sourceAddress, "clear_circuit_override", [
+    StellarSdk.nativeToScVal(meterId, { type: "string" }),
+    StellarSdk.nativeToScVal(circuitId, { type: "string" }),
+  ]);
+}
+

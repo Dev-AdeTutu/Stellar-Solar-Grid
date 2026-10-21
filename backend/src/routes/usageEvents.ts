@@ -5,6 +5,8 @@ import {
   purgeSubmittedUsageEvents,
   getFailedUsageEvents,
   replayFailedUsageEvent,
+  compactUsageEvents,
+  getUsageSummary,
 } from "../lib/usageEvents.js";
 
 export const usageEventsRouter = Router();
@@ -31,6 +33,52 @@ usageEventsRouter.delete(
 
     const deletedCount = purgeSubmittedUsageEvents(olderThanDays);
     return res.json({ deletedCount });
+  })
+);
+
+/**
+ * POST /api/usage-events/compact
+ *
+ * Manually trigger the retention/compaction job (Closes #685): rolls
+ * 'submitted' events older than the detail retention window (default 90
+ * days) into daily usage_summary rows, archives events older than the
+ * archive retention window (default 365 days) to a gzipped JSONL file, then
+ * deletes the compacted detail rows and reclaims space with VACUUM. Runs
+ * automatically once a day at 02:00 UTC; this endpoint is for ops to run it
+ * on demand (e.g. right after lowering the retention window).
+ */
+usageEventsRouter.post(
+  "/compact",
+  asyncHandler(async (req, res) => {
+    const detailedRetentionDays = req.body?.detailedRetentionDays;
+    const archiveRetentionDays = req.body?.archiveRetentionDays;
+    if (detailedRetentionDays !== undefined && (typeof detailedRetentionDays !== "number" || detailedRetentionDays < 0)) {
+      return res.status(400).json({ error: "Invalid detailedRetentionDays parameter", code: "VALIDATION_ERROR" });
+    }
+    if (archiveRetentionDays !== undefined && (typeof archiveRetentionDays !== "number" || archiveRetentionDays < 0)) {
+      return res.status(400).json({ error: "Invalid archiveRetentionDays parameter", code: "VALIDATION_ERROR" });
+    }
+
+    const result = compactUsageEvents({ detailedRetentionDays, archiveRetentionDays });
+    return res.json(result);
+  })
+);
+
+/**
+ * GET /api/usage-events/summary?meterId=&limit=
+ *
+ * Aggregated daily usage from usage_summary (populated by the compaction
+ * job), most recent day first. Covers history older than the detail
+ * retention window without needing the raw per-event rows.
+ */
+usageEventsRouter.get(
+  "/summary",
+  asyncHandler(async (req, res) => {
+    const meterId = typeof req.query.meterId === "string" ? req.query.meterId : undefined;
+    const limit = Math.min(365, Math.max(1, parseInt(String(req.query.limit ?? "90"), 10) || 90));
+
+    const summary = getUsageSummary(meterId, limit);
+    return res.json({ summary, count: summary.length });
   })
 );
 

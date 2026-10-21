@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { getAllowlist, addToAllowlist, removeFromAllowlist } from "../services/allowlistService";
 
 export function AllowlistPanel() {
@@ -10,7 +10,7 @@ export function AllowlistPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  async function load(p = page) {
+  const load = useCallback(async (p: number = 1) => {
     setLoading(true);
     setError(null);
     try {
@@ -23,9 +23,9 @@ export function AllowlistPanel() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [limit]);
 
-  useEffect(() => { load(1); }, []);
+  useEffect(() => { load(1); }, [load]);
 
   async function handleAdd() {
     setError(null);

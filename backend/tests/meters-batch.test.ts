@@ -17,6 +17,16 @@ import { createMeterRouter } from "../src/routes/meters";
 import { stellarService } from "../src/lib/stellar";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+// Mock the usage-event store used for grid export history
+vi.mock("../src/lib/usageEvents", () => ({
+  usageEventStore: {
+    getGridExports: vi.fn(),
+    getImportExportTotals: vi.fn(),
+  },
+}));
+
+import { usageEventStore } from "../src/lib/usageEvents";
+
 describe("metersRouter - POST /api/meters/batch", () => {
   let req: Partial<Request>;
   let res: Partial<Response>;
@@ -130,5 +140,138 @@ describe("metersRouter - POST /api/meters/batch", () => {
       meter_id: "meter3",
       error: "Invalid Stellar account address format",
     });
+  });
+});
+
+describe("metersRouter - GET /api/meters/:meterId/exports", () => {
+  let req: Partial<Request>;
+  let res: Partial<Response>;
+  let jsonMock: any;
+  let statusMock: any;
+  let router: any;
+
+  const findExportsHandler = () =>
+    router.stack.find(
+      (layer: any) =>
+        layer.route?.path === "/:meterId/exports" &&
+        layer.route?.methods.get
+    )?.route?.stack.slice(-1)[0]?.handle;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    jsonMock = vi.fn().mockReturnValue({});
+    statusMock = vi.fn().mockReturnValue({ json: jsonMock });
+
+    req = {
+      params: { meterId: "meter1" },
+      query: {},
+      headers: {
+        "x-admin-key": "test-admin-key",
+      },
+    };
+    res = {
+      json: jsonMock,
+      status: statusMock,
+    };
+
+    process.env.ADMIN_KEY = "test-admin-key";
+
+    router = createMeterRouter(stellarService);
+  });
+
+  it("should return paginated export history and import/export totals", async () => {
+    const exports = [
+      {
+        meter_id: "meter1",
+        kwh: 12.5,
+        credit_amount: 6.25,
+        rate: 0.5,
+        timestamp: "2024-01-01T00:00:00.000Z",
+      },
+      {
+        meter_id: "meter1",
+        kwh: 8,
+        credit_amount: 4,
+        rate: 0.5,
+        timestamp: "2024-01-02T00:00:00.000Z",
+      },
+    ];
+
+    (usageEventStore.getGridExports as any).mockResolvedValue({
+      items: exports,
+      total: 2,
+    });
+    (usageEventStore.getImportExportTotals as any).mockResolvedValue({
+      imported_kwh: 100,
+      exported_kwh: 20.5,
+      export_credits: 10.25,
+    });
+
+    req.query = { page: "1", limit: "10" };
+
+    const handler = findExportsHandler();
+    if (!handler) {
+      throw new Error("Grid exports endpoint handler not found");
+    }
+
+    await handler(req, res);
+
+    expect(usageEventStore.getGridExports).toHaveBeenCalledWith("meter1", {
+      page: 1,
+      limit: 10,
+    });
+    expect(usageEventStore.getImportExportTotals).toHaveBeenCalledWith("meter1");
+
+    const responseData = jsonMock.mock.calls[0][0];
+    expect(responseData.exports).toEqual(exports);
+    expect(responseData.pagination).toEqual({
+      page: 1,
+      limit: 10,
+      total: 2,
+      totalPages: 1,
+    });
+    expect(responseData.totals).toEqual({
+      imported_kwh: 100,
+      exported_kwh: 20.5,
+      export_credits: 10.25,
+    });
+  });
+
+  it("should return 404 for an unknown meter", async () => {
+    (usageEventStore.getGridExports as any).mockResolvedValue(null);
+
+    req.params = { meterId: "unknown-meter" };
+
+    const handler = findExportsHandler();
+    if (!handler) {
+      throw new Error("Grid exports endpoint handler not found");
+    }
+
+    await handler(req, res);
+
+    expect(statusMock).toHaveBeenCalledWith(404);
+    expect(jsonMock).toHaveBeenCalledWith({
+      error: "Meter not found",
+      code: "NOT_FOUND",
+    });
+  });
+
+  it("should return 400 for invalid pagination parameters", async () => {
+    req.query = { page: "0", limit: "abc" };
+
+    const handler = findExportsHandler();
+    if (!handler) {
+      throw new Error("Grid exports endpoint handler not found");
+    }
+
+    await handler(req, res);
+
+    expect(statusMock).toHaveBeenCalledWith(400);
+    expect(jsonMock).toHaveBeenCalledWith({
+      error: "Invalid pagination parameters",
+      code: "VALIDATION_ERROR",
+    });
+    expect(usageEventStore.getGridExports).not.toHaveBeenCalled();
   });
 });

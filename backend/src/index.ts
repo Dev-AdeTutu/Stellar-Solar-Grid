@@ -1,19 +1,33 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { createRequire } from "module";
 import express, { NextFunction, Request, Response } from "express";
 import cors from "cors";
+import mqtt from "mqtt";
+import { statSync } from "node:fs";
 import timeout from "connect-timeout";
 import helmet from "helmet";
 import compression from "compression";
-import mqtt from "mqtt";
 import swaggerUi from "swagger-ui-express";
 import YAML from "yamljs";
 import rateLimit from "express-rate-limit";
+import * as OpenApiValidator from "express-openapi-validator";
 
-import { stellarService, server } from "./lib/stellar.js";
+import { stellarService, server, NETWORK_PASSPHRASE } from "./lib/stellar.js";
 import { createMeterRouter } from "./routes/meters.js";
 import { paymentsRouter } from "./routes/payments.js";
+import { receiptsRouter } from "./routes/receipts.js";
+import { certificatesRouter } from "./routes/certificates.js";
+import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { complianceRouter, complianceMonitor } from "./routes/compliance.js";
+import { benchmarkingRouter } from "./routes/benchmarking.js";
+import { educationRouter } from "./routes/education.js";
+import { startIoTBridge } from "./iot/bridge.js";
+import { auditRouter } from "./routes/audit.js";
+import { socialRouter } from "./routes/social.js";
+import { startLeaderboardScheduler } from "./lib/social.js";
 import { statsRouter } from "./routes/stats.js";
 import { collaboratorRouter } from "./routes/collaborators.js";
 import { allowlistRouter } from "./routes/allowlist.js";
@@ -22,28 +36,106 @@ import { metricsRouter } from "./routes/metrics.js";
 import { providerRouter } from "./routes/provider.js";
 import { smsConfigRouter } from "./routes/smsConfig.js";
 import { clientErrorsRouter } from "./routes/clientErrors.js";
+import { loadBalancingRouter } from "./routes/loadBalancing.js";
+import { twoFactorRouter } from "./routes/twoFactor.js";
+import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
+import { orderBookRouter, attachOrderBookWebSocket } from "./routes/orderBook.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
+import { weatherRouter } from "./routes/weather.js";
 import { usageEventsRouter } from "./routes/usageEvents.js";
-import { startIoTBridge } from "./iot/bridge.js";
+import { analyticsRouter } from "./routes/analytics.js";
+import { createMarketAnalyticsRouter } from "./routes/marketAnalytics.js";
+import { insightsRouter } from "./routes/insights.js";
+import { graphqlRouter } from "./routes/graphql.js";
+import { usageRouter } from "./routes/usage.js";
+import { meterMapRouter } from "./routes/meterMap.js";
+import { delegatesRouter } from "./routes/delegates.js";
+import { apiKeysRouter } from "./routes/apiKeys.js";
+import { meterHealthRouter } from "./routes/meterHealth.js";
+import { emergencyContactsRouter } from "./routes/emergencyContacts.js";
+import { creditScoreRouter } from "./routes/creditScore.js";
+import { predictionRouter } from "./routes/prediction.js";
+import { billingRouter } from "./routes/billing.js";
+import forecastRouter from "./routes/forecast.js";
+import { competitionsRouter } from "./routes/competitions.js";
+import { communitiesRouter } from "./routes/communities.js";
+import { smartHomeRouter } from "./routes/smartHome.js";
+import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
+import { startVoiceTokenPruner, stopVoiceTokenPruner } from "./lib/voiceAssistant.js";
+import { outagesRouter } from "./routes/outages.js";
+import { widgetsRouter } from "./routes/widgets.js";
+import arbitrageBotRouter from "./routes/arbitrageBot.js";
+import { startBillingScheduler, startInstallmentScheduler } from "./lib/billing.js";
+import { startCompetitionScheduler } from "./lib/competitions.js";
+import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
+import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
+import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
+import { recsRouter } from "./routes/recs.js";
+import { leasesRouter } from "./routes/leases.js";
+import { chatbotRouter } from "./routes/chatbot.js";
+import { complianceReportsRouter } from "./routes/complianceReports.js";
+import { portfolioRouter } from "./routes/portfolio.js";
+import { vppRouter } from "./routes/vpp.js";
+import { gridServicesRouter } from "./routes/gridServices.js";
+import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
+import { startHealthMonitor } from "./lib/meterHealth.js";
+import { startResilienceMonitor } from "./lib/gridResilience.js";
+import { gridResilienceRouter } from "./routes/gridResilience.js";
+import { privacyRouter } from "./routes/privacy.js";
+import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
+import { startScheduleExecutor } from "./iot/scheduleExecutor.js";
 import { logger } from "./lib/logger.js";
+import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
-import { register } from "./lib/metrics.js";
-import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
+import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
+import { readLimiter, writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
+import { globalRateLimiter } from "./middleware/globalRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
+import { validateContentType } from "./middleware/validateContentType.js";
 import requestLoggerMiddleware from "./middleware/requestLogger.js";
+import { tracingMiddleware } from "./middleware/tracing.js";
+import { shutdownTracing } from "./lib/tracing.js";
+import { getCircuitState } from "./lib/circuitBreaker.js";
 import {
+  countDeadLetterEvents,
+  getUsageEventPoolStatus,
   initUsageEventStore,
   startUsageEventRetryWorker,
-  countDeadLetterEvents,
+  startUsageCompactionWorker,
 } from "./lib/usageEvents.js";
-import { initMeterNotesStore } from "./lib/meterNotes.js";
+import { initMeterNotesStore, getMeterNotesPoolStatus } from "./lib/meterNotes.js";
+import { getUsageHistoryPoolStatus } from "./lib/usageHistory.js";
+import { closeAllDatabases } from "./lib/databaseLifecycle.js";
 import { getReqId } from "./lib/requestContext.js";
-import { createMeterOperationsRouter } from "./routes/meterOperations.js";
+import { exportRouter } from "./routes/export.js";
+import { pricingRouter } from "./routes/pricing.js";
+import { carbonCreditsRouter } from "./routes/carbonCredits.js";
+import { p2pTradingRouter } from "./routes/p2pTrading.js";
+import { adminDashboardRouter } from "./routes/adminDashboard.js";
+import { startPricingScheduler } from "./lib/dynamicPricing.js";
+// Issue #696: Import idempotency cleanup for graceful shutdown
+import { _stopEvictionTimer } from "./middleware/idempotency.js";
+import { buildHealthResponse } from "./lib/health.js";
+import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
+import { startTheftMonitor } from "./lib/theftDetection.js";
+import { workOrdersRouter } from "./routes/workOrders.js";
+import { surveysRouter } from "./routes/surveys.js";
+import { lifespanRouter } from "./routes/lifespan.js";
+import { capacityPlanningRouter } from "./routes/capacityPlanning.js";
+import { storageOptimizationRouter } from "./routes/storageOptimization.js";
+import { impactRouter } from "./routes/impact.js";
+import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
+import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
+import { shadowsRouter } from "./routes/shadows.js";
+import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
+// #1046: federated learning coordinator
+import { federatedRouter } from "./routes/federated.js";
+import { startFederatedCoordinator, stopFederatedCoordinator } from "./lib/federatedLearning.js";
 
-// ── Rate-limit config ────────────────────────────────────────────────────────
+// â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
 // imports the parsed values so there is a single source of truth shared with
 // middleware/rateLimit.ts.
@@ -54,7 +146,7 @@ import {
   RATE_LIMIT_MESSAGE,
 } from "./config/rateLimits.js";
 
-// ── Bootstrap ────────────────────────────────────────────────────────────────
+// â”€â”€ Bootstrap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const _require = createRequire(import.meta.url);
 const { version } = _require("../../package.json") as { version: string };
 
@@ -78,136 +170,68 @@ if (missing.length > 0) {
 
 const PORT = process.env.PORT ?? 3001;
 const BODY_LIMIT = process.env.REQUEST_BODY_LIMIT ?? "100kb";
+const STARTED_AT = Date.now();
 
 const app = express();
+app.use(cors({ exposedHeaders: [
+  "RateLimit-Limit", "RateLimit-Remaining", "RateLimit-Reset",
+  "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset",
+  "X-RateLimit-Policy", "Retry-After",
+] }));
+app.use(globalRateLimiter);
+app.use(express.json());
 
-// ── Security headers ─────────────────────────────────────────────────────────
-app.use(
-  helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'none'"],
-        scriptSrc: ["'self'"],
-        connectSrc: ["'self'"],
-      },
-    },
-    hsts: { maxAge: 31536000, includeSubDomains: true },
-  }),
-);
-
-// #599: gzip/brotli-compress responses over 1 KB.
-app.use(compression({ threshold: 1024 }));
-
-// ── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.CORS_ORIGIN ?? "*")
-  .split(",")
-  .map((o) => o.trim());
-
-app.use(
-  cors({
-    origin: (origin, cb) => {
-      if (
-        !origin ||
-        allowedOrigins.includes("*") ||
-        allowedOrigins.includes(origin)
-      ) {
-        cb(null, true);
-      } else {
-        cb(new Error(`Origin ${origin} not allowed by CORS`));
-      }
-    },
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "X-Admin-Key"],
-    optionsSuccessStatus: 204,
-    credentials: true,
-  }),
-);
-
-// ── Body parsing ─────────────────────────────────────────────────────────────
-// Capture raw body for webhook signature verification before JSON parsing.
-// #423: apply body size limit.
-app.use(
-  express.json({
-    limit: BODY_LIMIT,
-    verify: (req: any, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }),
-);
-app.use(express.urlencoded({ extended: true, limit: BODY_LIMIT }));
-app.use(sanitiseBody);
-app.use(requestLoggerMiddleware);
-
-// ── Request timeout ──────────────────────────────────────────────────────────
-// Configurable via REQUEST_TIMEOUT env var (default 15 s).
-const requestTimeout = process.env.REQUEST_TIMEOUT ?? "15s";
-app.use(timeout(requestTimeout));
-app.use((req: any, _res: any, next: any) => {
-  if (!req.timedout) next();
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
 });
 
-app.use(requestLogger());
-// ── Rate limiters ─────────────────────────────────────────────────────────────
-// Env-var parsing is centralised in config/rateLimits.ts (closes #539).
-
-// Global read limiter — scoped to /api, one counter per IP (#504).
-const globalReadLimiter = rateLimit({
-  windowMs: RATE_LIMIT_WINDOW_MS,
-  max: RATE_LIMIT_MAX,
-  standardHeaders: true,
-  legacyHeaders: false,
-  handler: (_req, res) => {
-    res.setHeader(
-      "Retry-After",
-      String(Math.ceil(RATE_LIMIT_WINDOW_MS / 1000)),
-    );
-    res.status(429).json({ error: RATE_LIMIT_MESSAGE, code: "RATE_LIMITED" });
-  },
-});
-
-// Apply global read limiter to all /api routes.
-app.use("/api", globalReadLimiter);
-
-// ── Prometheus metrics endpoint ───────────────────────────────────────────────
-//
-// INTENTIONALLY PUBLIC — no authentication required.
-//
-// Design rationale (closes #537):
-//   Prometheus's scrape model requires unauthenticated HTTP GET access to the
-//   /metrics path.  In this deployment the backend port (3001) is exposed only
-//   on the internal Docker network (app-network) and is not forwarded to a
-//   public interface.  The Prometheus container scrapes it from within that
-//   private network (see infra/prometheus.yml).
-//
-//   If the backend is ever exposed on a public-facing port, access to /metrics
-//   should be restricted at the reverse-proxy layer (e.g. an nginx `location
-//   /metrics { deny all; }` block or a firewall rule that allows only the
-//   Prometheus container's IP).  An IP-allowlist middleware can also be added
-//   here using the METRICS_ALLOWED_CIDRS env var in a future hardening pass.
-//
-//   The endpoint is registered *before* the /api rate-limiter so Prometheus
-//   scrapes are never throttled by the per-IP write budget.
-app.get("/metrics", async (_req, res) => {
-  res.set("Content-Type", register.contentType);
-  res.end(await register.metrics());
-});
-
-// ── Routes ───────────────────────────────────────────────────────────────────
-
-// Swagger / OpenAPI docs
-try {
-  const openApiDocument = YAML.load("./openapi.yaml");
-  app.use("/api/docs", swaggerUi.serve, swaggerUi.setup(openApiDocument));
-} catch {
-  logger.warn("openapi.yaml not found; /api/docs will not be available");
+interface MeterFirmware {
+  meterId: string;
+  firmwareVersion: string;
+  reportedAt: string;
 }
 
-app.use("/api/admin/login", writeLimiter, adminLoginRouter);
+app.use(complianceMonitor);
+app.use("/api/compliance", complianceRouter);
+app.use("/api/benchmarking", benchmarkingRouter);
+app.use("/api/education", educationRouter);
+app.use("/api/meters", createMeterRouter(stellarService));
+app.use("/api/payments", paymentsRouter);
+app.use("/api/webhooks", webhookRouter);
+app.use("/api/lake", lakeRouter);
+app.use("/api/algos", algosRouter);
+app.use("/api/batch", batchRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/social", socialRouter);
+startLeaderboardScheduler();
+const firmwareByMeter = new Map<string, MeterFirmware>();
+
+const LATEST_FIRMWARE_VERSION = process.env.LATEST_FIRMWARE_VERSION || '1.0.0';
+
+function isOutdated(version: string): boolean {
+  return version !== LATEST_FIRMWARE_VERSION;
+}
+
+app.use("/api/admin", writeLimiter, adminLoginRouter);
+app.use("/api/meters/map", meterMapRouter);
+app.use("/api/keys", writeLimiter, apiKeysRouter);
+app.use("/api/meters", meterHealthRouter);
+app.use("/api/users/emergency-contacts", emergencyContactsRouter);
+app.use("/api/users", writeLimiter, creditScoreRouter);
+app.use("/api/meters", predictionRouter);
+// #982: weather-aware forecast endpoint (GET /api/meters/:meterId/forecast)
+app.use("/api/meters", createWeatherForecastRouter());
+// #983: appliance breakdown endpoint (GET /api/meters/:meterId/appliances)
+app.use("/api/meters", createApplianceRouter());
+startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
+app.use("/api/export", exportRouter);
+app.use("/api/certificates", certificatesRouter);
+app.use("/api/delegates", writeLimiter, delegatesRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);
 app.use("/api/allowlist", writeLimiter, allowlistRouter);
 app.use("/api/collaborators", collaboratorRouter);
@@ -215,116 +239,231 @@ app.use("/api/sms-config", smsConfigRouter);
 app.use("/api/client-errors", writeLimiter, clientErrorsRouter);
 app.use("/api/push", writeLimiter, pushSubscriptionsRouter);
 app.use("/api/metrics", metricsRouter);
+app.use("/api/email-notifications", emailNotificationsRouter);
 app.use("/api/solar", solarRouter);
+app.use("/api/weather", weatherRouter);
 app.use("/api/usage-events", usageEventsRouter);
+app.use("/api/usage", usageRouter);
+app.use("/api/analytics/market", createMarketAnalyticsRouter(initUsageEventStore));
+app.use("/api/analytics", analyticsRouter);
+app.use("/api/meters", insightsRouter);
+app.use("/api/graphql", graphqlRouter);
+app.use("/graphql", graphqlRouter);
 app.use("/api/provider", providerRouter);
-app.use("/api/usage-events", usageEventsRouter);
+// #901–#904: widgets, billing, competitions, smart home
+app.use("/api/widgets", widgetsRouter);
+app.use("/api/backtest", backtestRouter);
+app.use("/api/billing", writeLimiter, billingRouter);
+app.use("/api/competitions", competitionsRouter);
+app.use("/api/communities", communitiesRouter);
+app.use("/api/smart-home", smartHomeRouter);
+// #989: voice assistant (Alexa / Google Assistant) skill endpoints
+app.use("/api/voice", readLimiter, voiceAssistantRouter);
+app.use("/api/voice/payments", writeLimiter, voiceAssistantRouter);
+startVoiceTokenPruner();
+app.use("/api/forecast", forecastRouter);
+// #1079: meter lifespan extension recommendations
+app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1050: predictive grid capacity planning
+app.use("/api/capacity-planning", capacityPlanningRouter);
+// #1053: energy storage optimization AI
+app.use("/api/storage-optimization", storageOptimizationRouter);
+// #1054: social impact measurement
+app.use("/api/impact", impactRouter);
+// #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
+app.use("/api/rate-limits", rateLimitTiersRouter);
+// #1081: meter device shadows (desired vs reported state)
+app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
+// #1082: 7-day energy forecasting dashboard
+app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
+// #1046: federated learning (local training + privacy-preserving aggregation)
+app.use("/api/federated", writeLimiter, federatedRouter);
+startFederatedCoordinator();
+setRelaySender(sendRelayCommand);
+// Initialize heatmap system (#922)
+initPriceHeatmap();
+startPriceSimulation();
+startBillingScheduler();
+startInstallmentScheduler();
+startCompetitionScheduler();
+startEnergyForecastRetraining();
+// #982: retrain the weather-aware forecasting model alongside the consumption model
+startWeatherForecastRetraining();
+// #983: retrain the appliance disaggregation model
+startApplianceDisaggregationRetraining();
+startSmartHomeScheduler();
+// #877: dynamic pricing
+app.use("/api/pricing", pricingRouter);
+startPricingScheduler();
+// #878: carbon credit tracking
+app.use("/api/carbon-credits", carbonCreditsRouter);
+// #879: P2P energy trading
+app.use("/api/p2p", p2pTradingRouter);
+// #935: order book
+app.use("/api/orderbook", orderBookRouter);
+// #880: admin dashboard
+app.use("/api/admin/dashboard", adminDashboardRouter);
+// #941: grid resilience scoring
+app.use("/api/grid", gridResilienceRouter);
+app.use("/api/grid-services", gridServicesRouter);
+startResilienceMonitor();
+// #939: energy data privacy controls
+app.use("/api/privacy", writeLimiter, privacyRouter);
+// #991: contractor/technician portal
+app.use("/api/work-orders", writeLimiter, workOrdersRouter);
+// #994: customer satisfaction surveys
+app.use("/api/surveys", writeLimiter, surveysRouter);
 
-// ── Health ────────────────────────────────────────────────────────────────────
+// #1064: Regulatory sandbox mode. The sandbox middleware tags every request
+// with its sandbox context so downstream compliance flows can isolate
+// sandbox traffic from production. Sandbox routes are only mounted when the
+// sandbox environment is explicitly enabled.
+app.use(sandboxMiddleware);
+if (isSandboxEnabled()) {
+  app.use("/api/sandbox", writeLimiter, sandboxRouter);
+  logger.info("Regulatory sandbox mode enabled");
+}
 
-app.get("/health", async (_req, res) => {
-  const checks: Record<string, string> = {};
+// #979: scheduled maintenance windows
+app.use("/api/maintenance", writeLimiter, maintenanceRouter);
+startMaintenanceScheduler();
 
-  let rpcOk = false;
+// #976: grid outage detection and notifications
+app.use("/api/outages", writeLimiter, outagesRouter);
+
+// #985: automatic meter firmware updates (OTA)
+app.use("/api/firmware", writeLimiter, firmwareRouter);
+
+// â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+const mqttUrl = process.env.MQTT_URL || 'mqtt://localhost:1883';
+const mqttClient = mqtt.connect(mqttUrl);
+
+mqttClient.on('connect', () => {
+  mqttClient.subscribe('meters/+/telemetry');
+});
+
+mqttClient.on('message', (topic: string, payload: Buffer) => {
   try {
-    await server.getLatestLedger();
-    checks.stellar = "ok";
+    const data = JSON.parse(payload.toString());
+    const parts = topic.split('/');
+    const meterId = data.meterId || parts[1];
+    if (!meterId) {
+      return;
+    }
+    if (typeof data.firmware_version === 'string' && data.firmware_version.length > 0) {
+      const record = recordFirmware(meterId, data.firmware_version);
+      if (isOutdated(record.firmwareVersion)) {
+        console.warn(
+          `Meter ${meterId} is running outdated firmware ${record.firmwareVersion} (latest ${LATEST_FIRMWARE_VERSION})`
+        );
+      }
+    }
   } catch (err) {
-    logger.error("Stellar health check failed", { err });
-    checks.stellar = "error";
+    console.error('Failed to parse MQTT payload', err);
   }
+});
 
-  const broker = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
-  try {
-    const client = mqtt.connect(broker, { reconnectPeriod: 0, connectTimeout: 3000 });
-    const ok = await new Promise<boolean>((resolve) => {
-      const timer = setTimeout(() => { client.end(true); resolve(false); }, 3000);
-      client.once("connect", () => { clearTimeout(timer); client.end(true); resolve(true); });
-      client.once("error", () => { clearTimeout(timer); client.end(true); resolve(false); });
-    });
-    checks.mqtt = ok ? "ok" : "error";
-  } catch (err) {
-    logger.error("MQTT health check failed", { err });
-    checks.mqtt = "error";
-  }
-
-  const healthy = Object.values(checks).every((v) => v === "ok");
-  res.status(healthy ? 200 : 503).json({
-    status: healthy ? "ok" : "degraded",
-    checks,
-    deadLetterEvents: countDeadLetterEvents(),
+app.get('/api/meters/firmware-report', (_req: Request, res: Response) => {
+  const report = Array.from(firmwareByMeter.values()).map((record) => ({
+    ...record,
+    outdated: isOutdated(record.firmwareVersion),
+  }));
+  res.json({
+    latestFirmwareVersion: LATEST_FIRMWARE_VERSION,
+    meters: report,
   });
 });
 
-// #418: 404 catch-all — must come after all routes.
-app.use((_req: Request, res: Response) => {
-  res.status(404).json({
-    error: "Route not found",
-    code: "NOT_FOUND",
-    hint: "Check /api/docs for available endpoints",
-    requestId: getReqId(),
+app.get('/api/meters/:meterId/firmware', (req: Request, res: Response) => {
+  const record = firmwareByMeter.get(req.params.meterId);
+  if (!record) {
+    return res.status(404).json({ error: 'No firmware version recorded for meter' });
+  }
+  res.json({
+    ...record,
+    outdated: isOutdated(record.firmwareVersion),
+    latestFirmwareVersion: LATEST_FIRMWARE_VERSION,
   });
 });
 
-// ── Error handlers ───────────────────────────────────────────────────────────
-
-// Timeout error handler.
-app.use((err: any, req: any, res: any, next: any) => {
-  if (req.timedout) {
-    logger.error("Request timed out", { method: req.method, path: req.path });
-    return res
-      .status(504)
-      .json({ error: "Request timed out", code: "TIMEOUT", requestId: getReqId() });
-  }
-  return next(err);
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({ status: 'ok' });
 });
 
-// #423: 413 payload too large handler + global error handler (#418).
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  const requestId = getReqId();
-  logger.error({ error: err.message, stack: err.stack }, "Unhandled error");
-
-  if (err.type === "entity.too.large") {
-    return res
-      .status(413)
-      .json({ error: "Request body too large", code: "PAYLOAD_TOO_LARGE", requestId });
-  }
-  if (
-    err.type === "entity.parse.failed" ||
-    (err instanceof SyntaxError && (err as any).body !== undefined)
-  ) {
-    return res
-      .status(400)
-      .json({ error: "Invalid JSON body", code: "INVALID_JSON", requestId });
-  }
-  if ((err as any).status === 404) {
-    return res
-      .status(404)
-      .json({ error: "Resource not found", code: "NOT_FOUND", requestId });
-  }
-  if ((err as any).code === "VALIDATION_ERROR" && (err as any).details) {
-    return res.status(400).json({
-      error: "Validation failed",
-      code: "VALIDATION_ERROR",
-      details: (err as any).details,
-      requestId,
-    });
-  }
-  res
-    .status(500)
-    .json({ error: err.message || "Internal server error", code: "INTERNAL_ERROR", requestId });
-});
-
-// ── Server startup ───────────────────────────────────────────────────────────
 app.listen(PORT, () => {
+  startDataLakeWorker(initUsageEventStore());
+const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
-  initMeterNotesStore();
   startUsageEventRetryWorker();
+  logger.info("SolarGrid backend listening", { port: PORT });
   startLimitWatcher(stellarService);
+  startScheduleExecutor(stellarService);
   try {
     startIoTBridge();
   } catch (err) {
     logger.error("Failed to start IoT bridge", { err });
   }
+  // #993: listen for diagnostic results reported by meters over MQTT
+  try {
+    startDiagnosticResultListener();
+  } catch (err) {
+    logger.error("Failed to start diagnostic result listener", { err });
+  }
 });
+attachTradingWebSocket(httpServer);
+attachOrderBookWebSocket(httpServer);
+attachWidgetLiveUpdates(httpServer);
+
+httpServer.listen(PORT, () => {
+  console.log(`Backend listening on port ${PORT}`);
+  startTheftMonitor();
+  startEventIndexer();
+  startRecommendationWorker();
+});
+
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator };
+
+// #923: Arbitrage Trading Bot
+app.use("/api/arbitrage", arbitrageBotRouter);
+
+// #928: AI energy consumption pattern analysis
+app.use("/api/analytics/patterns", consumptionAnalyticsRouter);
+
+// #927: Renewable Energy Credit marketplace
+app.use("/api/recs", recsRouter);
+app.use("/api/leases", leasesRouter);
+app.use("/api/chatbot", chatbotRouter);
+app.use("/api/reports", complianceReportsRouter);
+
+// #926: Energy portfolio management
+app.use("/api/portfolio", portfolioRouter);
+
+// #925: Virtual power plant aggregation
+app.use("/api/vpp", vppRouter);
+
+// #1006: Meter Network Topology Visualization
+import { networkTopologyRouter } from "./routes/networkTopology.js";
+app.use("/api/network", networkTopologyRouter);
+
+// #1005: White-Label Provider Customization
+import { providersBrandingRouter } from "./routes/providersBranding.js";
+app.use("/api/providers", providersBrandingRouter);
+
+// #1004: Blockchain Transaction History Explorer
+import { transactionsRouter } from "./routes/transactions.js";
+app.use("/api/transactions", transactionsRouter);
+
+// #1065: Energy Certificate Authority
+import { energyCertificatesRouter } from "./routes/energyCertificates.js";
+app.use("/api/energy-certificates", writeLimiter, energyCertificatesRouter);
+
+// #1066: Meter Behavioral Economics Nudges
+import { nudgesRouter } from "./routes/nudges.js";
+app.use("/api/nudges", nudgesRouter);
+
+// #1068: Energy Commons Management
+import { commonsRouter } from "./routes/commons.js";
+app.use("/api/commons", writeLimiter, commonsRouter);
+

@@ -72,12 +72,19 @@ describe("OfflinePaymentModal", () => {
   });
 
   it("copies the SMS example to the clipboard and shows confirmation", async () => {
-    const user = userEvent.setup();
+    const writeTextSpy = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: writeTextSpy },
+      configurable: true,
+      writable: true,
+    });
+
     render(<OfflinePaymentModal meterId="M42" onClose={onClose} />);
 
-    await user.click(screen.getByRole("button", { name: "Copy SMS example" }));
+    const copyBtn = screen.getByRole("button", { name: "Copy SMS example" });
+    fireEvent.click(copyBtn);
 
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("PAY M42 5 D");
+    expect(writeTextSpy).toHaveBeenCalledWith("PAY M42 5 D");
     expect(await screen.findByText("✓ Copied")).toBeInTheDocument();
   });
 

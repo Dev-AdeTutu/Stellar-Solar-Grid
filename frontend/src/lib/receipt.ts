@@ -5,6 +5,11 @@ import type { PaymentRecord } from "@/services/paymentService";
 const BRAND_NAME = "SolarGrid Energy Network";
 const BRAND_YELLOW = "#FACC15";
 
+/** Filename stem shared by every receipt export format (PDF, image, ...). */
+export function receiptFilenameStem(record: PaymentRecord): string {
+  return `solargrid-receipt-${(record.txHash || "receipt").slice(0, 12)}`;
+}
+
 /** Best-effort XLM→USD rate lookup. Returns null if unavailable (offline, rate-limited, etc.). */
 async function fetchXlmUsdRate(): Promise<number | null> {
   try {
@@ -23,14 +28,8 @@ async function fetchXlmUsdRate(): Promise<number | null> {
   }
 }
 
-/**
- * Generates a downloadable PDF receipt for a completed payment and triggers
- * the browser download. Includes a QR code linking to the blockchain explorer.
- */
-export async function downloadPaymentReceipt(
-  record: PaymentRecord,
-  explorerUrl: string
-): Promise<void> {
+/** Builds the receipt PDF document (shared by download, blob-export and share). */
+async function buildReceiptDoc(record: PaymentRecord, explorerUrl: string): Promise<jsPDF> {
   const [usdRate, qrDataUrl] = await Promise.all([
     fetchXlmUsdRate(),
     QRCode.toDataURL(explorerUrl, { margin: 1, width: 160 }),
@@ -94,6 +93,109 @@ export async function downloadPaymentReceipt(
     y + 20
   );
 
-  const safeHash = (record.txHash || "receipt").slice(0, 12);
-  doc.save(`solargrid-receipt-${safeHash}.pdf`);
+  return doc;
+}
+
+/**
+ * Generates a downloadable PDF receipt for a completed payment and triggers
+ * the browser download. Includes a QR code linking to the blockchain explorer.
+ */
+export async function downloadPaymentReceipt(
+  record: PaymentRecord,
+  explorerUrl: string
+): Promise<void> {
+  const doc = await buildReceiptDoc(record, explorerUrl);
+  doc.save(`${receiptFilenameStem(record)}.pdf`);
+}
+
+/** Same PDF as {@link downloadPaymentReceipt}, returned as a Blob for sharing instead of saving. */
+export async function getReceiptPdfBlob(record: PaymentRecord, explorerUrl: string): Promise<Blob> {
+  const doc = await buildReceiptDoc(record, explorerUrl);
+  return doc.output("blob");
+}
+
+/**
+ * Renders a shareable PNG "receipt card" — the same fields as the PDF, laid
+ * out on a canvas so it can go through the native share sheet or messaging
+ * apps as an image attachment (WhatsApp/SMS preview images, for example,
+ * render inline where a PDF attachment often doesn't).
+ */
+export async function getReceiptImageBlob(record: PaymentRecord, explorerUrl: string): Promise<Blob> {
+  const [usdRate, qrDataUrl] = await Promise.all([
+    fetchXlmUsdRate(),
+    QRCode.toDataURL(explorerUrl, { margin: 1, width: 320 }),
+  ]);
+
+  const width = 640;
+  const height = 480;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+  ctx.fillStyle = "#111827";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 24px sans-serif";
+  ctx.fillText(BRAND_NAME, 32, 48);
+  ctx.fillStyle = "#9ca3af";
+  ctx.font = "14px sans-serif";
+  ctx.fillText("Payment Receipt", 32, 70);
+
+  ctx.strokeStyle = BRAND_YELLOW;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(32, 86);
+  ctx.lineTo(width - 32, 86);
+  ctx.stroke();
+
+  const date = new Date(record.date);
+  const usdValue = usdRate != null ? `$${(record.amountXlm * usdRate).toFixed(2)} USD` : "N/A";
+  const rows: [string, string][] = [
+    ["Receipt Number", record.txHash ? `${record.txHash.slice(0, 16)}…` : "N/A"],
+    ["Date", date.toLocaleString()],
+    ["Meter ID", record.meterId],
+    ["Amount Paid", `${record.amountXlm.toFixed(4)} XLM (${usdValue})`],
+    ["Payment Plan", record.plan],
+  ];
+
+  let y = 130;
+  for (const [label, value] of rows) {
+    ctx.fillStyle = "#9ca3af";
+    ctx.font = "13px sans-serif";
+    ctx.fillText(label, 32, y);
+    ctx.fillStyle = "#f3f4f6";
+    ctx.font = "15px sans-serif";
+    ctx.fillText(value, 220, y);
+    y += 34;
+  }
+
+  if (record.txHash) {
+    const qrImg = await loadImage(qrDataUrl);
+    const qrSize = 120;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(width - qrSize - 40, height - qrSize - 40, qrSize, qrSize);
+    ctx.drawImage(qrImg, width - qrSize - 40, height - qrSize - 40, qrSize, qrSize);
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "11px sans-serif";
+    ctx.fillText("Scan to view on-chain", width - qrSize - 40, height - 24);
+  }
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Failed to render receipt image"));
+    }, "image/png");
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load QR image"));
+    img.src = src;
+  });
 }

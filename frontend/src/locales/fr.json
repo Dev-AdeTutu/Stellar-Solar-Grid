@@ -2,14 +2,23 @@
   "nav": {
     "brand": "SolarGrid",
     "myMeter": "Mon Compteur",
+    "multisig": "Portefeuilles org.",
     "pay": "Payer",
+    "analytics": "Analyses",
+    "resilience": "Résilience",
+    "privacy": "Confidentialité",
     "provider": "Fournisseur",
     "history": "Historique",
+    "bills": "Factures",
+    "communities": "Communautés énergétiques",
+    "competitions": "Compétitions",
+    "smartHome": "Maison connectée",
     "toggleTheme": "Changer de thème",
     "openMenu": "Ouvrir le menu",
     "closeMenu": "Fermer le menu",
     "languageToggle": "English",
-    "languageLabel": "Changer de langue"
+    "languageLabel": "Changer de langue",
+    "emergency": "Urgence"
   },
   "home": {
     "tagline": "Énergie solaire abordable et prépayée, propulsée par la blockchain Stellar. Sans frais initiaux élevés — juste de l'énergie propre selon vos conditions.",
@@ -143,5 +152,124 @@
     "save": "Enregistrer",
     "back": "Retour",
     "xlm": "XLM"
+  },
+  "insights": {
+    "title": "Analyses Énergétiques",
+    "refresh": "Actualiser",
+    "expand": "Développer",
+    "collapse": "Réduire",
+    "thisWeek": "Cette Semaine",
+    "vsLastWeek": "vs Semaine Dernière",
+    "peersAvg": "Moyenne des Pairs",
+    "weeklyAvg": "moy. hebdomadaire",
+    "hourlyProfile": "Profil d'utilisation sur 24h (30 derniers jours, UTC)",
+    "peak": "Pic",
+    "achievements": "Accomplissements",
+    "lastComputed": "Dernière mise à jour",
+    "noData": "Pas encore de données. Les analyses apparaîtront dès que votre compteur commence à enregistrer.",
+    "earned": "obtenu",
+    "notEarned": "pas encore obtenu",
+    "increase": "augmentation",
+    "decrease": "diminution",
+    "noPriorData": "Aucune donnée antérieure",
+    "badges": {
+      "low_consumer": "🌱 Faible Consommateur",
+      "off_peak_hero": "🌙 Héros Hors-Pic",
+      "improver": "📉 En Progrès",
+      "below_average": "⚡ Sous la Moyenne",
+      "consistent": "📊 Régulier"
+    }
+  },
+  "emergency": {
+    "title": "Partage d'énergie d'urgence",
+    "loading": "Chargement…",
+    "active": "Mode urgence actif",
+    "inactive": "Fonctionnement normal",
+    "since": "depuis",
+    "pool": "Réserve partagée",
+    "donated": "Total donné",
+    "donors": "Donateurs",
+    "facilities": "Établissements prioritaires",
+    "noFacilities": "Aucun établissement enregistré.",
+    "facility": "Établissement",
+    "type": "Type",
+    "coverage": "Alloué / demande",
+    "donateTitle": "Donner de l'énergie",
+    "meterId": "ID de votre compteur",
+    "donate": "Donner",
+    "donateSuccess": "Merci ! Votre énergie a été ajoutée à la réserve partagée.",
+    "donateFailed": "Le don a échoué. Veuillez réessayer.",
+    "recentDonations": "Dons récents",
+    "types": {
+      "hospital": "Hôpital",
+      "clinic": "Clinique",
+      "water": "Approvisionnement en eau",
+      "shelter": "Abri",
+      "school": "École",
+      "household": "Foyer"
+    }
+  },
+  "recommendations": {
+    "title": "Recommandations pour vous",
+    "none": "Aucune nouvelle recommandation cette semaine.",
+    "estimated": "Économie estimée : {kwh} kWh/semaine",
+    "accept": "Accepter",
+    "dismiss": "Ignorer",
+    "estimatedSavings": "Économies hebdomadaires estimées",
+    "actualSavings": "Économies hebdomadaires réelles"
+  },
+  "voiceAssistant": {
+    "title": "Assistant vocal",
+    "description": "Gérez votre compteur avec Alexa ou l'Assistant Google.",
+    "linkAccount": "Lier le compte",
+    "linked": "Compte lié",
+    "unlink": "Dissocier",
+    "linking": "Liaison…",
+    "linkSuccess": "Votre compte a été lié avec succès à l'assistant vocal.",
+    "linkFailed": "Échec de la liaison du compte. Veuillez réessayer.",
+    "unlinkSuccess": "Votre compte a été dissocié de l'assistant vocal.",
+    "unlinkFailed": "Échec de la dissociation du compte. Veuillez réessayer.",
+    "deviceName": "Nom de l'appareil",
+    "deviceNamePlaceholder": "ex. Cuisine",
+    "defaultMeter": "Compteur par défaut",
+    "language": "Langue de l'assistant vocal",
+    "commands": {
+      "title": "Commandes vocales",
+      "checkBalance": "« Alexa, demande à SolarGrid quel est mon solde »",
+      "checkUsage": "« Alexa, demande à SolarGrid ma consommation d'énergie »",
+      "makePayment": "« Alexa, demande à SolarGrid de payer 10 XLM »",
+      "checkStatus": "« Alexa, demande à SolarGrid le statut de mon compteur »"
+    },
+    "payment": {
+      "title": "Confirmation de paiement",
+      "prompt": "Confirmez-vous un paiement de {amount} XLM pour le compteur {meterId} ?",
+      "confirm": "Confirmer le paiement",
+      "cancel": "Annuler le paiement",
+      "confirming": "Confirmation…",
+      "success": "Paiement confirmé. Votre solde a été mis à jour.",
+      "failed": "Le paiement a échoué. Veuillez réessayer.",
+      "cancelled": "Paiement annulé.",
+      "requiresPin": "Saisissez votre code PIN pour confirmer le paiement.",
+      "pinPlaceholder": "Code PIN",
+      "invalidPin": "Code PIN invalide. Veuillez réessayer."
+    },
+    "responses": {
+      "balance": "Votre solde actuel est de {balance} XLM.",
+      "usage": "Vous avez utilisé {units} unités cette semaine.",
+      "status": "Votre compteur est {status}.",
+      "paymentSuccess": "Paiement de {amount} XLM effectué avec succès.",
+      "notUnderstood": "Désolé, je n'ai pas compris. Veuillez réessayer.",
+      "error": "Une erreur s'est produite. Veuillez réessayer plus tard."
+    },
+    "status": {
+      "active": "actif",
+      "inactive": "inactif",
+      "expired": "expiré"
+    },
+    "languages": {
+      "en": "Anglais",
+      "fr": "Français",
+      "es": "Espagnol"
+    }
   }
 }

@@ -60,7 +60,7 @@ Stellar-Solar-Grid/
 Make sure you have the following installed on your local machine:
 - **Node.js**: version 20
 - **Rust**: stable version (via [rustup](https://rustup.rs/))
-- **wasm32-unknown-unknown target**: installed via `rustup target add wasm32-unknown-unknown`
+- **wasm32v1-none target**: installed via `rustup target add wasm32v1-none`
 - **Stellar CLI**: latest version (for deploying and invoking contracts)
 - **Docker & Docker Compose**: for running containerized infrastructure (MQTT, checks, etc.)
 
@@ -237,7 +237,7 @@ npm run test:watch    # Run tests in watch mode
    ```bash
    cd contracts
    stellar contract deploy \
-     --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm \
+     --wasm target/wasm32v1-none/release/solar_grid.wasm \
      --network testnet
    ```
 
@@ -331,7 +331,7 @@ For a full list of common issues with symptoms, root causes, and step-by-step fi
 - Ensure Freighter wallet is installed and set to Testnet
 
 **Tests failing:**
-- For contract tests: ensure `wasm32-unknown-unknown` target is installed (`rustup target add wasm32-unknown-unknown`)
+- For contract tests: ensure `wasm32v1-none` target is installed (`rustup target add wasm32v1-none`)
 - For frontend tests: check that test environment variables are set
 - For integration tests: ensure all services are running
 
@@ -354,7 +354,7 @@ For a full list of common issues with symptoms, root causes, and step-by-step fi
 2. Make sure the project builds cleanly:
    ```bash
    # Contracts
-   cargo build --target wasm32-unknown-unknown --release
+   cargo build --target wasm32v1-none --release
 
    # Frontend
    cd frontend && npm run build

@@ -2,6 +2,7 @@
 
 import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { MeterStatusBadge } from "@/components/MeterStatusBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
@@ -10,6 +11,7 @@ import { useToast } from "@/components/ToastProvider";
 import { getAllMeters, type MeterData } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { MeterComparison } from "@/components/MeterComparison";
 import { env } from "@/lib/env";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
@@ -46,6 +48,7 @@ function ProviderDashboardPageContent() {
   const [meters, setMeters] = useState<MeterData[]>([]);
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [showComparison, setShowComparison] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -180,9 +183,17 @@ function ProviderDashboardPageContent() {
       <Navbar />
       <main id="main-content" tabIndex={-1} className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
         <div className="w-full max-w-md">
-          <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">
-            Provider Dashboard
-          </h1>
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow">
+              Provider Dashboard
+            </h1>
+            <Link
+              href="/dashboard/provider/analytics"
+              className="shrink-0 text-xs font-medium rounded-lg border border-white/10 bg-solar-accent px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+            >
+              Revenue Analytics →
+            </Link>
+          </div>
           <p className="text-gray-400 text-sm mb-6">
             Register new smart meters on the Stellar blockchain.
           </p>
@@ -286,40 +297,64 @@ function ProviderDashboardPageContent() {
         <div className="w-full max-w-5xl">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-bold text-white">Registered Meters</h2>
-            <button
-              onClick={fetchMeters}
-              disabled={fetching}
-              className="text-xs text-gray-400 hover:text-solar-yellow transition flex items-center gap-1"
-            >
-              {fetching ? "Refreshing..." : "↻ Refresh List"}
-            </button>
+            <div className="flex items-center gap-2">
+              {meters.length >= 2 && (
+                <button
+                  onClick={() => setShowComparison(!showComparison)}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition ${
+                    showComparison
+                      ? "bg-solar-yellow text-solar-dark"
+                      : "bg-solar-accent text-gray-300 hover:bg-solar-accent/80"
+                  }`}
+                >
+                  {showComparison ? "Hide" : "Compare"}
+                </button>
+              )}
+              <button
+                onClick={fetchMeters}
+                disabled={fetching}
+                className="text-xs text-gray-400 hover:text-solar-yellow transition flex items-center gap-1"
+              >
+                {fetching ? "Refreshing..." : "↻ Refresh List"}
+              </button>
+            </div>
           </div>
+
+          {/* Comparison View */}
+          {showComparison && (
+            <div className="mb-6">
+              <MeterComparison meters={filteredMeters} isLoading={fetching} />
+            </div>
+          )}
 
           {/* Search Input — focus with "/" shortcut */}
-          <div className="relative mb-4">
-            <input
-              ref={searchInputRef}
-              type="search"
-              placeholder="Search by owner address… (press / to focus)"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setSearch("");
-              }}
-              className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
-            />
-            {search && (
-              <button
-                onClick={() => setSearch("")}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition"
-                aria-label="Clear search"
-              >
-                ✕
-              </button>
-            )}
-          </div>
+          {!showComparison && (
+            <div className="relative mb-4">
+              <input
+                ref={searchInputRef}
+                type="search"
+                placeholder="Search by owner address… (press / to focus)"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") setSearch("");
+                }}
+                className="w-full rounded-lg border border-white/10 bg-solar-dark px-4 py-2.5 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          )}
 
-          <div className="rounded-xl border border-white/10 bg-solar-accent overflow-hidden">
+          {!showComparison && (
+            <div className="rounded-xl border border-white/10 bg-solar-accent overflow-hidden">
             <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
               <table className="w-full text-left text-sm text-gray-300">
                 <thead className="border-b border-white/10 bg-white/5 text-xs uppercase tracking-wider text-gray-400">
@@ -436,6 +471,7 @@ function ProviderDashboardPageContent() {
               </table>
             </div>
           </div>
+          )}
         </div>
       </main>
     </ErrorBoundary>

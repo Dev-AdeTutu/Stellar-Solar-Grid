@@ -1,0 +1,50 @@
+# Capacitor / Mobile specific ignores
+# Add these to your existing .gitignore
+
+# Capacitor
+/ios
+/android
+*.keystore
+*.jks
+/out
+
+# iOS
+*.ipa
+*.dSYM.zip
+*.dSYM
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+Pods/
+ios/App/App/GoogleService-Info.plist
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+.gradle
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+android/app/google-services.json
+android/app/release/
+android/app/debug/
+
+# Firebase
+.firebase/
+
+# macOS
+.DS_Store

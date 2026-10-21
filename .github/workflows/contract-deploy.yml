@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32v1-none
       - uses: actions/cache@v4
         with:
           path: |
@@ -18,12 +18,12 @@ jobs:
             contracts/target
           key: ${{ runner.os }}-cargo-${{ hashFiles('contracts/Cargo.lock') }}
       - name: Build WASM
-        run: cargo build --target wasm32-unknown-unknown --release
+        run: cargo build --target wasm32v1-none --release
         working-directory: contracts
       - name: Hash WASM artifact
         id: wasm_hash
         run: |
-          WASM=contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm
+          WASM=contracts/target/wasm32v1-none/release/solar_grid.wasm
           HASH=$(sha256sum "$WASM" | awk '{print $1}')
           echo "sha256=${HASH}" >> $GITHUB_OUTPUT
           echo "${HASH}" > wasm-hash.txt
@@ -40,14 +40,14 @@ jobs:
         env:
           ADMIN_SECRET_KEY: ${{ secrets.ADMIN_SECRET_KEY }}
         run: |
-          ID=$(stellar contract deploy --wasm target/wasm32-unknown-unknown/release/solar_grid.wasm --source "$ADMIN_SECRET_KEY" --network testnet)
+          ID=$(stellar contract deploy --wasm target/wasm32v1-none/release/solar_grid.wasm --source "$ADMIN_SECRET_KEY" --network testnet)
           echo "contract_id=$ID" >> $GITHUB_OUTPUT
           echo "Deployed: $ID"
         working-directory: contracts
       - name: Verify on-chain WASM hash
         env:
           CONTRACT_ID: ${{ steps.deploy.outputs.contract_id }}
-          WASM_FILE: contracts/target/wasm32-unknown-unknown/release/solar_grid.wasm
+          WASM_FILE: contracts/target/wasm32v1-none/release/solar_grid.wasm
         run: |
           LOCAL_HASH=$(cat wasm-hash.txt)
           echo "Fetching on-chain contract info for ${CONTRACT_ID}…"

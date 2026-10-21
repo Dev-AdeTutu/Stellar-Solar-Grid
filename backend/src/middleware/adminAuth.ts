@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import { logger } from '../lib/logger.js';
 import { auditLog, buildAuditEntry } from '../lib/audit.js';
+import { hasTwoFactor } from '../lib/twoFactor.js';
 
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 
@@ -23,11 +24,13 @@ export const adminFailureLimiter = rateLimit({
   max: ADMIN_FAIL_MAX,
   skipSuccessfulRequests: false, // we gate it manually below — see requireAdminKey
   standardHeaders: true,
-  legacyHeaders: false,
+  legacyHeaders: true,
   // Key by IP so each client gets its own bucket
   keyGenerator: (req) => req.ip ?? 'unknown',
   handler: (_req, res) => {
     res.setHeader('Retry-After', String(Math.ceil(ADMIN_FAIL_WINDOW_MS / 1000)));
+    // Issue #734: standard policy descriptor header.
+    res.setHeader('X-RateLimit-Policy', `${ADMIN_FAIL_MAX};w=${Math.ceil(ADMIN_FAIL_WINDOW_MS / 1000)}`);
     logger.warn('Admin auth failure rate limit exceeded — possible brute-force attempt');
     res.status(429).json({
       error: 'Too many failed admin auth attempts. Try again later.',
@@ -54,7 +57,8 @@ function hasValidSessionToken(req: Request): boolean {
       algorithms: ['HS256'],
       ignoreExpiration: false,
     });
-    return typeof payload === 'object' && payload.role === 'admin';
+    return typeof payload === 'object' && payload.role === 'admin' &&
+      (!hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin') || payload.mfa === true);
   } catch {
     return false;
   }
@@ -77,15 +81,12 @@ export function requireAdminKey(req: Request, res: Response, next: NextFunction)
   }
 
   const provided = req.headers['x-admin-key'];
-  if (provided === ADMIN_API_KEY || hasValidSessionToken(req)) {
+  if (hasValidSessionToken(req) || (provided === ADMIN_API_KEY && !hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin'))) {
     // Successful auth — skip the failure limiter entirely
     auditLog(buildAuditEntry(req));
     return next();
   }
 
-  // Only failed attempts consume the dedicated authentication failure budget.
-  return adminFailureLimiter(req, res, () => {
-    logger.warn({ ip: req.ip, path: req.path }, 'Unauthorized admin request');
-    res.status(401).json({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
-  });
+  auditLog(buildAuditEntry(req));
+  return res.status(401).json({ error: 'Unauthorized', code: hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin') ? 'MFA_REQUIRED' : 'UNAUTHORIZED' });
 }

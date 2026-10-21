@@ -1,0 +1,20 @@
+{
+  "accountLinkingRequest": {
+    "type": "AUTH_CODE",
+    "authorizationUrl": "https://api.REPLACE_ME/api/smart-home/oauth/authorize",
+    "accessTokenUrl": "https://api.REPLACE_ME/api/smart-home/oauth/token",
+    "clientId": "REPLACE_WITH_SMART_HOME_ALEXA_CLIENT_ID",
+    "accessTokenScheme": "HTTP_BASIC",
+    "scopes": ["read", "control"],
+    "defaultTokenExpirationInSeconds": 3600,
+    "skipOnEnablement": false
+  },
+  "scopeNotes": {
+    "read": "Required for meter queries such as checking balance and usage.",
+    "control": "Required for meter switching and for voice payments. Voice payments additionally require 2FA (two-factor authentication) confirmation before any payment is executed."
+  },
+  "notes": [
+    "The 'control' scope is required for voice payments in addition to meter switching.",
+    "Voice payments additionally require 2FA (two-factor authentication) confirmation as part of the secure payment confirmation flow."
+  ]
+}

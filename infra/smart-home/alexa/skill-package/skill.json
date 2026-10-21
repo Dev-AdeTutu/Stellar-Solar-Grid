@@ -1,0 +1,57 @@
+{
+  "manifest": {
+    "publishingInformation": {
+      "locales": {
+        "en-US": {
+          "name": "SolarGrid",
+          "summary": "Control your SolarGrid solar meters and check your energy balance by voice.",
+          "description": "Link your SolarGrid account to switch your solar meters on and off, run your energy routines, and manage your prepaid energy by voice. Check your balance, review today's usage, get meter status, and make secure payments.\n\nTry: \"Alexa, turn off the shop meter\", \"Alexa, ask Solar Grid what's my balance\", \"Alexa, ask Solar Grid how much energy I used today\", \"Alexa, ask Solar Grid what's the status of the shop meter\", or \"Alexa, ask Solar Grid to pay 5 XLM for the shop meter\".",
+          "examplePhrases": [
+            "Alexa, ask Solar Grid what's my balance",
+            "Alexa, ask Solar Grid how much energy I used today",
+            "Alexa, ask Solar Grid what's the status of the shop meter",
+            "Alexa, ask Solar Grid to pay 5 XLM for the shop meter",
+            "Alexa, ask Solar Grid to run Night Saver"
+          ],
+          "keywords": ["solar", "energy", "meter", "stellar", "prepaid"],
+          "smallIconUri": "https://REPLACE_ME/solargrid-108.png",
+          "largeIconUri": "https://REPLACE_ME/solargrid-512.png"
+        }
+      },
+      "isAvailableWorldwide": true,
+      "testingInstructions": "Link with a testnet wallet that owns at least one meter. Use the consent page to share the meter with control permission. Voice payments require a 2FA/PIN configured on the account before any payment can be confirmed.",
+      "category": "SMART_HOME",
+      "distributionCountries": []
+    },
+    "apis": {
+      "smartHome": {
+        "endpoint": { "uri": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:solargrid-alexa-proxy" },
+        "protocolVersion": "3"
+      },
+      "custom": {
+        "endpoint": { "uri": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:solargrid-alexa-proxy" }
+      }
+    },
+    "permissions": [],
+    "privacyAndCompliance": {
+      "allowsPurchases": false,
+      "usesPersonalInfo": false,
+      "isChildDirected": false,
+      "isExportCompliant": true,
+      "containsAds": false,
+      "locales": {
+        "en-US": {
+          "privacyPolicyUrl": "https://REPLACE_ME/privacy#smart-home",
+          "termsOfUseUrl": "https://REPLACE_ME/terms"
+        }
+      }
+    },
+    "events": {
+      "endpoint": { "uri": "arn:aws:lambda:us-east-1:ACCOUNT_ID:function:solargrid-alexa-proxy" },
+      "subscriptions": [
+        { "eventName": "SKILL_DISABLED" },
+        { "eventName": "SKILL_ACCOUNT_LINKED" }
+      ]
+    }
+  }
+}

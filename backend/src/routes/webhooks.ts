@@ -92,13 +92,15 @@ webhookRouter.post(
  * Payload:
  *   { "webhook_url": "https://example.com/webhook", "secret": "optional-signing-secret" }
  *
- * When a secret is provided, outbound low-balance webhook calls are signed
- * with X-SolarGrid-Signature: sha256=HMAC-SHA256(secret, body). Only a hash
- * of the secret is kept in the registry response/logs; the raw secret is
- * held only in-process to sign outbound requests.
- *   { "webhook_url": "https://example.com/webhook" }
+ * Every registered webhook is signed. Outbound low-balance webhook calls
+ * carry an `X-Signature-256: sha256=<hex>` header computed as
+ * HMAC-SHA256(secret, raw body). If `secret` is omitted, one is generated
+ * server-side. Either way the secret is returned exactly once, in this
+ * endpoint's response — it is never exposed by GET /api/webhooks or any
+ * other endpoint, so store it securely to verify inbound deliveries.
+ *   { "webhook_url": "https://example.com/webhook", "secret": "optional-signing-secret" }
  *
- * Closes #516.
+ * Closes #516. Closes #688.
  */
 webhookRouter.post(
   "/low-balance",
@@ -106,6 +108,7 @@ webhookRouter.post(
   validateRequest({
     body: z.object({
       webhook_url: z.string().url("Invalid webhook URL format"),
+      secret: z.string().min(16, "Secret must be at least 16 characters").optional(),
     }),
   }),
   asyncHandler(async (req, res) => {
@@ -122,13 +125,8 @@ webhookRouter.post(
       secret?: string;
     };
 
-    let secretHash: string | undefined;
-    if (secret) {
-      process.env.PROVIDER_WEBHOOK_SECRET = secret;
-      secretHash = crypto.createHash("sha256").update(secret).digest("hex");
-    }
-
-    const record = registerWebhook(providerId, webhook_url);
+    const record = registerWebhook(providerId, webhook_url, secret);
+    const secretHash = crypto.createHash("sha256").update(record.secret).digest("hex");
 
     logger.info("Low-balance webhook registered", {
       provider_id: providerId,
@@ -142,6 +140,9 @@ webhookRouter.post(
       provider_id: providerId,
       id: record.id,
       created_at: record.created_at,
+      secret: record.secret,
+      secret_notice:
+        "Store this secret now — it will not be shown again. Use it to verify the X-Signature-256 header on inbound deliveries.",
     });
   }),
 );

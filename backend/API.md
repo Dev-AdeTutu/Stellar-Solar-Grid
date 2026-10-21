@@ -1,589 +1,540 @@
-# Docker Setup
+# Issue #886: Global Rate Limiting
 
-Run the entire platform locally with Docker Compose:
-# SolarGrid Backend API
+Every request is charged to an IP-based fixed-window quota before JSON parsing. If a valid `X-API-Key` is present, the owning provider is also charged to a tier quota based on the key's `read`, `write`, or `admin` permission. The tighter payment and write limiters remain in force for their routes.
 
-## Development with Docker Compose
+Configure `RATE_LIMIT_WINDOW_MS` and `RATE_LIMIT_MAX` for the shared IP quota, and `RATE_LIMIT_USER_READ_MAX`, `RATE_LIMIT_USER_WRITE_MAX`, and `RATE_LIMIT_USER_ADMIN_MAX` for provider quotas. Configure `REDIS_URL` to share atomic counters across replicas; without Redis the backend falls back to a bounded process-local store. `TRUST_PROXY_HOPS` must match the trusted proxy chain or clients may be misidentified. Responses include `X-RateLimit-*`, `RateLimit-*`, and `Retry-After` headers; CORS exposes those headers to browser clients.
 
-### Quick Start
+# Issue #882: Email Notifications
 
-Spin up the full development stack (backend + MQTT broker) with:
+`POST /api/email-notifications/price-alert` sends an admin-triggered price alert. Billing notifications are emitted for successful meter payments and generated bills, and low-balance email notifications use the meter's billing account address. `GET /api/email-notifications/manage?token=...` offers per-event controls; signed tokens are linked in delivered messages. `GET /api/email-notifications/unsubscribe?token=...` displays a confirmation page and the subsequent form POST unsubscribes from all email categories.
 
-```bash
-docker-compose up --build
+Set `EMAIL_PROVIDER` to `resend`, `sendgrid`, or `log`, and configure the corresponding provider API key, `EMAIL_FROM`, `EMAIL_PREFERENCES_SECRET`, and `EMAIL_PREFERENCES_BASE_URL`. The log provider does not deliver mail. Delivery rates are provider/deployment dependent and must be measured from provider events; the application cannot guarantee a 95% deliverability rate by itself.
+
+# Issue #885: Grid Stability
+
+Device voltage and frequency readings are accepted over `solargrid/devices/{deviceId}/telemetry`, HTTP `POST /api/devices/:id/performance`, and GraphQL `recordDevicePerformance`. `GET /api/devices/:id/stability?days=7` returns the measured-readings stability score and historical anomalies. Anomalies are persisted and sent to device-owner webhooks with a per-device/metric 15-minute alert cooldown. Set `GRID_VOLTAGE_MIN_V`, `GRID_VOLTAGE_MAX_V`, `GRID_FREQUENCY_MIN_HZ`, and `GRID_FREQUENCY_MAX_HZ` to match the local grid standard.
+# Backend API
+
+This document describes the backend HTTP API surface.
+
+## Energy Forecasting Service (#881)
+
+`GET /api/weather/energy-forecast`
+
+Returns hourly production and/or consumption estimates for up to 48 hours. At
+least one of `meterId` or `deviceId` is required. A `deviceId` must identify a
+registered `solar_panel`; its `ratedPowerW`, `latitude`, and `longitude` specs
+are used when available. `lat` and `lon` may be supplied explicitly and are
+required for meter-only requests. `hours` defaults to 48 and may be an integer
+from 1 through 48.
+
+Example:
+
+```text
+GET /api/weather/energy-forecast?meterId=METER_01&deviceId=PANEL_01&hours=48
 ```
 
-Services:
+Consumption training reads the previous 90 days of meter usage and converts
+the platform's milli-kWh event units to kWh. Production training uses the
+previous 90 days of registered solar-panel performance telemetry. Both models
+use a regularized seasonal regression over hour-of-day and weekday features;
+missing hours are treated as zero. OpenWeather hourly cloud cover and
+temperature adjust production estimates; temperature adjusts consumption
+estimates. Precipitation probability is included as forecast context. Models retrain at
+startup and every six hours by default; configure the interval with
+`ENERGY_FORECAST_RETRAIN_INTERVAL_MS`.
 
-- **Backend**: Express API server + IoT Bridge (`http://localhost:3001`)
-- **Frontend**: Next.js dashboard (`http://localhost:3000`)
-- **MQTT**: Eclipse Mosquitto MQTT broker (`mqtt://localhost:1883`)
-
-To stop:
-This will:
-
-- Build and start the Node.js backend on port 3001
-- Start an MQTT broker (Eclipse Mosquitto) on ports 1883 (MQTT) and 9001 (WebSocket)
-- Configure the backend to connect to the MQTT broker automatically
-
-### Environment Configuration
-
-Copy `.env.example` to `.env` and update the values:
-
-```bash
-cp backend/.env.example backend/.env
-# Edit backend/.env with your configuration
-```
-
-The `MQTT_BROKER` is pre-configured to `mqtt://mqtt:1883` for Docker Compose networking.
-
-### Stopping the Stack
-
-```bash
-docker-compose down
-```
-
-To also remove volumes (e.g., for a clean restart):
-
-```bash
-docker-compose down -v
-```
-
-## Request/Response Logging
-
-All requests are logged by `requestLogger` middleware (`backend/src/lib/requestLogger.ts`):
-
-- Every request gets a unique `request_id` (also returned as the `X-Request-Id`
-  response header) linking its request and response log lines.
-- Sensitive fields (secrets, tokens, passwords, API keys) are redacted from
-  logged request bodies.
-- Errors (status >= 400) are always logged; successful requests are sampled
-  at 10% by default to limit log volume.
-- Disable entirely by setting `LOG_REQUESTS=false`.
-
-## Idempotency
-
-Payment endpoints support the `Idempotency-Key` header to prevent duplicate submissions on network retries.
-## Payments
-
-### `POST /api/payments`
-
-Submit a payment for a meter.
-
-**Headers**
-
-| Header            | Required | Description                                |
-| ----------------- | -------- | ------------------------------------------ |
-| `Idempotency-Key` | No       | Unique client-generated key (e.g. UUID v4) |
-
-**Body**
+The response includes per-stream `trainingSamples`, `accuracyPct`, and
+`trainedAt`. Accuracy is a held-out weighted absolute-error score and is `null`
+when there is no usable validation history; the service does not claim a fixed
+accuracy for meters or sites without representative historical data.
 
 ```json
 {
-  "meterId": "METER1",
-  "amount": 5000000,
-  "payer": "G..."
+  "horizonHours": 48,
+  "weatherStale": false,
+  "models": {
+    "production": { "algorithm": "seasonal-ridge", "trainingSamples": 1200, "accuracyPct": 91.2 },
+    "consumption": { "algorithm": "seasonal-ridge", "trainingSamples": 2160, "accuracyPct": 88.5 }
+  },
+  "forecast": [
+    {
+      "timestamp": "2026-09-29T12:00:00.000Z",
+      "productionKwh": 2.15,
+      "consumptionKwh": 0.42,
+      "weather": { "temperatureC": 22, "cloudCoverPct": 18, "productionFactor": 0.91 }
+    }
+  ]
 }
 ```
 
-**Behaviour**
+## Energy Grid Simulation Tool (#909)
 
-- If `Idempotency-Key` is provided and a successful response for that key exists in the cache (within 24 h), the cached `{ hash }` is returned immediately — no duplicate contract call is made.
-- Cache entries expire after 24 hours.
-- Expired entries are evicted lazily on the next write.
+The simulation tool lets operators test grid scenarios, inspect grid state,
+run what-if analyses, and generate impact reports for capacity planning.
 
-  "payer": "G...",
-  "amount": 5000000
-}
-```
+### Simulation engine
 
-**Response**
+`POST /api/grid/simulate`
 
-```json
-{ "hash": "<transaction-hash>" }
-```
-
-## Batch Meter Registration
-
-### `POST /api/meters/batch`
-
-Registers up to 100 meters in a single on-chain transaction (admin only),
-wrapping the contract's `batch_register_meters` function.
+Runs a simulation for a given scenario and returns the resulting grid state.
 
 Request body:
 
 ```json
 {
-  "meters": [
-    { "meter_id": "METER1", "owner": "GABC...XYZ" },
-    { "meter_id": "METER2", "owner": "GDEF...UVW" }
+  "scenario": {
+    "name": "peak-summer-demand",
+    "durationHours": 24,
+    "stepMinutes": 15,
+    "nodes": [
+      { "id": "gen-1", "type": "generator", "capacityMw": 500, "outputMw": 420 },
+      { "id": "load-1", "type": "load", "demandMw": 380 }
+    ],
+    "links": [
+      { "from": "gen-1", "to": "load-1", "capacityMw": 600 }
+    ]
+  }
+}
+```
+
+Response body:
+
+```json
+{
+  "scenarioId": "peak-summer-demand",
+  "status": "ok",
+  "steps": [
+    {
+      "t": 0,
+      "nodes": [
+        { "id": "gen-1", "outputMw": 420, "utilization": 0.84 },
+        { "id": "load-1", "demandMw": 380, "served": true }
+      ],
+      "links": [
+        { "from": "gen-1", "to": "load-1", "flowMw": 380, "utilization": 0.63 }
+      ]
+    }
+  ],
+  "summary": {
+    "peakDemandMw": 380,
+    "unservedMw": 0,
+    "overloadedLinks": []
+  }
+}
+```
+
+### Scenario builder
+
+`POST /api/grid/scenarios`
+
+Creates a reusable scenario definition. The body accepts the same `scenario`
+object as the simulate endpoint.
+
+`GET /api/grid/scenarios` — list saved scenarios.
+
+`GET /api/grid/scenarios/{id}` — fetch a single scenario.
+
+`PUT /api/grid/scenarios/{id}` — update a scenario.
+
+`DELETE /api/grid/scenarios/{id}` — remove a scenario.
+
+### Visualization
+
+`GET /api/grid/scenarios/{id}/state`
+
+Returns the latest simulated grid state as a render-ready payload for the
+frontend (nodes with positions/status and links with flow values).
+
+```json
+{
+  "scenarioId": "peak-summer-demand",
+  "nodes": [
+    { "id": "gen-1", "type": "generator", "status": "nominal", "utilization": 0.84 },
+    { "id": "load-1", "type": "load", "status": "served", "utilization": 0.63 }
+  ],
+  "links": [
+    { "from": "gen-1", "to": "load-1", "flowMw": 380, "status": "nominal" }
   ]
 }
 ```
 
-- Rejects (400) if `meters` is empty, exceeds 100 entries, or contains
-  duplicate `meter_id` values within the request.
-- Entries whose owner is not allowlisted, or whose `meter_id` already exists
-  on-chain, are skipped rather than failing the whole batch (see the
-  `batch_skip` event in `contracts/README.md`).
-- Response: `{ "hash": "<tx_hash>", "meter_ids": [...] }`.
+### What-if analysis
 
-## Low-Balance Webhook Notifications
+`POST /api/grid/scenarios/{id}/what-if`
 
-Providers can register webhook URLs to receive notifications when a customer's meter balance drops below a configurable threshold.
-**Idempotency**
+Applies one or more overrides to a scenario and returns the delta against the
+baseline simulation.
 
-`POST /api/payments` supports the `Idempotency-Key` header. Provide a unique,
-client-generated key (UUID v4 recommended) per logical payment attempt. The
-server caches the response for 24 hours keyed to that value. Any retry
-carrying the same key within that window receives the original response
-without re-invoking the on-chain contract — preventing duplicate money
-movement on network-level retries or multi-device submissions.
+Request body:
 
-| Header            | Required | Description                                      |
-|-------------------|----------|--------------------------------------------------|
-| `Idempotency-Key` | No       | Opaque string, max recommended length 128 chars  |
+```json
+{
+  "overrides": [
+    { "nodeId": "gen-1", "field": "outputMw", "value": 300 },
+    { "nodeId": "load-1", "field": "demandMw", "value": 450 }
+  ]
+}
+```
 
-**Behaviour**
+Response body:
 
-- **First request** — processed normally; response cached for 24 h.
-- **Repeat key (hit)** — cached response returned immediately with
-  `X-Idempotent-Replayed: true`; no contract call is made.
-- **Concurrent duplicate** — if the first request is still in-flight, the
-  second returns `409 Conflict` with code `IDEMPOTENCY_CONFLICT`.
-- **5xx responses** — not cached; the client may safely retry with the same
-  key after a transient server error.
-- **No header** — request is processed normally with no idempotency guarantee
-  (backwards-compatible).
+```json
+{
+  "baseline": { "unservedMw": 0, "peakDemandMw": 380 },
+  "modified": { "unservedMw": 70, "peakDemandMw": 450 },
+  "delta": { "unservedMw": 70, "peakDemandMw": 70 }
+}
+```
 
-**Example**
+### Report generation
 
-```http
-POST /api/payments
-Content-Type: application/json
-Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000
+`POST /api/grid/scenarios/{id}/report`
 
+Generates an impact report for a scenario (optionally with what-if overrides)
+for capacity planning.
+
+Request body:
+
+```json
+{
+  "format": "json",
+  "overrides": []
+}
+```
+
+Response body:
+
+```json
+{
+  "scenarioId": "peak-summer-demand",
+  "generatedAt": "2024-01-01T00:00:00Z",
+  "impact": {
+    "peakDemandMw": 380,
+    "unservedMw": 0,
+    "overloadedLinks": [],
+    "headroomMw": 120
+  },
+  "recommendations": [
+    "Generator gen-1 has 16% headroom at peak demand."
+  ]
+}
+```
+
+
+## API Key Management (#833)
+
+Providers can create API keys for programmatic access. Keys are stored as
+SHA-256 hashes (`api_keys` table: `id`, `provider_id`, `key_hash`,
+`permissions`, `expires_at`, `revoked_at`, …); the plaintext key is returned
+only once. Management routes require `X-Admin-Key` and `X-Provider-Id`.
+
+### `POST /api/keys/generate`
+
+Body: `{ "name"?: string, "permissions"?: ("read"|"write"|"admin")[], "expiresInDays"?: number }`
+
+`201` → `{ "key": "sg_…", "id": "…", "provider_id": "…", "permissions": ["read"], "expires_at": null, … }`
+
+### `GET /api/keys`
+
+Lists the provider's keys (no secrets): `{ "keys": [ … ] }`
+
+### `DELETE /api/keys/:keyId`
+
+Revokes a key. `204` on success, `404` if not found.
+
+### Authenticating with a key
+
+Send the key in the `X-API-Key` header. Routes protected with the
+`requireApiKey(permission?)` middleware respond `401` for missing, invalid,
+expired or revoked keys and `403` if the key lacks the required permission
+(`admin` implies all permissions).
+
+## Usage Prediction (#835)
+
+### `GET /api/meters/:meterId/prediction`
+
+Estimates when the meter balance will reach zero. A linear regression is fit
+to the meter's daily usage cost over the last 30 days and projected forward.
+Predictions are cached and refreshed daily (or when the balance changes).
+The balance is read from the contract unless `?balance=<stroops>` is given.
+
+```json
 {
   "meterId": "METER1",
-  "payer": "G...",
-  "amount": 5000000
+  "balance": 3000,
+  "estimatedDaysRemaining": 30.0,
+  "confidenceInterval": { "low": 25.4, "high": 36.1, "level": 0.95 },
+  "avgDailyUsage": 100,
+  "trendPerDay": 0.1,
+  "trainingDays": 30,
+  "generatedAt": "2026-09-25T00:00:00.000Z"
 }
 ```
 
-Replayed response includes:
+`estimatedDaysRemaining` is `null` when there is no usage history or usage is
+not trending toward depletion.
 
-```http
-HTTP/1.1 200 OK
-X-Idempotent-Replayed: true
+## Weather-Based Usage Forecasting (#982)
 
-{ "hash": "<original-transaction-hash>" }
-```
+`GET /api/meters/:meterId/forecast?days=7`
 
-### `GET /api/payments/:address`
+Returns a weather-driven forecast of energy usage and solar generation for up
+to 7 days (default 7). Each day includes a point estimate plus a confidence
+band, and the response flags whether the meter is predicted to run out of
+credit within the horizon.
 
-Fetch paginated on-chain payment history for a Stellar address. Queries
-Soroban contract events for `make_payment` calls where `payer === address`,
-scoped to a rolling time window.
-
-**Path parameter**
-
-| Parameter | Description                              |
-|-----------|------------------------------------------|
-| `address` | Valid 56-character Stellar public key    |
-
-**Query parameters**
-
-| Parameter | Type    | Default | Range / Values   | Description                                      |
-|-----------|---------|---------|------------------|--------------------------------------------------|
-| `page`    | integer | `1`     | ≥ 1              | Page number                                      |
-| `limit`   | integer | `10`    | 1 – 50           | Records per page (capped at 50)                  |
-| `sort`    | string  | `desc`  | `asc` \| `desc`  | Sort order by payment date                       |
-| `days`    | integer | `30`    | 1 – 90           | Rolling window in days to query events (max 90)  |
-
-**Response `200`**
+The forecast depends on the weather API (OpenWeatherMap or compatible). Set
+`WEATHER_API_KEY` and, optionally, `WEATHER_API_BASE_URL` (default
+`https://api.openweathermap.org/data/2.5`) and `WEATHER_FORECAST_DAYS`. When
+the weather API is unreachable the service falls back to climatology and sets
+`weatherStale: true`; forecasts are still returned but confidence bands widen.
 
 ```json
 {
-  "payments": [
+  "meterId": "METER1",
+  "horizonDays": 7,
+  "weatherStale": false,
+  "generatedAt": "2026-09-29T00:00:00.000Z",
+  "creditAlert": {
+    "willDeplete": true,
+    "estimatedDepletionDate": "2026-10-03",
+    "estimatedDaysRemaining": 4.2
+  },
+  "days": [
     {
-      "txHash": "<transaction-hash>",
-      "date": "2025-05-27T10:30:00.000Z",
-      "meterId": "METER1",
-      "amountXlm": 0.5,
-      "plan": "Daily"
+      "date": "2026-09-29",
+      "predictedUsageKwh": 4.3,
+      "usageConfidence": { "low": 3.8, "high": 4.9, "level": 0.9 },
+      "predictedSolarKwh": 6.1,
+      "solarConfidence": { "low": 4.7, "high": 7.4, "level": 0.9 },
+      "weather": { "temperatureC": 24, "cloudCoverPct": 20, "sunlightHours": 8.4 }
     }
-  ],
-  "pagination": {
-    "page": 1,
-    "limit": 10,
-    "total": 42,
-    "pages": 5
-  }
+  ]
 }
 ```
 
-**Error responses**
+`creditAlert.willDeplete` is `false` when the balance covers the whole horizon
+or no usage history is available.
 
-| Status | Code        | Reason                                     |
-|--------|-------------|--------------------------------------------|
-| `400`  | —           | Address is missing or not a valid Stellar key |
-| `502`  | `RPC_ERROR` | Soroban RPC unreachable                    |
-| `500`  | —           | Unexpected server error                    |
+## Appliance-Level Breakdown (#982)
 
-**Example**
+`GET /api/meters/:meterId/appliances?days=30`
 
-```http
-GET /api/payments/GBRPYHIL2CI3FNV4HLWFIL45TEOZT5MVCTOFKH2UBIJBPQESELUBX4?page=1&limit=10&sort=desc&days=30
-```
-
----
-
-## Low-Balance Webhook Notifications
-
-Providers can register webhook URLs to receive notifications when a customer's meter balance drops below a configurable threshold.
-
-### Configuration
-
-Set the following environment variables:
-
-| Variable                | Required | Default | Description                                    |
-| ----------------------- | -------- | ------- | ---------------------------------------------- |
-| `PROVIDER_WEBHOOK_URL`  | No       | -       | Webhook endpoint URL for low-balance alerts    |
-| `LOW_BALANCE_THRESHOLD` | No       | 1000000 | Fallback threshold (used when no 7-day usage history exists) |
-| `WEB_PUSH_VAPID_SUBJECT` | No      | -       | VAPID subject for Web Push (`mailto:...`) |
-| `WEB_PUSH_VAPID_PUBLIC_KEY` | No   | -       | VAPID public key sent to browsers |
-| `WEB_PUSH_VAPID_PRIVATE_KEY` | No  | -       | VAPID private key used to sign push sends |
-
-### Register Webhook Endpoint
-
-**`POST /api/webhooks/low-balance`**
-
-Register or update the webhook URL for low-balance notifications. Requires
-admin authentication via the `X-Admin-Key` header (same admin key used by
-`/api/collaborators`).
-
-**Headers**
-
-| Header        | Required | Description                          |
-| ------------- | -------- | ------------------------------------ |
-| `X-Admin-Key` | Yes      | Must match the server's `ADMIN_API_KEY` |
-
-**Body**
+Breaks consumption down per appliance, with a trend against the previous
+window and saving recommendations.
 
 ```json
 {
-  "webhook_url": "https://your-service.com/webhooks/low-balance"
-}
-```
-
-**Response**
-
-```json
-{
-  "message": "Webhook registered successfully",
-  "webhook_url": "https://your-service.com/webhooks/low-balance"
-}
-```
-
-A request without a valid `X-Admin-Key` header returns `401 Unauthorized`.
-
-### Webhook Payload
-
-When a meter's balance drops below the alert threshold after a usage update, the bridge fires a POST request to the registered webhook URL.
-
-Alert threshold rule:
-- `threshold = 10% of typical weekly usage (last 7 days summed cost)`
-- If no recent usage exists, fallback to `LOW_BALANCE_THRESHOLD`
-
-**Payload**
-
-```json
-{
-  "event": "low_balance",
-  "meter_id": "METER123",
-  "balance": 500000,
-  "threshold": 800000,
-  "weekly_typical_stroops": 8000000,
-  "timestamp": "2025-05-27T10:30:00.000Z"
-}
-```
-
-**Fields**
-
-| Field       | Type   | Description                      |
-| ----------- | ------ | -------------------------------- |
-| `event`     | string | Always `"low_balance"`           |
-| `meter_id`  | string | The meter identifier             |
-| `balance`   | number | Current meter balance in stroops |
-| `threshold` | number | Computed threshold in stroops  |
-| `weekly_typical_stroops` | number | Last-7-days usage cost sum in stroops |
-| `timestamp` | string | ISO 8601 timestamp of the event  |
-
-## Push Subscription API
-
-### `GET /api/push/config`
-
-Returns push feature status and the VAPID public key for browser subscription.
-
-### `POST /api/push/subscribe`
-
-Stores/updates a browser push subscription for a Stellar owner address.
-
-Body:
-
-```json
-{
-  "ownerAddress": "G...",
-  "subscription": {
-    "endpoint": "https://...",
-    "keys": {
-      "p256dh": "...",
-      "auth": "..."
+  "meterId": "METER1",
+  "windowDays": 30,
+  "totalKwh": 128.4,
+  "appliances": [
+    {
+      "applianceId": "fridge",
+      "name": "Refrigerator",
+      "usageKwh": 42.1,
+      "sharePct": 32.8,
+      "trendPct": 4.2,
+      "recommendation": "Shift defrost cycles to off-peak hours to save ~3 kWh/month."
     }
-  }
+  ]
 }
 ```
 
-### `POST /api/push/unsubscribe`
+## Meter Diagnostics (#982)
 
-Deletes a stored push subscription by endpoint.
+`POST /api/meters/:meterId/diagnostics`
 
-**Error Handling**
+Triggers a diagnostic action on the meter. Body:
+`{ "action": "reboot" | "self-test" | "connectivity" }`. Returns the queued
+diagnostic run.
+
+```json
+{ "diagnosticId": "diag_01H...", "action": "self-test", "status": "queued", "requestedAt": "2026-09-29T00:00:00.000Z" }
+```
+
+`GET /api/meters/:meterId/diagnostic-logs?limit=20`
+
+Returns past diagnostic results with suggested fixes.
+
+```json
+{
+  "meterId": "METER1",
+  "logs": [
+    {
+      "diagnosticId": "diag_01H...",
+      "action": "connectivity",
+      "status": "completed",
+      "result": "degraded",
+      "details": "Packet loss 6% over the last hour.",
+      "suggestedFix": "Check the meter's uplink antenna and retry the connectivity test.",
+      "completedAt": "2026-09-29T00:05:00.000Z"
+    }
+  ]
+}
+```
+
+## Widget Summary (#901)
+
+### `GET /api/widgets/summary?meterId=<id>`
+
+A compact payload (under 1 KB) for the iOS and Android home-screen widgets. It is cached for 5 minutes and served with
+an `ETag`, so send `If-None-Match` to get a `304` when nothing has changed. See `docs/MOBILE_WIDGETS.md`.
+
+```json
+{
+  "meterId": "METER1",
+  "active": true,
+  "balanceXlm": 12.5,
+  "todayUnits": 3.2,
+  "last7DaysUnits": [4.1, 3.9, 5.0, 4.4, 3.8, 4.0, 3.2],
+  "daysRemaining": 3.1,
+  "updatedAt": "2026-09-27T10:00:00.000Z"
+}
+```
+
+### Live energy flow (#870)
+
+- `GET /api/widgets/energy?meterId=<id>&range=5m|hourly|daily` returns up to 12 five-minute,
+  24 hourly, or 7 daily production/consumption buckets.
+- `WS /api/widgets/live?meterId=<id>&range=5m|hourly|daily` sends an initial snapshot and
+  refreshes every five seconds. The frontend reconnects with capped exponential backoff and
+  polls the HTTP route while disconnected.
+- Consumption comes from meter usage events. Production comes from active linked solar-panel
+  device telemetry (`energyKwh`, or power integrated over the bucket).
+
+## Energy Trading Simulator (#929)
+
+Practice-only cash and energy balances are stored separately from on-chain accounts. The
+simulator verifies that the supplied Stellar wallet owns its meter before account reads/trades.
+The market feed defaults to `energy-charts.info` for bidding zone `DE-LU`; set
+`ENERGY_MARKET_DATA_URL`, `ENERGY_MARKET_BIDDING_ZONE`, and
+`MARKET_PRICE_FALLBACK_EUR_KWH` to configure the feed and offline quote.
+
+- `GET /api/simulator/market?hours=24` returns historical/current EUR-per-kWh quotes and the
+  configured practice fee rate.
+- `GET /api/simulator/account?meterId=<id>&stellarAddress=<G...>` returns the virtual account
+  and recent practice trades.
+- `POST /api/simulator/trade` accepts `{ meterId, stellarAddress, side, quantityKwh }`.
+- `GET /api/simulator/leaderboard?limit=20` returns anonymized portfolio rankings.
+
+Accounts start with `SIMULATOR_STARTING_CREDITS` (default 1,000); the default virtual trade fee
+is 0.5%. Simulator transactions never call the Stellar contract.
+
+## Energy Theft Detection (#931)
+
+The backend scans newly recorded usage at `THEFT_SCAN_INTERVAL_MS` (default one minute) and
+compares readings with a robust per-meter median/MAD baseline. Alerts are persisted once per
+usage event and sent to registered provider webhooks immediately after detection. The default
+threshold is intentionally conservative; the monthly report tracks investigated false positives
+so providers can validate the under-5% target against their own metering population.
+
+All theft routes require the existing admin session or `X-Admin-Key` credential:
+
+- `GET /api/theft/alerts?status=open&limit=50&offset=0`
+- `GET /api/theft/alerts/:id/investigation`
+- `PATCH /api/theft/alerts/:id/investigation` with `{ status, assignedTo?, note?, actor? }`
+- `GET /api/theft/reports/monthly?month=YYYY-MM` generates and stores the selected monthly report.
+
+## Monthly Bills (#902)
+
+Bills are generated on the 1st of each month, emailed as PDFs with a payment link, and kept as a permanent history.
+Endpoints live under `/api/billing`. See `docs/BILLING.md`.
+
+## Competitions (#903)
+
+Monthly efficiency, trading and green-energy competitions with live SSE leaderboards and automatic prize payouts.
+Endpoints live under `/api/competitions`. See `docs/COMPETITIONS.md`.
+
+## Smart Home (#904)
 
 - Failed webhook calls are logged but do not crash the IoT bridge
 - Webhook timeouts can be configured via your HTTP client settings
 - Consider idempotency keys on your webhook endpoint to handle retries
 
----
+## Load Balancing (#889)
+`POST /api/load-balancing/balance` — body `{ capacityKw, pricePerKwh, peakPriceThreshold?, loads: [{ id, demandKw, priority: "critical"|"high"|"normal"|"deferrable", override?: "on"|"off" }] }`.
+Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`. Critical loads are always served; `override` lets users force a load on/off; deferrable loads are shifted when the price exceeds `peakPriceThreshold`.
 
-## Statistics
+## Two-Factor Authentication (#890)
+- `POST /api/2fa/enroll` `{ account, phone? }` → TOTP secret, `otpauthUrl` for authenticator apps, 10 single-use recovery codes.
+- `POST /api/2fa/verify` `{ account, code, method?: "totp"|"sms"|"recovery" }` — 5 failures lock the account for 15 min.
+- `POST /api/2fa/sms` `{ account }` — sends SMS fallback code (5-min expiry).
+- `POST /api/2fa/recovery-codes` `{ account, code }` — regenerates recovery codes.
+- Enforcement: `requireTwoFactor` middleware requires 2FA for accounts with value ≥ `TWO_FACTOR_ENFORCE_THRESHOLD`.
 
-### `GET /api/stats`
-
-Returns contract-derived aggregate statistics for all meters.
-
-Response is cached for **30 seconds** to reduce RPC load.
-
-**Response**
-
-```json
-{
-  "totalMeters": 42,
-  "activeMeters": 37,
-  "totalUnits": 182400,
-  "totalRevenue": 12500000
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `totalMeters` | number | Total registered meters on-chain |
-| `activeMeters` | number | Meters currently active |
-| `totalUnits` | number | Total energy units consumed across all meters |
-| `totalRevenue` | number | Provider revenue in stroops |
-
-| Status | Description |
-|---|---|
-| 200 | Returns aggregate stats |
-| 500 | RPC or contract error |
+## Trading Bot API (#891)
+See `docs/TRADING_API.md`.
+Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
+live under `/api/smart-home`. See `docs/SMART_HOME.md`.
 
 ---
 
-### `GET /api/stats/summary`
+## Energy Arbitrage Opportunities Detector (#1009)
 
-Returns a JSON snapshot of the four core Prometheus counters/gauges for the admin dashboard.
-Does **not** require Prometheus or Grafana to be running.
+### `GET /api/meters/:meterId/arbitrage`
 
-Response is cached for **15 seconds**.
+Analyzes real-time 24-hour grid prices and solar generation for `:meterId`, computes the optimal battery charge/discharge schedule, estimates daily and monthly profit potential, and returns automated alerts when profitable arbitrage windows are detected.
 
-**Response**
+**Query Parameters:**
+- `batteryCapacityKwh` *(optional, number, default `13.5`)* — Usable battery capacity in kWh.
+- `roundTripEfficiency` *(optional, number, default `0.9`)* — Battery charge/discharge round-trip efficiency (`0..1`).
+- `minSpreadPercent` *(optional, number, default `20`)* — Minimum price spread percentage required to flag an opportunity.
 
+**Response (`200 OK`):**
 ```json
 {
-  "mqttMessages": 1024,
-  "contractCalls": 256,
-  "activeMeters": 37,
-  "paymentVolumeXlm": 5.25
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `mqttMessages` | number | Total MQTT messages received since process start |
-| `contractCalls` | number | Total Soroban contract invocations since process start |
-| `activeMeters` | number | Current active meter gauge |
-| `paymentVolumeXlm` | number | Cumulative payment volume in XLM |
-
-| Status | Description |
-|---|---|
-| 200 | Returns metrics snapshot |
-
----
-
-## Energy Provider
-
-These endpoints expose provider-specific data and are all protected by the
-`X-Admin-Key` header.
-
-### `GET /api/provider`
-
-Returns the energy provider's on-chain revenue and an aggregate summary of all meters.
-
-Response is cached for **30 seconds**.
-
-**Headers**
-
-| Header | Required | Description |
-|---|---|---|
-| `X-Admin-Key` | Yes | Admin API key |
-
-**Response**
-
-```json
-{
-  "provider": "GADMIN...",
-  "totalRevenue": 12500000,
-  "totalMeters": 42,
-  "activeMeters": 37,
-  "totalUnitsUsed": 182400
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `provider` | string\|null | Admin address (`ADMIN_ADDRESS` env var) |
-| `totalRevenue` | number | Revenue in stroops |
-| `totalMeters` | number | Total registered meters |
-| `activeMeters` | number | Currently active meters |
-| `totalUnitsUsed` | number | Total units consumed |
-
-| Status | Description |
-|---|---|
-| 200 | Returns provider summary |
-| 401 | Missing or invalid `X-Admin-Key` |
-| 500 | RPC or contract error |
-
----
-
-### `POST /api/provider/webhook`
-
-Register or replace the low-balance webhook URL for this provider.
-When a meter's balance drops below `LOW_BALANCE_THRESHOLD`, the IoT bridge
-fires a POST to this URL.
-
-This is a named alias for `POST /api/webhooks/low-balance` in the
-provider-facing namespace.
-
-**Headers**
-
-| Header | Required | Description |
-|---|---|---|
-| `X-Admin-Key` | Yes | Admin API key |
-| `Content-Type` | Yes | `application/json` |
-
-**Body**
-
-```json
-{
-  "webhook_url": "https://your-service.example.com/hooks/low-balance"
-}
-```
-
-**Response**
-
-```json
-{
-  "message": "Webhook registered",
-  "webhook_url": "https://your-service.example.com/hooks/low-balance"
-}
-```
-
-| Status | Description |
-|---|---|
-| 200 | Webhook registered |
-| 400 | Invalid URL format |
-| 401 | Missing or invalid `X-Admin-Key` |
-
----
-
-## Admin: Dead-letter Events
-
-Usage events that fail every retry attempt are moved to a **dead-letter** state
-(`status = 'failed'`).  They are excluded from the automatic retry worker and
-must be manually reprocessed or discarded.
-
-The current dead-letter count is also surfaced in the `/health` response under
-the `deadLetterEvents` field.
-
-### `GET /api/admin/dead-letters`
-
-Lists all dead-lettered usage events.
-
-**Headers**
-
-| Header | Required | Description |
-|---|---|---|
-| `X-Admin-Key` | Yes | Admin API key |
-
-**Query Parameters**
-
-| Param | Default | Description |
-|---|---|---|
-| `limit` | 50 | Maximum results (max 200) |
-| `offset` | 0 | Pagination offset |
-
-**Response**
-
-```json
-{
-  "total": 3,
-  "limit": 50,
-  "offset": 0,
-  "events": [
+  "meterId": "METER-001",
+  "generatedAt": "2026-10-16T06:30:00.000Z",
+  "batteryCapacityKwh": 13.5,
+  "roundTripEfficiency": 0.9,
+  "currentGridPricePerKwh": 0.08,
+  "currentSolarGenerationKw": 1.09,
+  "estimatedDailyProfitUsd": 5.18,
+  "estimatedMonthlyProfitUsd": 155.4,
+  "opportunities": [
     {
-      "id": 7,
-      "meter_id": "METER1",
-      "units": 150,
-      "cost": "750000",
-      "status": "failed",
-      "attempt_count": 5,
-      "last_error": "RPC timeout",
-      ...
+      "id": "METER-001-arb-night-peak",
+      "chargeWindowStartHour": 1,
+      "chargeWindowEndHour": 5,
+      "dischargeWindowStartHour": 17,
+      "dischargeWindowEndHour": 21,
+      "avgChargePricePerKwh": 0.08,
+      "avgDischargePricePerKwh": 0.31,
+      "spreadPerKwh": 0.2211,
+      "spreadPercent": 287.5,
+      "recommendedKwh": 10.8,
+      "estimatedProfitUsd": 2.39,
+      "recommendation": "Charge battery from grid between 01:00–05:00 ($0.08/kWh) and discharge during 17:00–21:00 peak ($0.31/kWh)."
     }
-  ]
+  ],
+  "optimalSchedule": [],
+  "alerts": []
 }
 ```
 
-| Status | Description |
-|---|---|
-| 200 | Returns dead-letter list |
-| 401 | Missing or invalid `X-Admin-Key` |
+## Tiered Rate Limiting (#1080)
 
----
+Routes under `/api/lifespan`, `/api/shadows` and `/api/forecast-dashboard` are limited per consumer according to subscription tier. Consumers are identified by `X-API-Key`, then `X-User-Id`, then IP. Unknown consumers are `free`.
 
-### `POST /api/admin/dead-letters/:id/reprocess`
+| Tier | Req/min | Req/day | Burst |
+|---|---|---|---|
+| free | 10 | 1,000 | 0 |
+| basic | 60 | 10,000 | 0 |
+| premium | 300 | 100,000 | +150 |
+| enterprise | 1,200 | 1,000,000 | +1,200 |
 
-Requeues a single dead-lettered event for retry. Resets its status to `pending`
-and zeroes the attempt counter so the retry worker picks it up on its next tick.
+A token bucket refills at the per-minute rate up to `rate + burst`, so premium/enterprise can absorb spikes.
 
-**Headers**
+Response headers: `X-RateLimit-Tier`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Daily-Limit`, `X-RateLimit-Daily-Remaining`, and `X-RateLimit-Upgrade` (suggested tier once ≥80% of the daily quota is used). Over-limit requests get `429` with `Retry-After` and an `upgrade` prompt.
 
-| Header | Required | Description |
+| Method | Path | Description |
 |---|---|---|
-| `X-Admin-Key` | Yes | Admin API key |
+| GET | `/api/rate-limits/tiers` | Tier definitions |
+| GET | `/api/rate-limits/usage` | Real-time usage for the caller (`requestsToday`, `quotaUsedPct`, `upgrade`) |
+| PUT | `/api/rate-limits/subscriptions/:consumerId` | Admin (`X-Admin-Key`): `{ "tier": "premium" }` |
 
-**Response**
+## Lifespan, Shadows, Forecast Dashboard (#1079, #1081, #1082)
 
-```json
-{
-  "message": "Event requeued",
-  "event": { "id": 7, "status": "pending", ... }
-}
-```
-
-| Status | Description |
-|---|---|
-| 200 | Event requeued |
-| 400 | Invalid event id |
-| 401 | Missing or invalid `X-Admin-Key` |
-| 404 | Event not found or not in dead-letter state |
+See `backend/LIFESPAN.md`, `backend/SHADOWS.md` and `frontend/FORECASTING.md`.

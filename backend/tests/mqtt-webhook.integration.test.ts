@@ -100,6 +100,8 @@ import {
 } from "../src/lib/webhookRegistry.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 
+const TEST_PROVIDER_ID = "test-provider";
+
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const MOCK_METER_ID = "TEST_METER_001";
@@ -120,15 +122,17 @@ function buildPayload(units: number, cost: number): Buffer {
 
 /** Spies on globalThis.fetch to capture webhook POST calls. */
 function installFetchSpy() {
-  const calls: Array<{ url: string; body: unknown }> = [];
+  const calls: Array<{ url: string; body: unknown; rawBody: string; headers: Record<string, string> }> = [];
   const original = globalThis.fetch;
 
   globalThis.fetch = vi.fn(
     async (input: string | URL | Request, init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input);
+      const rawBody = (init?.body as string) ?? "null";
       let body: unknown = null;
-      try { body = JSON.parse((init?.body as string) ?? "null"); } catch { body = init?.body; }
-      calls.push({ url, body });
+      try { body = JSON.parse(rawBody); } catch { body = rawBody; }
+      const headers = new Headers(init?.headers);
+      calls.push({ url, body, rawBody, headers: Object.fromEntries(headers.entries()) });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     },
   ) as typeof fetch;
@@ -136,7 +140,7 @@ function installFetchSpy() {
   return { calls, restore: () => { globalThis.fetch = original; } };
 }
 
-/** Clears the shared webhook registry so tests don't bleed into each other. */
+/** Clears the webhook registry (both DB rows and any pending state) so tests don't bleed into each other. */
 function clearWebhookRegistry() {
   for (const hook of getAllWebhooks()) {
     unregisterWebhook(hook.provider_id, hook.url);
@@ -158,7 +162,7 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
     ).resolves.not.toThrow();
   });
 
-  it("fires a webhook POST when meter balance drops below LOW_BALANCE_THRESHOLD", async () => {
+  it("fires a signed webhook POST when meter balance drops below LOW_BALANCE_THRESHOLD", async () => {
     const WEBHOOK_URL = "https://provider.example.com/webhooks/low-balance";
     registerWebhook(PROVIDER_ID, WEBHOOK_URL);
 
@@ -182,6 +186,14 @@ describe("MQTT → batch_update_usage → webhook (integration)", () => {
       expect(payload.balance as number).toBeLessThanOrEqual(
         Number(process.env.LOW_BALANCE_THRESHOLD),
       );
+
+      // Closes #688: the delivery must carry a valid HMAC signature computed
+      // from the registered per-webhook secret.
+      const signatureHeader = hits[0].headers[SIGNATURE_HEADER.toLowerCase()];
+      expect(signatureHeader).toBeDefined();
+      expect(
+        verifyWebhookSignature(secret, hits[0].rawBody, signatureHeader),
+      ).toBe(true);
     } finally {
       spy.restore();
     }
@@ -251,5 +263,11 @@ describe("webhook registry", () => {
     registerWebhook(PROVIDER_ID, "https://example.com/wh");
     registerWebhook(PROVIDER_ID, "https://example.com/wh");
     expect(getWebhookUrls().size).toBe(1);
+  });
+
+  it("registerWebhook generates a signing secret when none is supplied", () => {
+    const record = registerWebhook(TEST_PROVIDER_ID, "https://example.com/wh-secret");
+    expect(typeof record.secret).toBe("string");
+    expect(record.secret.length).toBeGreaterThanOrEqual(32);
   });
 });

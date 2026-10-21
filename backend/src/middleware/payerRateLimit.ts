@@ -5,6 +5,7 @@ import {
   PAYMENTS_RATE_LIMIT_WINDOW_MS,
   RATE_LIMIT_MESSAGE,
 } from "../config/rateLimits.js";
+import { applyStandardRateLimitHeaders } from "./rateLimitHeaders.js";
 
 export type PayerRateLimitResult = {
   allowed: boolean;
@@ -147,12 +148,22 @@ export function extractPayerAddress(req: Request): string | null {
 
 function addRateLimitHeaders(res: Response, result: PayerRateLimitResult) {
   const retryAfter = Math.max(1, Math.ceil((result.resetAt - Date.now()) / 1000));
+  // Issue #734: emit BOTH the legacy `RateLimit-*` headers and the standard
+  // `X-RateLimit-*` headers (including a `-Payments` scope-specific variant so
+  // payment clients see their tighter budget without ambiguity).
   res.setHeader("RateLimit-Limit", String(result.limit));
   res.setHeader("RateLimit-Remaining", String(result.remaining));
   res.setHeader("RateLimit-Reset", String(retryAfter));
-  res.setHeader("X-RateLimit-Limit", String(result.limit));
-  res.setHeader("X-RateLimit-Remaining", String(result.remaining));
-  res.setHeader("X-RateLimit-Reset", String(retryAfter));
+  applyStandardRateLimitHeaders(
+    res,
+    {
+      limit: result.limit,
+      remaining: result.remaining,
+      resetAtMs: result.resetAt,
+      windowMs: PAYMENTS_RATE_LIMIT_WINDOW_MS,
+    },
+    { scope: "Payments" },
+  );
   return retryAfter;
 }
 

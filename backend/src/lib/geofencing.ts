@@ -1,0 +1,14 @@
+export type Geofence = { meterId: string; latitude: number; longitude: number; radiusMeters: number; updatedAt: string };
+export type LocationVerification = { meterId: string; latitude: number; longitude: number; distanceMeters: number; withinGeofence: boolean; verifiedAt: string; disabled: boolean };
+const fences = new Map<string, Geofence>();
+const verifications: LocationVerification[] = [];
+const disabled = new Set<string>();
+function validCoordinate(value: number, min: number, max: number) { return Number.isFinite(value) && value >= min && value <= max; }
+export function setGeofence(input: { meterId: string; latitude: number; longitude: number; radiusMeters: number }): Geofence { if (!input.meterId || !validCoordinate(input.latitude, -90, 90) || !validCoordinate(input.longitude, -180, 180) || !Number.isFinite(input.radiusMeters) || input.radiusMeters <= 0 || input.radiusMeters > 100_000) throw Object.assign(new Error("Invalid geofence"), { code: "VALIDATION_ERROR" }); const fence = { ...input, updatedAt: new Date().toISOString() }; fences.set(input.meterId, fence); return fence; }
+function distanceMeters(aLat: number, aLon: number, bLat: number, bLon: number) { const r = 6_371_000; const rad = Math.PI / 180; const dLat = (bLat - aLat) * rad; const dLon = (bLon - aLon) * rad; const x = Math.sin(dLat / 2) ** 2 + Math.cos(aLat * rad) * Math.cos(bLat * rad) * Math.sin(dLon / 2) ** 2; return 2 * r * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x)); }
+export function verifyMeterLocation(input: { meterId: string; latitude: number; longitude: number; verifiedAt?: Date }): LocationVerification { const fence = fences.get(input.meterId); if (!fence) throw Object.assign(new Error("No geofence configured for meter"), { code: "NOT_FOUND" }); if (!validCoordinate(input.latitude, -90, 90) || !validCoordinate(input.longitude, -180, 180)) throw Object.assign(new Error("Invalid GPS coordinates"), { code: "VALIDATION_ERROR" }); const distance = distanceMeters(fence.latitude, fence.longitude, input.latitude, input.longitude); const withinGeofence = distance <= fence.radiusMeters; if (!withinGeofence) disabled.add(input.meterId); const result = { meterId: input.meterId, latitude: input.latitude, longitude: input.longitude, distanceMeters: Math.round(distance * 100) / 100, withinGeofence, verifiedAt: (input.verifiedAt ?? new Date()).toISOString(), disabled: disabled.has(input.meterId) }; verifications.push(result); return result; }
+export function getGeofence(meterId: string) { return fences.get(meterId); }
+export function listGeofences() { return [...fences.values()]; }
+export function getLocationHistory(meterId: string) { return verifications.filter((v) => v.meterId === meterId); }
+export function isMeterDisabled(meterId: string) { return disabled.has(meterId); }
+export function resetGeofencesForTests() { fences.clear(); verifications.length = 0; disabled.clear(); }

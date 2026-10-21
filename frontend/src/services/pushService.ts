@@ -1,6 +1,7 @@
 import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
+import { env } from "@/lib/env";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:3001";
+const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
 const STORAGE_KEY = "solargrid_push_subscription";
 const PERMISSION_PROMPT_KEY = "solargrid_push_permission_prompted";
 

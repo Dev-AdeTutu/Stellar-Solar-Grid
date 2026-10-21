@@ -1,42 +1,7 @@
 import { randomUUID } from "crypto";
 import type { NextFunction, Request, Response } from "express";
 import { logger } from "./logger.js";
-
-// Field names (case-insensitive) whose values are never written to logs.
-const SENSITIVE_FIELDS = [
-  "secret",
-  "adminsecretkey",
-  "admin_secret_key",
-  "secretkey",
-  "secret_key",
-  "privatekey",
-  "private_key",
-  "password",
-  "apikey",
-  "api_key",
-  "token",
-  "authorization",
-];
-
-function isSensitiveKey(key: string): boolean {
-  const normalized = key.toLowerCase();
-  return SENSITIVE_FIELDS.some((field) => normalized.includes(field));
-}
-
-/** Deep-clones a value, replacing any sensitive field values with "[REDACTED]". */
-function redact(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => redact(item));
-  }
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = isSensitiveKey(key) ? "[REDACTED]" : redact(val);
-    }
-    return out;
-  }
-  return value;
-}
+import { redact } from "./errorSanitizer.js";
 
 export interface RequestLoggerOptions {
   /** Fraction (0-1) of successful (status < 400) requests to log. Errors are always logged. */

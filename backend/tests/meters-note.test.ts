@@ -19,6 +19,7 @@ import { stellarService } from "../src/lib/stellar";
 import {
   addMeterNote,
   getLatestMeterNotes,
+  getAllMeterNotes,
   initMeterNotesStore,
 } from "../src/lib/meterNotes";
 import * as StellarSdk from "@stellar/stellar-sdk";
@@ -98,6 +99,33 @@ describe("meter notes", () => {
         "note-2",
       ]);
       expect(getLatestMeterNotes("other", 5)).toEqual([]);
+    });
+
+    it("#738 sanitizes XSS payloads at write time", () => {
+      const xss = "<script>alert('XSS')</script><img src=x onerror=alert(document.cookie)>";
+      const note = addMeterNote("meter-xss", xss);
+      expect(note.text).not.toContain("<script>");
+      expect(note.text).not.toContain("onerror");
+      expect(note.text).toContain("&lt;script&gt;");
+      expect(note.text).toContain("&lt;img");
+    });
+
+    it("treats SQL-like meter IDs as data across every query", () => {
+      const injectedId = "meter-1' OR 1=1 --";
+      addMeterNote(injectedId, "quoted meter note");
+      addMeterNote("meter-2", "unrelated note");
+
+      const latest = getLatestMeterNotes(injectedId, 5);
+      expect(latest).toHaveLength(1);
+      expect(latest[0]).toEqual(
+        expect.objectContaining({ meter_id: injectedId, text: "quoted meter note" }),
+      );
+
+      const page = getAllMeterNotes(injectedId, 1, 5);
+      expect(page.total).toBe(1);
+      expect(page.notes).toHaveLength(1);
+      expect(page.notes[0].meter_id).toBe(injectedId);
+      expect(getAllMeterNotes("meter-2", 1, 5).total).toBe(1);
     });
   });
 

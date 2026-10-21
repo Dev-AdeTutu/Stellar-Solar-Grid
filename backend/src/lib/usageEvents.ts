@@ -1,10 +1,18 @@
-import fs from "node:fs";
 import path from "node:path";
-import Database from "better-sqlite3";
+import fs from "node:fs";
+import zlib from "node:zlib";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
+import { recordAudit } from "./auditTrail.js";
 import { logger } from "./logger.js";
 import { deadLetterEvents, usageEvents } from "./metrics.js";
+import { registerDatabase } from "./databaseLifecycle.js";
+import { getUTCTimestampDaysAgo } from "./dateUtils.js";
+import { SqlitePool, type SqlitePoolStatus } from "./sqlitePool.js";
+import type Database from "better-sqlite3";
+
+const usageEventsCompacted = { inc: (_n?: number) => {} };
+const usageEventsArchived = { inc: (_n?: number) => {} };
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -14,6 +22,23 @@ const RETRY_INTERVAL_MS = Number(
 );
 const MAX_RETRY_ATTEMPTS = Number(process.env.MAX_RETRY_ATTEMPTS ?? 5);
 const MAX_RETRIES = MAX_RETRY_ATTEMPTS;
+
+// ── Retention / compaction (Closes #685) ────────────────────────────────────
+//
+// usage_events grows ~1KB/event; left unbounded it reaches multiple GB within
+// months at fleet scale. Detailed rows older than DETAIL_RETENTION_DAYS are
+// rolled up into daily (date, meter_id) summaries in usage_summary and
+// deleted. Rows older than ARCHIVE_RETENTION_DAYS are additionally dumped to
+// a gzipped JSONL file under USAGE_ARCHIVE_DIR before deletion, so the raw
+// records aren't lost — point USAGE_ARCHIVE_DIR at a mounted/synced bucket
+// (s3fs, gcsfuse, an `aws s3 sync` cron target, etc.) to treat it as cold
+// storage without pulling a cloud SDK into this service.
+const DETAIL_RETENTION_DAYS = Number(process.env.USAGE_DETAIL_RETENTION_DAYS ?? 90);
+const ARCHIVE_RETENTION_DAYS = Number(process.env.USAGE_ARCHIVE_RETENTION_DAYS ?? 365);
+const ARCHIVE_DIR =
+  process.env.USAGE_ARCHIVE_DIR ?? path.resolve(process.cwd(), "data", "archive");
+const COMPACTION_INTERVAL_MS = Number(process.env.USAGE_COMPACTION_INTERVAL_MS ?? 24 * 60 * 60 * 1000);
+let compactionTimer: NodeJS.Timeout | undefined;
 
 type UsageEventStatus = "pending" | "submitted" | "failed";
 
@@ -42,18 +67,25 @@ type CreateUsageEventInput = {
   energySources?: { solar: number; grid: number; battery: number };
 };
 
-// Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
-// such that the instance type loses its namespace-declared methods at this call site.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const db = openDatabase() as any;
-let retryTimer: NodeJS.Timeout | undefined;
-let retryInFlight = false;
-const activeSubmissionIds = new Set<number>();
+// ── #735: connection pooling ─────────────────────────────────────────────────
+// Previously every usage-event operation shared a single module-level handle,
+// and transient workflows (the IoT bridge submit loop) opened/closed fresh
+// connections per operation. We now route all access through a bounded pool:
+//   - reads use the long-lived primary handle (stable for prepared/ETag cache);
+//   - writes borrow a pooled connection via withConnection() so the bridge's
+//     submit loop reuses warm handles instead of re-opening per event;
+//   - min/max, idle eviction and acquire timeouts bound resource usage;
+//   - status is exposed for health checks / Prometheus (metrics endpoint).
+const pool = new SqlitePool({
+  filename: DB_PATH,
+  min: Number(process.env.USAGE_EVENTS_POOL_MIN ?? 2),
+  max: Number(process.env.USAGE_EVENTS_POOL_MAX ?? 10),
+  idleTimeout: Number(process.env.SQLITE_POOL_IDLE_TIMEOUT_MS ?? 30_000),
+  acquireTimeout: Number(process.env.SQLITE_POOL_ACQUIRE_TIMEOUT_MS ?? 10_000),
+  onOpen: applyUsageEventSchema,
+});
 
-function openDatabase() {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const database = new Database(DB_PATH);
-  database.pragma("journal_mode = WAL");
+function applyUsageEventSchema(database: Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS kv (
       key   TEXT PRIMARY KEY,
@@ -83,37 +115,86 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
       ON usage_events (status, submitted_at);
-  `);
-  const columns = (database.pragma("table_info(usage_events)") as Array<{ name: string }>).map(c => c.name);
-  for (const name of ["reading_id", "energy_solar", "energy_grid", "energy_battery"]) {
-    if (!columns.includes(name)) database.exec(`ALTER TABLE usage_events ADD COLUMN ${name} ${name === "reading_id" ? "TEXT" : "INTEGER"}`);
-  }
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_reading_id ON usage_events(meter_id, reading_id) WHERE reading_id IS NOT NULL");
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS usage_reading_receipts (
-      meter_id TEXT NOT NULL, reading_id TEXT NOT NULL, event_id INTEGER NOT NULL,
-      PRIMARY KEY(meter_id, reading_id)
+
+    -- Daily per-meter rollup of usage_events older than the detail
+    -- retention window (see compactUsageEvents). Primary key is
+    -- (date, meter_id) — not just date — so multiple meters on the same
+    -- day get distinct rows.
+    CREATE TABLE IF NOT EXISTS usage_summary (
+      date TEXT NOT NULL,
+      meter_id TEXT NOT NULL,
+      total_units INTEGER NOT NULL DEFAULT 0,
+      total_cost INTEGER NOT NULL DEFAULT 0,
+      event_count INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (date, meter_id)
     );
-    INSERT OR IGNORE INTO usage_reading_receipts SELECT meter_id, reading_id, id FROM usage_events WHERE reading_id IS NOT NULL;
-    CREATE TRIGGER IF NOT EXISTS usage_reading_receipt AFTER INSERT ON usage_events
-      WHEN NEW.reading_id IS NOT NULL BEGIN
-        INSERT INTO usage_reading_receipts(meter_id, reading_id, event_id) VALUES(NEW.meter_id, NEW.reading_id, NEW.id);
-      END;
+
+    CREATE INDEX IF NOT EXISTS idx_usage_summary_meter_date
+      ON usage_summary (meter_id, date DESC);
+
+    -- #990: grid export credit tracking. Each row records a bidirectional
+    -- meter reading's export side (kWh delivered to the grid) along with the
+    -- credit earned at the configured export rate, so users can be settled.
+    CREATE TABLE IF NOT EXISTS grid_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meter_id TEXT NOT NULL,
+      kwh REAL NOT NULL,
+      credit TEXT NOT NULL,
+      rate TEXT NOT NULL,
+      received_at TEXT NOT NULL,
+      on_chain_tx_hash TEXT,
+      submitted_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_grid_exports_meter_received_at
+      ON grid_exports (meter_id, received_at DESC);
   `);
-  return database;
+}
+
+registerDatabase("usage-events", () => {
+  pool.drain();
+});
+let retryTimer: NodeJS.Timeout | undefined;
+let retryInFlight = false;
+const activeSubmissionIds = new Set<number>();
+
+/** Warm the primary connection so the schema bootstraps at startup. */
+pool.warm();
+
+/**
+ * Read-path accessor. Returns the stable primary handle used by the paginated
+ * and read-only APIs so ETag/prepared caching stays consistent.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function db(): any {
+  return pool.primaryDb();
 }
 
 export function initUsageEventStore() {
-  return db;
+  return pool.primaryDb();
+}
+
+/** Close the usage-event store during graceful application shutdown. */
+export function closeUsageEventStore(): void {
+  if (retryTimer) {
+    clearInterval(retryTimer);
+    retryTimer = undefined;
+  }
+  pool.drain();
+}
+
+/** Expose pool status for health checks / monitoring (#735). */
+export function getUsageEventPoolStatus(): SqlitePoolStatus {
+  return pool.status();
 }
 
 export function getKV(key: string): string | null {
-  const row = db.prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
+  const row = db().prepare('SELECT value FROM kv WHERE key = ?').get(key) as any;
   return row?.value ?? null;
 }
 
 export function setKV(key: string, value: string) {
-  db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
+  db().prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)').run(key, value);
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
@@ -131,33 +212,142 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     }
   }
   const receivedAt = new Date().toISOString();
-  const statement = db.prepare(`
-    INSERT INTO usage_events (
-      meter_id,
-      units,
-      cost,
-      received_at,
-      source_topic,
-      status,
-      attempt_count, reading_id, energy_solar, energy_grid, energy_battery
-    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
-  `);
-
-  const result = statement.run(
-    input.meterId,
-    input.units,
-    String(input.cost),
-    receivedAt,
-    input.sourceTopic ?? null,
-    input.readingId ?? null,
-    input.energySources?.solar ?? null,
-    input.energySources?.grid ?? null,
-    input.energySources?.battery ?? null,
-  );
+  const id = pool.withConnection((database) => {
+    const statement = database.prepare(`
+      INSERT INTO usage_events (
+        meter_id,
+        units,
+        cost,
+        received_at,
+        source_topic,
+        status,
+        attempt_count
+      ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
+    `);
+    return statement.run(
+      input.meterId,
+      input.units,
+      String(input.cost),
+      receivedAt,
+      input.sourceTopic ?? null,
+    ).lastInsertRowid;
+  });
 
   usageEvents.inc({ status: "pending" });
 
-  return getUsageEventById(Number(result.lastInsertRowid))!;
+  return getUsageEventById(Number(id))!;
+}
+
+export type GridExportRecord = {
+  id: number;
+  meter_id: string;
+  kwh: number;
+  credit: string;
+  rate: string;
+  received_at: string;
+  on_chain_tx_hash: string | null;
+  submitted_at: string | null;
+};
+
+export type CreateGridExportInput = {
+  meterId: string;
+  kwh: number;
+  credit: number;
+  rate: number;
+  receivedAt?: string;
+  onChainTxHash?: string | null;
+  submittedAt?: string | null;
+};
+
+/** Persist a grid export reading and the credit earned for it (#990). */
+export function recordGridExport(input: CreateGridExportInput): GridExportRecord {
+  const receivedAt = input.receivedAt ?? new Date().toISOString();
+  const id = pool.withConnection((database) => {
+    const statement = database.prepare(`
+      INSERT INTO grid_exports (
+        meter_id,
+        kwh,
+        credit,
+        rate,
+        received_at,
+        on_chain_tx_hash,
+        submitted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    return statement.run(
+      input.meterId,
+      input.kwh,
+      String(input.credit),
+      String(input.rate),
+      receivedAt,
+      input.onChainTxHash ?? null,
+      input.submittedAt ?? null,
+    ).lastInsertRowid;
+  });
+
+  return db()
+    .prepare("SELECT * FROM grid_exports WHERE id = ?")
+    .get(Number(id)) as GridExportRecord;
+}
+
+/** Paginated export history for a meter, newest first (#990). */
+export function getGridExportHistory(
+  meterId: string,
+  page: number,
+  pageSize: number,
+): {
+  exports: GridExportRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
+} {
+  const offset = (page - 1) * pageSize;
+
+  const exports = db()
+    .prepare(
+      "SELECT * FROM grid_exports WHERE meter_id = ? " +
+      "ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?",
+    )
+    .all(meterId, pageSize, offset) as GridExportRecord[];
+
+  const { count } = db()
+    .prepare("SELECT COUNT(*) as count FROM grid_exports WHERE meter_id = ?")
+    .get(meterId) as { count: number };
+
+  return {
+    exports,
+    page,
+    pageSize,
+    total: count,
+    hasMore: offset + pageSize < count,
+  };
+}
+
+/** Aggregate import/export kWh and export credits for a meter (#990). */
+export function getGridExportTotals(meterId: string): {
+  importedKwh: number;
+  exportedKwh: number;
+  totalCredit: number;
+  exportCount: number;
+} {
+  const importRow = db()
+    .prepare("SELECT COALESCE(SUM(units), 0) AS units FROM usage_events WHERE meter_id = ?")
+    .get(meterId) as { units: number };
+
+  const exportRow = db()
+    .prepare(
+      "SELECT COALESCE(SUM(kwh), 0) AS kwh, COALESCE(SUM(CAST(credit AS REAL)), 0) AS credit, " +
+      "COUNT(*) AS count FROM grid_exports WHERE meter_id = ?",
+    )
+    .get(meterId) as { kwh: number; credit: number; count: number };
+
+  return {
+    importedKwh: Number(importRow?.units ?? 0) / 1000,
+    exportedKwh: Number(exportRow?.kwh ?? 0),
+    totalCredit: Number(exportRow?.credit ?? 0),
+    exportCount: Number(exportRow?.count ?? 0),
+  };
 }
 
 export function getUsageHistory(
@@ -173,14 +363,14 @@ export function getUsageHistory(
 } {
   const offset = (page - 1) * pageSize;
 
-  const events = db
+  const events = db()
     .prepare(
       "SELECT id, meter_id, units, cost, on_chain_tx_hash, received_at " +
       "FROM usage_events WHERE meter_id = ? ORDER BY received_at DESC, id DESC LIMIT ? OFFSET ?"
     )
     .all(meterId, pageSize, offset) as UsageEventRecord[];
 
-  const { count } = db
+  const { count } = db()
     .prepare("SELECT COUNT(*) as count FROM usage_events WHERE meter_id = ?")
     .get(meterId) as { count: number };
 
@@ -193,8 +383,37 @@ export function getUsageHistory(
   };
 }
 
+export type HourlyUsageSample = { timestamp: string; energyKwh: number };
+
+/** Hourly usage totals in kWh; source events store energy in milli-kWh. */
+export function getHourlyUsage(meterId: string, days = 90, now = new Date()): HourlyUsageSample[] {
+  const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString();
+  const rows = db()
+    .prepare(`
+      SELECT substr(received_at, 1, 13) AS hour, SUM(units) AS units
+      FROM usage_events
+      WHERE meter_id = ? AND status = 'submitted' AND received_at >= ?
+      GROUP BY hour ORDER BY hour ASC
+    `)
+    .all(meterId, cutoff) as Array<{ hour: string; units: number }>;
+  const byHour = new Map(rows.map((row) => [row.hour, Number(row.units) / 1000]));
+  const first = new Date(now.getTime() - days * 86_400_000);
+  first.setUTCMinutes(0, 0, 0);
+  const last = new Date(now);
+  last.setUTCMinutes(0, 0, 0);
+  const samples: HourlyUsageSample[] = [];
+  for (let hour = first.getTime(); hour <= last.getTime(); hour += 3_600_000) {
+    const timestamp = new Date(hour).toISOString();
+    samples.push({
+      timestamp,
+      energyKwh: byHour.get(timestamp.slice(0, 13)) ?? 0,
+    });
+  }
+  return samples;
+}
+
 export function getTypicalWeeklyUsageStroops(meterId: string): number {
-  const row = db
+  const row = db()
     .prepare(
       `
         SELECT COALESCE(SUM(CAST(cost AS INTEGER)), 0) as weekly_cost
@@ -241,40 +460,49 @@ export function insertSubmittedUsageEvents(
   txHash: string,
 ) {
   const now = new Date().toISOString();
-  const stmt = db.prepare(
-    `
-      INSERT INTO usage_events (
-        meter_id,
-        units,
-        cost,
-        received_at,
-        source_topic,
-        status,
-        attempt_count,
-        last_attempt_at,
-        on_chain_tx_hash,
-        submitted_at
-      ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
-    `,
-  );
+  pool.withConnection((database) => {
+    const stmt = database.prepare(
+      `
+        INSERT INTO usage_events (
+          meter_id,
+          units,
+          cost,
+          received_at,
+          source_topic,
+          status,
+          attempt_count,
+          last_attempt_at,
+          on_chain_tx_hash,
+          submitted_at
+        ) VALUES (?, ?, ?, ?, ?, 'submitted', 1, ?, ?, ?)
+      `,
+    );
 
-  const insert = db.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
-    for (const r of rows) {
-      stmt.run(
-        r.meterId,
-        r.units,
-        String(r.cost),
-        now,
-        r.sourceTopic ?? null,
-        now,
-        txHash,
-        now,
-      );
-      usageEvents.inc({ status: "submitted" });
-    }
+    const insert = database.transaction((rows: Array<{ meterId: string; units: number; cost: number; sourceTopic?: string | null }>) => {
+      for (const r of rows) {
+        stmt.run(
+          r.meterId,
+          r.units,
+          String(r.cost),
+          now,
+          r.sourceTopic ?? null,
+          now,
+          txHash,
+          now,
+        );
+        usageEvents.inc({ status: "submitted" });
+      }
+    });
+
+    insert(readings);
   });
 
-  insert(readings);
+  recordAudit({
+    action: "usage_batch_submitted",
+    txHash,
+    amount: readings.reduce((sum, r) => sum + r.cost, 0),
+    details: { count: readings.length, meters: [...new Set(readings.map((r) => r.meterId))] },
+  });
 }
 
 export function startUsageEventRetryWorker() {
@@ -304,7 +532,7 @@ export async function retryQueuedUsageEvents() {
 
   retryInFlight = true;
   try {
-    const queued = db
+    const queued = db()
       .prepare(
         `
           SELECT id
@@ -333,8 +561,11 @@ export type TopConsumer = {
 
 /** Top consumers by total units used over the last `days` days. */
 export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
-  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-  const rows = db
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const sinceTimestamp = getUTCTimestampDaysAgo(days);
+  const since = new Date(sinceTimestamp).toISOString();
+
+  const rows = db()
     .prepare(
       `
         SELECT meter_id AS meterId, SUM(units) AS totalUnits
@@ -355,9 +586,7 @@ export function getTopConsumers(days: number, limit = 10): TopConsumer[] {
 }
 
 function getUsageEventById(id: number): UsageEventRecord | undefined {
-  return db
-    .prepare("SELECT * FROM usage_events WHERE id = ?")
-    .get(id) as UsageEventRecord | undefined;
+  return db().prepare("SELECT * FROM usage_events WHERE id = ?").get(id) as UsageEventRecord | undefined;
 }
 
 async function submitUsageEvent(id: number) {
@@ -380,18 +609,29 @@ async function submitUsageEvent(id: number) {
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = 'submitted',
-            attempt_count = attempt_count + 1,
-            last_attempt_at = ?,
-            last_error = NULL,
-            on_chain_tx_hash = ?,
-            submitted_at = ?
-        WHERE id = ?
-      `
-    ).run(attemptedAt, hash, attemptedAt, id);
+    pool.withConnection((database) => {
+      database
+        .prepare(
+          `
+            UPDATE usage_events
+            SET status = 'submitted',
+                attempt_count = attempt_count + 1,
+                last_attempt_at = ?,
+                last_error = NULL,
+                on_chain_tx_hash = ?,
+                submitted_at = ?
+            WHERE id = ?
+          `
+        )
+        .run(attemptedAt, hash, attemptedAt, id);
+    });
+    recordAudit({
+      action: "usage_submitted",
+      meterId: event.meter_id,
+      amount: event.cost,
+      txHash: hash,
+      details: { units: event.units, eventId: id },
+    });
 
     usageEvents.inc({ status: "submitted" });
 
@@ -411,23 +651,27 @@ async function submitUsageEvent(id: number) {
       deadLetterEvents.inc({ meter_id: event.meter_id });
     }
 
-    db.prepare(
-      `
-        UPDATE usage_events
-        SET status = ?,
-            attempt_count = ?,
-            last_attempt_at = ?,
-            last_error = ?,
-            on_chain_tx_hash = NULL
-        WHERE id = ?
-      `
-    ).run(
-      finalStatus,
-      nextAttemptCount,
-      attemptedAt,
-      error instanceof Error ? error.message : String(error),
-      id
-    );
+    pool.withConnection((database) => {
+      database
+        .prepare(
+          `
+            UPDATE usage_events
+            SET status = ?,
+                attempt_count = ?,
+                last_attempt_at = ?,
+                last_error = ?,
+                on_chain_tx_hash = NULL
+            WHERE id = ?
+          `
+        )
+        .run(
+          finalStatus,
+          nextAttemptCount,
+          attemptedAt,
+          error instanceof Error ? error.message : String(error),
+          id,
+        );
+    });
 
     usageEvents.inc({ status: finalStatus });
 
@@ -435,6 +679,30 @@ async function submitUsageEvent(id: number) {
   } finally {
     activeSubmissionIds.delete(id);
   }
+}
+
+export type MeterUsageStats = {
+  meter_id: string;
+  total_units: number;
+  total_cost: number;
+  event_count: number;
+  active_days: number;
+  first_seen: string;
+};
+
+/** Aggregate per-meter usage totals (used by leaderboards and achievements). */
+export function getMeterUsageStats(): MeterUsageStats[] {
+  return db()
+    .prepare(
+      `SELECT meter_id,
+              SUM(units) AS total_units,
+              SUM(CAST(cost AS REAL)) AS total_cost,
+              COUNT(*) AS event_count,
+              COUNT(DISTINCT substr(received_at, 1, 10)) AS active_days,
+              MIN(received_at) AS first_seen
+       FROM usage_events GROUP BY meter_id`,
+    )
+    .all() as MeterUsageStats[];
 }
 
 /**
@@ -445,7 +713,7 @@ export function getDeadLetterEvents(
   limit = 50,
   offset = 0,
 ): { events: UsageEventRecord[]; total: number } {
-  const events = db
+  const events = db()
     .prepare(
       `SELECT * FROM usage_events
        WHERE status = 'failed'
@@ -454,7 +722,7 @@ export function getDeadLetterEvents(
     )
     .all(limit, offset) as UsageEventRecord[];
 
-  const { count } = db
+  const { count } = db()
     .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
     .get() as { count: number };
 
@@ -470,14 +738,18 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
   const event = getUsageEventById(id);
   if (!event || event.status !== 'failed') return undefined;
 
-  db.prepare(
-    `UPDATE usage_events
-     SET status = 'pending',
-         attempt_count = 0,
-         last_error = NULL,
-         last_attempt_at = NULL
-     WHERE id = ?`,
-  ).run(id);
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `UPDATE usage_events
+         SET status = 'pending',
+             attempt_count = 0,
+             last_error = NULL,
+             last_attempt_at = NULL
+         WHERE id = ?`,
+      )
+      .run(id);
+  });
 
   logger.info({ eventId: id, meterId: event.meter_id }, 'Dead-lettered event requeued for retry');
   return getUsageEventById(id);
@@ -485,11 +757,196 @@ export function requeueDeadLetterEvent(id: number): UsageEventRecord | undefined
 
 /** Purge submitted events older than N days. Returns deleted row count. */
 export function purgeSubmittedUsageEvents(olderThanDays: number): number {
-  const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000).toISOString();
-  const result = db
-    .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
-    .run(cutoff);
-  return result.changes;
+  // Use UTC-aware timestamp calculation to prevent timezone-dependent cutoff
+  const cutoffTimestamp = getUTCTimestampDaysAgo(olderThanDays);
+  const cutoff = new Date(cutoffTimestamp).toISOString();
+
+  return pool.withConnection((database) => {
+    const result = database
+      .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+      .run(cutoff);
+    return result.changes;
+  });
+}
+
+export type UsageCompactionResult = {
+  /** Detailed rows rolled into usage_summary and deleted. */
+  compactedCount: number;
+  /** Distinct (date, meter_id) summary rows touched. */
+  summaryRowsTouched: number;
+  /** Rows additionally written to a cold-storage archive file before deletion. */
+  archivedCount: number;
+  archiveFile: string | null;
+  vacuumed: boolean;
+};
+
+function isoDaysAgo(days: number): string {
+  return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * Write rows to a gzipped JSONL "cold storage" archive file before they're
+ * deleted from usage_events. Returns the file path, or null if there was
+ * nothing to archive.
+ */
+function archiveUsageEvents(rows: UsageEventRecord[]): string | null {
+  if (rows.length === 0) return null;
+
+  fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+  const fileName = `usage-events-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl.gz`;
+  const filePath = path.join(ARCHIVE_DIR, fileName);
+
+  const jsonl = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+  fs.writeFileSync(filePath, zlib.gzipSync(Buffer.from(jsonl, "utf8")));
+
+  return filePath;
+}
+
+/**
+ * Retention job (Closes #685): rolls detailed 'submitted' usage_events older
+ * than `detailedRetentionDays` (default 90) into daily per-meter summaries in
+ * usage_summary, archives events older than `archiveRetentionDays` (default
+ * 365) to a gzipped JSONL file under USAGE_ARCHIVE_DIR, deletes the now-
+ * redundant detail rows, and reclaims disk space with VACUUM.
+ *
+ * Only 'submitted' events are touched — 'pending' and 'failed' events are
+ * left alone so retry/replay flows keep working regardless of age.
+ * Idempotent: running it again with nothing left to compact is a no-op.
+ */
+export function compactUsageEvents(options?: {
+  detailedRetentionDays?: number;
+  archiveRetentionDays?: number;
+}): UsageCompactionResult {
+  const detailedRetentionDays = options?.detailedRetentionDays ?? DETAIL_RETENTION_DAYS;
+  const archiveRetentionDays = options?.archiveRetentionDays ?? ARCHIVE_RETENTION_DAYS;
+  const detailCutoff = isoDaysAgo(detailedRetentionDays);
+  const archiveCutoff = isoDaysAgo(archiveRetentionDays);
+
+  // Archive the oldest slice first (and only) — its rows are also covered by
+  // the compaction cutoff below, so they get deleted along with everything
+  // else once the archive write has succeeded.
+  const toArchive = db()
+    .prepare("SELECT * FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+    .all(archiveCutoff) as UsageEventRecord[];
+  const archiveFile = archiveUsageEvents(toArchive);
+  if (toArchive.length > 0) {
+    usageEventsArchived.inc(toArchive.length);
+    logger.info("Archived usage events to cold storage", {
+      count: toArchive.length,
+      archiveFile,
+    });
+  }
+
+  const summaryUpsert = db().prepare(`
+    INSERT INTO usage_summary (date, meter_id, total_units, total_cost, event_count)
+    SELECT
+      substr(received_at, 1, 10) AS date,
+      meter_id,
+      SUM(units) AS total_units,
+      SUM(CAST(cost AS INTEGER)) AS total_cost,
+      COUNT(*) AS event_count
+    FROM usage_events
+    WHERE status = 'submitted' AND received_at < ?
+    GROUP BY date, meter_id
+    ON CONFLICT(date, meter_id) DO UPDATE SET
+      total_units = total_units + excluded.total_units,
+      total_cost = total_cost + excluded.total_cost,
+      event_count = event_count + excluded.event_count
+  `);
+
+  const runCompaction = db().transaction((cutoff: string) => {
+    const summaryResult = summaryUpsert.run(cutoff);
+    const deleteResult = db()
+      .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
+      .run(cutoff);
+    return { summaryRowsTouched: summaryResult.changes, compactedCount: deleteResult.changes };
+  });
+
+  const { summaryRowsTouched, compactedCount } = runCompaction(detailCutoff);
+
+  let vacuumed = false;
+  if (compactedCount > 0) {
+    usageEventsCompacted.inc(compactedCount);
+    db().exec("VACUUM");
+    vacuumed = true;
+    logger.info("Usage event compaction complete", {
+      compactedCount,
+      summaryRowsTouched,
+      archivedCount: toArchive.length,
+      detailedRetentionDays,
+      archiveRetentionDays,
+    });
+  }
+
+  return {
+    compactedCount,
+    summaryRowsTouched,
+    archivedCount: toArchive.length,
+    archiveFile,
+    vacuumed,
+  };
+}
+
+/** Aggregated daily usage for a meter (or all meters), most recent first. */
+export function getUsageSummary(
+  meterId?: string,
+  limit = 90,
+): Array<{ date: string; meter_id: string; total_units: number; total_cost: number; event_count: number }> {
+  if (meterId) {
+    return db()
+      .prepare(
+        "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary WHERE meter_id = ? ORDER BY date DESC LIMIT ?",
+      )
+      .all(meterId, limit) as any[];
+  }
+  return db()
+    .prepare(
+      "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary ORDER BY date DESC LIMIT ?",
+    )
+    .all(limit) as any[];
+}
+
+/**
+ * Start the daily compaction worker. Runs once at the next 2 AM UTC, then
+ * every COMPACTION_INTERVAL_MS (default 24h) thereafter.
+ */
+export function startUsageCompactionWorker() {
+  if (compactionTimer) return;
+
+  const runAndReschedule = () => {
+    try {
+      compactUsageEvents();
+    } catch (err) {
+      logger.error("Usage event compaction failed", { err });
+    }
+    compactionTimer = setTimeout(runAndReschedule, COMPACTION_INTERVAL_MS);
+    compactionTimer.unref?.();
+  };
+
+  const now = new Date();
+  const next2am = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 2, 0, 0, 0),
+  );
+  if (next2am.getTime() <= now.getTime()) {
+    next2am.setUTCDate(next2am.getUTCDate() + 1);
+  }
+  const initialDelayMs = next2am.getTime() - now.getTime();
+
+  logger.info("Usage event compaction worker scheduled", {
+    firstRunAt: next2am.toISOString(),
+    intervalMs: COMPACTION_INTERVAL_MS,
+  });
+
+  compactionTimer = setTimeout(runAndReschedule, initialDelayMs);
+  compactionTimer.unref?.();
+
+  process.on("SIGTERM", () => {
+    if (compactionTimer) {
+      clearTimeout(compactionTimer);
+      compactionTimer = undefined;
+      logger.info("Usage event compaction worker stopped on SIGTERM");
+    }
+  });
 }
 
 /** Alias for getDeadLetterEvents with page/pageSize convention. */
@@ -507,7 +964,7 @@ export function replayFailedUsageEvent(id: number): UsageEventRecord | undefined
 
 /** Count of events currently in dead-letter state (used by /health). */
 export function countDeadLetterEvents(): number {
-  const row = db
+  const row = db()
     .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
     .get() as { count: number };
   return row.count;

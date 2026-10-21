@@ -15,10 +15,15 @@
  *   - In all environments: the entry is also emitted at INFO level through
  *     the standard winston logger (tagged with `audit: true`) so it appears
  *     in any log shipper already pointed at stdout.
+ *
+ * Export:
+ *   - GET /api/admin/audit-logs              — paginated JSON query (closes #744)
+ *   - GET /api/admin/audit-logs/export?format=csv|json — bulk download (closes #744)
  */
 
 import fs from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { logger } from "./logger.js";
 
 export type AuditEntry = {
@@ -34,6 +39,11 @@ export type AuditEntry = {
   ip: string;
   /** Optional: admin key identity hint (last 4 chars) for multi-key setups */
   keyHint: string;
+  /**
+   * Tenant (provider) the action was performed for. Used to enforce
+   * row-level isolation of audit records between providers (#1049).
+   */
+  providerId?: string | null;
 };
 
 // ── File sink (optional) ──────────────────────────────────────────────────────
@@ -97,6 +107,8 @@ export function buildAuditEntry(
     headers: Record<string, string | string[] | undefined>;
     socket?: { remoteAddress?: string };
     ip?: string;
+    /** Tenant context resolved by the tenant-isolation middleware (#1049). */
+    tenant?: { providerId?: string | null } | null;
   },
 ): AuditEntry {
   // Prefer x-forwarded-for (set by reverse proxies) over socket IP
@@ -119,5 +131,239 @@ export function buildAuditEntry(
     params: req.body ?? null,
     ip,
     keyHint,
+    providerId: req.tenant?.providerId ?? null,
   };
+}
+
+// ── Query / export helpers (closes #744) ─────────────────────────────────────
+
+export interface AuditQueryOptions {
+  /** Inclusive lower bound (ISO-8601). */
+  start?: string;
+  /** Inclusive upper bound (ISO-8601). */
+  end?: string;
+  /** Filter by event path substring (e.g. "/api/meters"). */
+  eventType?: string;
+  /** Max entries to return. Defaults to 500. */
+  limit?: number;
+  /** Number of entries to skip (for pagination). Defaults to 0. */
+  offset?: number;
+  /**
+   * Tenant (provider) whose audit records may be read. When set, only
+   * entries belonging to this provider are returned — cross-tenant audit
+   * access is impossible (#1049). When omitted, no tenant filtering is
+   * applied (internal/system callers only).
+   */
+  providerId?: string | null;
+}
+
+/**
+ * Read the JSONL audit log file line-by-line and return matching entries.
+ *
+ * Parsing is streaming (readline) so large log files do not load entirely
+ * into memory. The function resolves once the end of file is reached.
+ *
+ * Closes #744.
+ */
+export async function queryAuditLog(
+  opts: AuditQueryOptions = {},
+): Promise<{ entries: (AuditEntry & { audit?: true })[]; total: number }> {
+  const { start, end, eventType, limit = 500, offset = 0, providerId } = opts;
+  const startMs = start ? new Date(start).getTime() : -Infinity;
+  const endMs = end ? new Date(end).getTime() : Infinity;
+  const tenantScoped = providerId !== undefined;
+
+  if (!fs.existsSync(AUDIT_LOG_PATH)) {
+    return { entries: [], total: 0 };
+  }
+
+  const matching: (AuditEntry & { audit?: true })[] = [];
+
+  await new Promise<void>((resolve, reject) => {
+    const fileStream = fs.createReadStream(AUDIT_LOG_PATH, { encoding: "utf8" });
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    fileStream.on("error", reject);
+    rl.on("error", reject);
+    rl.on("close", resolve);
+
+    rl.on("line", (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      try {
+        const record = JSON.parse(trimmed) as AuditEntry & { audit?: true };
+        if (!record.timestamp) return;
+
+        const ts = new Date(record.timestamp).getTime();
+        if (ts < startMs || ts > endMs) return;
+        if (eventType && !record.path.includes(eventType)) return;
+        // Row-level tenant isolation: never leak another provider's records.
+        if (tenantScoped && (record.providerId ?? null) !== (providerId ?? null)) {
+          return;
+        }
+
+        matching.push(record);
+      } catch {
+        // Skip malformed lines
+      }
+    });
+  });
+
+  const total = matching.length;
+  const entries = matching.slice(offset, offset + limit);
+  return { entries, total };
+}
+
+/**
+ * Serialise audit entries as a CSV string.
+ * Columns: timestamp, method, path, ip, keyHint, providerId, params
+ *
+ * Closes #744.
+ */
+export function auditEntriesToCsv(
+  entries: (AuditEntry & { audit?: true })[],
+): string {
+  const header = "timestamp,method,path,ip,keyHint,providerId,params";
+  const rows = entries.map((e) => {
+    const params = JSON.stringify(e.params ?? null).replace(/"/g, '""');
+    const providerId = e.providerId ?? "";
+    return `${e.timestamp},${e.method},${e.path},${e.ip},${e.keyHint},${providerId},"${params}"`;
+  });
+  return [header, ...rows].join("\n");
+}
+
+/**
+ * Filter audit entries down to a single tenant (provider).
+ *
+ * Used by export endpoints to guarantee that a provider can only ever
+ * download its own audit trail (#1049). When `providerId` is undefined the
+ * entries are returned unchanged (internal/system callers only).
+ */
+export function filterAuditEntriesByTenant(
+  entries: (AuditEntry & { audit?: true })[],
+  providerId?: string | null,
+): (AuditEntry & { audit?: true })[] {
+  if (providerId === undefined) return entries;
+  return entries.filter((e) => (e.providerId ?? null) === (providerId ?? null));
+}
+
+// ── Energy data export (closes #905) ─────────────────────────────────────────
+
+/** Supported export serialisation formats. */
+export type ExportFormat = "csv" | "json" | "xml";
+
+/** A single energy transaction record included in a personal data export. */
+export interface EnergyTransaction {
+  /** ISO-8601 timestamp of the transaction. */
+  timestamp: string;
+  /** Meter identifier the transaction belongs to. */
+  meterId: string;
+  /** Transaction type, e.g. "production" | "consumption" | "trade". */
+  type: string;
+  /** Energy amount in kWh. */
+  amountKwh: number;
+  /** Optional monetary value associated with the transaction. */
+  value?: number;
+  /** Optional free-form metadata. */
+  metadata?: Record<string, unknown>;
+}
+
+/** Options controlling which transactions are included in an export. */
+export interface EnergyExportOptions {
+  /** Inclusive lower bound (ISO-8601). */
+  start?: string;
+  /** Inclusive upper bound (ISO-8601). */
+  end?: string;
+  /** Filter by meter identifier. */
+  meterId?: string;
+  /** Filter by transaction type. */
+  type?: string;
+}
+
+/**
+ * Filter a user's energy transactions by date range and optional
+ * meter/type filters. Used by the personal data export endpoint (#905).
+ */
+export function filterEnergyTransactions(
+  transactions: EnergyTransaction[],
+  opts: EnergyExportOptions = {},
+): EnergyTransaction[] {
+  const { start, end, meterId, type } = opts;
+  const startMs = start ? new Date(start).getTime() : -Infinity;
+  const endMs = end ? new Date(end).getTime() : Infinity;
+
+  return transactions.filter((tx) => {
+    const ts = new Date(tx.timestamp).getTime();
+    if (Number.isNaN(ts) || ts < startMs || ts > endMs) return false;
+    if (meterId && tx.meterId !== meterId) return false;
+    if (type && tx.type !== type) return false;
+    return true;
+  });
+}
+
+/** Escape a value for safe inclusion in an XML text node. */
+function escapeXml(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+/**
+ * Serialise energy transactions as CSV.
+ * Columns: timestamp, meterId, type, amountKwh, value, metadata
+ */
+export function energyTransactionsToCsv(transactions: EnergyTransaction[]): string {
+  const header = "timestamp,meterId,type,amountKwh,value,metadata";
+  const rows = transactions.map((tx) => {
+    const metadata = JSON.stringify(tx.metadata ?? null).replace(/"/g, '""');
+    return `${tx.timestamp},${tx.meterId},${tx.type},${tx.amountKwh},${tx.value ?? ""},"${metadata}"`;
+  });
+  return [header, ...rows].join("\n");
+}
+
+/**
+ * Serialise energy transactions as XML.
+ */
+export function energyTransactionsToXml(transactions: EnergyTransaction[]): string {
+  const items = transactions
+    .map((tx) => {
+      const metadata = tx.metadata
+        ? `<metadata>${escapeXml(JSON.stringify(tx.metadata))}</metadata>`
+        : "";
+      return (
+        "  <transaction>" +
+        `<timestamp>${escapeXml(tx.timestamp)}</timestamp>` +
+        `<meterId>${escapeXml(tx.meterId)}</meterId>` +
+        `<type>${escapeXml(tx.type)}</type>` +
+        `<amountKwh>${escapeXml(tx.amountKwh)}</amountKwh>` +
+        (tx.value !== undefined ? `<value>${escapeXml(tx.value)}</value>` : "") +
+        metadata +
+        "</transaction>"
+      );
+    })
+    .join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<energyExport>\n${items}\n</energyExport>`;
+}
+
+/**
+ * Serialise energy transactions in the requested format.
+ *
+ * Closes #905 — supports CSV, JSON, and XML output for GDPR data exports.
+ */
+export function serializeEnergyExport(
+  transactions: EnergyTransaction[],
+  format: ExportFormat,
+): string {
+  switch (format) {
+    case "csv":
+      return energyTransactionsToCsv(transactions);
+    case "xml":
+      return energyTransactionsToXml(transactions);
+    case "json":
+    default:
+      return JSON.stringify({ transactions }, null, 2);
+  }
 }

@@ -4,22 +4,46 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useWalletStore } from "@/store/walletStore";
+
+const NAV_LINKS = [
+  { href: "/dashboard/user", label: "My Meter" },
+  { href: "/pay", label: "Pay" },
+  { href: "/dashboard/provider", label: "Provider" },
+  { href: "/history", label: "History" },
+  { href: "/marketplace", label: "Algos" },
+  { href: "/admin/batch", label: "Batch" },
+];
 import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
-import { useLocale } from "@/components/I18nProvider";
+import { useLocale, type Locale, LOCALE_OPTIONS } from "@/components/I18nProvider";
+import { branding } from "@/lib/branding";
 
 export default function Navbar() {
   const { connectError, clearConnectError } = useWalletStore();
   const [menuOpen, setMenuOpen] = useState(false);
   const [theme, setTheme] = useState("dark");
   const t = useTranslations("nav");
-  const { toggleLocale } = useLocale();
+  const { locale, setLocale } = useLocale();
 
   const NAV_LINKS = [
     { href: "/dashboard/user", label: t("myMeter") },
+    { href: "/multisig", label: t("multisig") },
     { href: "/pay", label: t("pay") },
     { href: "/dashboard/provider", label: t("provider") },
     { href: "/history", label: t("history") },
+    { href: "/analytics", label: t("analytics") },
+    { href: "/resilience", label: t("resilience") },
+    { href: "/privacy", label: t("privacy") },
+    { href: "/bills", label: t("bills") },
+    { href: "/communities", label: t("communities") },
+    { href: "/competitions", label: t("competitions") },
+    { href: "/simulator", label: "Practice trading" },
+    { href: "/smart-home", label: t("smartHome") },
+    { href: "/backtest", label: "Backtest" },
+    { href: "/widget", label: "Widget" },
+    { href: "/leases", label: "Meter leasing" },
+    { href: "/compliance", label: "Compliance" },
+    { href: "/recs", label: "RECs" },
   ];
 
   useEffect(() => {
@@ -52,8 +76,18 @@ export default function Navbar() {
     <nav aria-label="Main navigation" className="bg-solar-accent border-b border-white/10 relative z-50">
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 sm:px-6">
-        <Link href="/" className="text-xl font-bold text-solar-yellow" onClick={closeMenu}>
-          ☀️ {t("brand")}
+        <Link
+          href="/"
+          className="flex items-center gap-2 text-xl font-bold text-solar-yellow"
+          onClick={closeMenu}
+        >
+          {branding.logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- provider-configured, arbitrary remote URL
+            <img src={branding.logoUrl} alt={`${branding.name} logo`} className="h-7 w-auto" />
+          ) : (
+            "☀️"
+          )}
+          {branding.name}
         </Link>
 
         {/* Desktop links */}
@@ -67,15 +101,23 @@ export default function Navbar() {
               {l.label}
             </Link>
           ))}
-          {/* Language toggle */}
-          <button
-            onClick={toggleLocale}
-            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+          {/* Language selector */}
+          <label className="sr-only" htmlFor="desktop-language-select">
+            {t("languageLabel")}
+          </label>
+          <select
+            id="desktop-language-select"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
             aria-label={t("languageLabel")}
-            title={t("languageLabel")}
+            className="rounded-lg border border-white/20 bg-transparent px-2 py-1 text-xs font-semibold text-gray-300 transition hover:border-white/40 hover:text-white"
           >
-            {t("languageToggle")}
-          </button>
+            {LOCALE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} className="bg-solar-accent text-white">
+                {option.label}
+              </option>
+            ))}
+          </select>
           <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>
@@ -84,14 +126,22 @@ export default function Navbar() {
 
         {/* Mobile: language toggle + wallet button + hamburger */}
         <div className="flex items-center gap-2 sm:hidden">
-          <button
-            onClick={toggleLocale}
-            className="text-xs font-semibold text-gray-300 hover:text-white transition border border-white/20 rounded-lg px-2 py-1"
+          <label className="sr-only" htmlFor="mobile-language-select">
+            {t("languageLabel")}
+          </label>
+          <select
+            id="mobile-language-select"
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
             aria-label={t("languageLabel")}
-            title={t("languageLabel")}
+            className="max-w-24 rounded-lg border border-white/20 bg-transparent px-2 py-1 text-xs font-semibold text-gray-300 transition hover:border-white/40 hover:text-white"
           >
-            {t("languageToggle")}
-          </button>
+            {LOCALE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} className="bg-solar-accent text-white">
+                {option.label}
+              </option>
+            ))}
+          </select>
           <button onClick={toggleTheme} className="text-xl" title={t("toggleTheme")} aria-label={t("toggleTheme")}>
             {theme === "dark" ? "🌙" : "☀️"}
           </button>

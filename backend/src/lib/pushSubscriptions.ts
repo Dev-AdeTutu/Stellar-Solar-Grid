@@ -17,6 +17,15 @@ type PushSubscriptionInput = {
   auth: string;
 };
 
+export type NativePushSubscriptionRecord = {
+  id: number;
+  owner_address: string;
+  token: string;
+  platform: "ios" | "android";
+  created_at: string;
+  updated_at: string;
+};
+
 // Cast is aligned with usageEvents store typing in this codebase.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let db: any;
@@ -49,6 +58,17 @@ function ensurePushSubscriptionTable() {
 
     CREATE INDEX IF NOT EXISTS idx_push_subscriptions_owner
       ON push_subscriptions (owner_address);
+
+    CREATE TABLE IF NOT EXISTS native_push_subscriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      owner_address TEXT NOT NULL,
+      token TEXT NOT NULL UNIQUE,
+      platform TEXT NOT NULL CHECK (platform IN ('ios', 'android')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_native_push_subscriptions_owner
+      ON native_push_subscriptions (owner_address);
   `);
 }
 
@@ -104,4 +124,29 @@ export function deletePushSubscriptionByEndpoint(endpoint: string): number {
     .prepare("DELETE FROM push_subscriptions WHERE endpoint = ?")
     .run(endpoint);
   return result.changes;
+}
+
+export function upsertNativePushSubscription(input: {
+  ownerAddress: string;
+  token: string;
+  platform: "ios" | "android";
+}): void {
+  const now = new Date().toISOString();
+  getDb().prepare(`
+    INSERT INTO native_push_subscriptions (owner_address, token, platform, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(token) DO UPDATE SET owner_address = excluded.owner_address,
+      platform = excluded.platform, updated_at = excluded.updated_at
+  `).run(input.ownerAddress, input.token, input.platform, now, now);
+}
+
+export function listNativePushSubscriptionsByOwner(ownerAddress: string): NativePushSubscriptionRecord[] {
+  return getDb().prepare(`
+    SELECT id, owner_address, token, platform, created_at, updated_at
+    FROM native_push_subscriptions WHERE owner_address = ?
+  `).all(ownerAddress) as NativePushSubscriptionRecord[];
+}
+
+export function deleteNativePushSubscription(token: string): number {
+  return getDb().prepare("DELETE FROM native_push_subscriptions WHERE token = ?").run(token).changes;
 }

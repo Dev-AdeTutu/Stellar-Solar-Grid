@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Request, Response } from "express";
 import { statsRouter, __resetStatsCache } from "../src/routes/stats";
+import { analyticsRouter } from "../src/routes/analytics";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { stellarService } from "../src/lib/stellar";
 
@@ -9,6 +10,28 @@ vi.mock("../src/lib/stellar", () => ({
     query: vi.fn(),
   },
 }));
+
+describe("analyticsRouter - GET /api/analytics/usage", () => {
+  it("returns aggregated usage statistics with the requested granularity", async () => {
+    const req = { query: { start_date: "2024-01-01", end_date: "2024-01-10", granularity: "daily" } } as any;
+    const res = { json: vi.fn(), status: vi.fn().mockReturnThis() } as any;
+
+    const handler = analyticsRouter.stack.find(
+      (layer: any) => layer.route?.path === "/usage" && layer.route?.methods.get,
+    )?.route?.stack[0]?.handle;
+
+    if (!handler) throw new Error("analytics usage endpoint handler not found");
+
+    await handler(req, res);
+
+    expect(res.status).not.toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalled();
+    const payload = res.json.mock.calls[0][0];
+    expect(payload).toHaveProperty("summary");
+    expect(payload).toHaveProperty("series");
+    expect(payload).toHaveProperty("topMeters");
+  });
+});
 
 describe("statsRouter - GET /api/stats", () => {
   let req: Partial<Request>;
