@@ -583,3 +583,19 @@ Decentralized marketplace allowing solar producers to sell excess generation dir
   - `energy_listed`: `(seller, kwh_available, price_per_kwh)`
   - `energy_traded`: `(seller, buyer, kwh_traded, total_cost)`
 
+
+## Energy Consumption Limits (Issue #967)
+
+Each `Meter` supports a configurable **consumption limit** measured in milli-kWh
+units. `set_consumption_limit(meter_id, limit, period)` may be called by the
+meter owner or the contract admin. `limit = 0` disables enforcement, and
+`period` is one of `Daily`, `Weekly`, or `Monthly` (monthly uses the contract's
+fixed 30-day UTC accounting period).
+
+The contract tracks `period_consumed` and resets it automatically at the UTC
+period boundary. Usage that would exceed the configured limit pauses the meter
+without recording the rejected update. Usage that exactly reaches the limit is
+recorded and then pauses the meter. In either case it emits
+`ConsumptionLimitReached` with topics `(solargrid, ConsumptionLimitReached,
+meter_id)` and data `(limit, period_consumed, requested_units, period, timestamp)`.
+An administrator can explicitly reactivate a paused meter with `set_active`.
