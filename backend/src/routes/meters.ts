@@ -34,6 +34,7 @@ import {
 } from "../lib/meterMetadataIndex.js";
 import { getBatteryStats } from "../lib/batteryStats.js";
 import { getEdgeStatus } from "../lib/edgeComputing.js";
+import { getTamperHistory } from "../lib/tamperDetection.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -565,6 +566,7 @@ export function createMeterRouter(stellar: StellarService) {
       ]);
       res.json({ meters: StellarSdk.scValToNative(result), owner: req.params.address });
     }),
+  );
   /**
    * GET /api/meters/:id/billing-history — billing cycle information and history (#971).
    */
@@ -765,6 +767,15 @@ export function createMeterRouter(stellar: StellarService) {
       }
 
       return res.json(status);
+    }),
+  );
+
+  /** GET /api/meters/:meterId/tamper-history — physical tamper events (Issue #966). */
+  meterRouter.get(
+    "/:meterId/tamper-history",
+    asyncHandler(async (req, res) => {
+      const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 100) || 100));
+      return res.json({ meterId: req.params.meterId, events: getTamperHistory(req.params.meterId, limit) });
     }),
   );
 
@@ -1760,4 +1771,3 @@ export function createMeterRouter(stellar: StellarService) {
 
   return meterRouter;
 }
-

@@ -23,6 +23,7 @@ import {
   getTypicalWeeklyUsageStroops,
 } from "../lib/usageEvents.js";
 import { getWebhookUrls, fireWebhook } from "../lib/webhookRegistry.js";
+import { processTamperEvent } from "../lib/tamperDetection.js";
 import { sendLowBalanceNotification } from "../lib/pushNotifications.js";
 import { emailLowBalance } from "../lib/billing.js";
 import { UsageUpdateSchema } from "../lib/validation.js";
@@ -60,6 +61,7 @@ const FREQUENCY_TOPIC = "solargrid/meters/+/frequency";
 const LOCATION_TOPIC = "solargrid/meters/+/location";
 // Issue #1047: meters publish their actual curtailed load here during a DR event.
 const DR_CURTAILMENT_TOPIC = "solargrid/meters/+/dr/curtailment";
+const TAMPER_TOPIC = "solargrid/meters/+/tamper";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 // Issue #1046: how often each meter trains locally and ships its update.
@@ -682,6 +684,24 @@ function isDuplicateMessage(topic: string, payload: Buffer): boolean {
 }
 
 export async function processMqttMessage(topic: string, payload: Buffer) {
+  const segments = topic.split("/");
+  if (
+    segments.length === 4 &&
+    segments[0] === "solargrid" &&
+    segments[1] === "meters" &&
+    segments[3] === "tamper"
+  ) {
+    try {
+      await processTamperEvent(segments[2], payload, topic);
+    } catch (err) {
+      logger.error("Tamper sensor message handling failed", {
+        event: "meter_tamper_invalid",
+        topic,
+        err,
+      });
+    }
+    return;
+  }
   if (isDuplicateMessage(topic, payload)) {
     logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
     return;
@@ -982,6 +1002,7 @@ function startMqttBridge() {
     client.subscribe(FREQUENCY_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT frequency subscribe error", { err }); });
     client.subscribe(LOCATION_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT location subscribe error", { err }); });
     client.subscribe(DR_CURTAILMENT_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT DR curtailment subscribe error", { err }); });
+    client.subscribe(TAMPER_TOPIC, { qos: 2 }, (err) => { if (err) logger.error("MQTT tamper subscribe error", { err }); });
     // Issue #1047: (re)apply any active DR event on connect so curtailment
     // survives a bridge restart mid-event.
     void enforceActiveDrEvent().catch((err) => {
@@ -995,6 +1016,14 @@ function startMqttBridge() {
     mqttMessages.inc({ topic: labelTopic });
     if (segments[3] === "heartbeat") {
       handleHeartbeatMessage(segments[2], payload);
+      return;
+    }
+    if (segments[3] === "tamper") {
+      try {
+        await processTamperEvent(segments[2], payload, topic);
+      } catch (err) {
+        logger.error("Tamper sensor message handling failed", { event: "meter_tamper_invalid", topic, err });
+      }
       return;
     }
     if (segments[3] === "battery") {
