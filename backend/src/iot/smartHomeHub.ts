@@ -6,6 +6,25 @@ export interface SmartCircuit {
   priority: 'ESSENTIAL' | 'NON_ESSENTIAL' | 'EV_CHARGER';
 }
 
+export interface DemandResponseEnrollment {
+  enrolled: boolean;
+  /** Circuits the user allows to be curtailed during DR events */
+  curtailableCircuitIds: string[];
+  /** Maximum load the user is willing to shed, in watts */
+  maxCurtailmentWatts: number;
+}
+
+export interface ActiveDemandResponseEvent {
+  eventId: string;
+  curtailmentTargetWatts: number;
+  startedAt: string;
+  endsAt: string;
+  /** Watts actually curtailed so far */
+  curtailedWatts: number;
+  /** Circuit IDs that were shed for this event */
+  shedCircuitIds: string[];
+}
+
 export interface SmartMeterDeviceState {
   meterId: string;
   manufacturer: string;
@@ -16,6 +35,8 @@ export interface SmartMeterDeviceState {
   dailyEnergyKwh: number;
   batterySocPercent: number;
   circuits: SmartCircuit[];
+  demandResponse?: DemandResponseEnrollment;
+  activeDemandResponseEvent?: ActiveDemandResponseEvent | null;
 }
 
 export interface MqttDiscoveryPayload {
@@ -203,6 +224,107 @@ export class SmartHomeIoTHub {
   }
 
   /**
+   * Record a user's demand response enrollment and load preferences
+   */
+  public setDemandResponseEnrollment(
+    meterId: string,
+    enrollment: DemandResponseEnrollment,
+  ): DemandResponseEnrollment {
+    const device = this.devices.get(meterId);
+    if (!device) {
+      throw new Error(`Meter ${meterId} not found`);
+    }
+    const knownCircuitIds = new Set(device.circuits.map((c) => c.circuitId));
+    for (const circuitId of enrollment.curtailableCircuitIds) {
+      if (!knownCircuitIds.has(circuitId)) {
+        throw new Error(`Circuit ${circuitId} not found on meter ${meterId}`);
+      }
+    }
+    device.demandResponse = {
+      enrolled: enrollment.enrolled,
+      curtailableCircuitIds: [...enrollment.curtailableCircuitIds],
+      maxCurtailmentWatts: Math.max(0, enrollment.maxCurtailmentWatts),
+    };
+    return device.demandResponse;
+  }
+
+  /**
+   * Apply a demand response curtailment command to the meter's non-essential circuits,
+   * honoring the user's enrollment and load preferences. Returns the active DR event state.
+   */
+  public applyDemandResponseCurtailment(
+    meterId: string,
+    event: { eventId: string; curtailmentTargetWatts: number; startedAt: string; endsAt: string },
+  ): ActiveDemandResponseEvent {
+    const device = this.devices.get(meterId);
+    if (!device) {
+      throw new Error(`Meter ${meterId} not found`);
+    }
+    const enrollment = device.demandResponse;
+    if (!enrollment || !enrollment.enrolled) {
+      throw new Error(`Meter ${meterId} is not enrolled in demand response`);
+    }
+
+    const allowed = new Set(enrollment.curtailableCircuitIds);
+    const target = Math.max(0, event.curtailmentTargetWatts);
+    const cap = enrollment.maxCurtailmentWatts > 0 ? enrollment.maxCurtailmentWatts : target;
+    const effectiveTarget = Math.min(target, cap);
+
+    const shedCircuitIds: string[] = [];
+    let curtailedWatts = 0;
+
+    // Shed eligible circuits, lowest priority value first (EV charger, then non-essential)
+    const candidates = device.circuits
+      .filter(
+        (c) =>
+          c.isOn &&
+          c.priority !== 'ESSENTIAL' &&
+          allowed.has(c.circuitId) &&
+          curtailedWatts < effectiveTarget,
+      )
+      .sort((a, b) => b.powerWatts - a.powerWatts);
+
+    for (const circuit of candidates) {
+      if (curtailedWatts >= effectiveTarget) break;
+      circuit.isOn = false;
+      shedCircuitIds.push(circuit.circuitId);
+      curtailedWatts += circuit.powerWatts;
+    }
+
+    const activeEvent: ActiveDemandResponseEvent = {
+      eventId: event.eventId,
+      curtailmentTargetWatts: effectiveTarget,
+      startedAt: event.startedAt,
+      endsAt: event.endsAt,
+      curtailedWatts,
+      shedCircuitIds,
+    };
+    device.activeDemandResponseEvent = activeEvent;
+    return activeEvent;
+  }
+
+  /**
+   * End the active demand response event and restore shed circuits
+   */
+  public endDemandResponseEvent(meterId: string): ActiveDemandResponseEvent | null {
+    const device = this.devices.get(meterId);
+    if (!device) {
+      throw new Error(`Meter ${meterId} not found`);
+    }
+    const activeEvent = device.activeDemandResponseEvent ?? null;
+    if (activeEvent) {
+      for (const circuitId of activeEvent.shedCircuitIds) {
+        const circuit = device.circuits.find((c) => c.circuitId === circuitId);
+        if (circuit) {
+          circuit.isOn = true;
+        }
+      }
+    }
+    device.activeDemandResponseEvent = null;
+    return activeEvent;
+  }
+
+  /**
    * Export real-time energy metrics formatted for Smart Home Energy Dashboards
    */
   public getDashboardTelemetry(meterId: string) {
@@ -218,6 +340,8 @@ export class SmartHomeIoTHub {
       batterySocPercent: device.batterySocPercent,
       activeCircuits: device.circuits.filter((c) => c.isOn).length,
       circuits: device.circuits,
+      demandResponse: device.demandResponse ?? { enrolled: false, curtailableCircuitIds: [], maxCurtailmentWatts: 0 },
+      activeDemandResponseEvent: device.activeDemandResponseEvent ?? null,
     };
   }
 }
