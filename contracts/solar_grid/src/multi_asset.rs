@@ -44,6 +44,7 @@ pub fn to_canonical(amount: i128, rate: i128) -> Result<i128, ContractError> {
 impl SolarGridContract {
     /// Admin: whitelist `asset` (or update its rate). `rate` must be > 0.
     pub fn add_supported_asset(env: Env, asset: Address, rate: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if rate <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -65,6 +66,7 @@ impl SolarGridContract {
 
     /// Admin: remove `asset` from the whitelist.
     pub fn remove_supported_asset(env: Env, asset: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         let list: Vec<Address> = env
             .storage()
@@ -84,6 +86,7 @@ impl SolarGridContract {
 
     /// Admin: update the conversion rate of an already-supported asset.
     pub fn set_asset_rate(env: Env, asset: Address, rate: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if rate <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -128,6 +131,7 @@ impl SolarGridContract {
         amount: i128,
         pqc_signature: Option<BytesN<64>>,
     ) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         payer.require_auth();
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
