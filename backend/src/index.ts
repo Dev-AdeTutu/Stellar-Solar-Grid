@@ -59,6 +59,8 @@ import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import forecastRouter from "./routes/forecast.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { challengesRouter, startChallengeScheduler } from "./routes/challenges.js";
+import { createDisasterRecoveryRouter } from "./routes/disasterRecovery.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
@@ -254,6 +256,11 @@ app.use("/api/widgets", widgetsRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
+// #1059: gamified energy challenges
+app.use("/api/challenges", challengesRouter);
+startChallengeScheduler();
+// #1060: disaster recovery automation
+app.use("/api/dr", createDisasterRecoveryRouter());
 app.use("/api/communities", communitiesRouter);
 app.use("/api/smart-home", smartHomeRouter);
 // #989: voice assistant (Alexa / Google Assistant) skill endpoints
