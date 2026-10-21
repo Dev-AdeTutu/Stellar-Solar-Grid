@@ -1,7 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
 import zlib from "node:zlib";
-import crypto from "node:crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { adminInvoke } from "./stellar.js";
 import { recordAudit } from "./auditTrail.js";
@@ -11,6 +10,9 @@ import { registerDatabase } from "./databaseLifecycle.js";
 import { getUTCTimestampDaysAgo } from "./dateUtils.js";
 import { SqlitePool, type SqlitePoolStatus } from "./sqlitePool.js";
 import type Database from "better-sqlite3";
+
+const usageEventsCompacted = { inc: (_n?: number) => {} };
+const usageEventsArchived = { inc: (_n?: number) => {} };
 
 const DB_PATH =
   process.env.USAGE_EVENTS_DB_PATH ??
@@ -503,6 +505,7 @@ export type UsageEventRecord = {
   last_error: string | null;
   on_chain_tx_hash: string | null;
   submitted_at: string | null;
+  reading_id?: string | null;
 };
 
 type CreateUsageEventInput = {
@@ -510,6 +513,8 @@ type CreateUsageEventInput = {
   units: number;
   cost: number;
   sourceTopic?: string | null;
+  readingId?: string;
+  energySources?: { solar: number; grid: number; battery: number };
 };
 
 // ── #735: connection pooling ─────────────────────────────────────────────────
@@ -673,6 +678,19 @@ export function setKV(key: string, value: string) {
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
+  if (input.readingId) {
+    const receipt = db.prepare("SELECT event_id FROM usage_reading_receipts WHERE meter_id=? AND reading_id=?").get(input.meterId, input.readingId) as { event_id: number } | undefined;
+    const existing = receipt ? getUsageEventById(receipt.event_id) as any : undefined;
+    // Retention may remove history, but must never allow replay billing of the same reading.
+    if (receipt && !existing) throw new Error("Reading already processed; usage history has expired");
+    if (existing) {
+      // A stable ID must never be rebound to different usage/source data.
+      if (existing.units !== input.units || existing.cost !== String(input.cost) ||
+          existing.energy_solar !== input.energySources?.solar || existing.energy_grid !== input.energySources?.grid ||
+          existing.energy_battery !== input.energySources?.battery) throw new Error("Conflicting readingId");
+      return existing as UsageEventRecord;
+    }
+  }
   const receivedAt = new Date().toISOString();
   const id = pool.withConnection((database) => {
     const statement = database.prepare(`
@@ -934,6 +952,19 @@ export function getTypicalWeeklyUsageStroops(meterId: string): number {
   return Number(row?.weekly_cost ?? 0);
 }
 
+/** Energy-weighted attribution of locally received usage, including unreported legacy energy. */
+export function getEnergyMix(meterId: string, since = "1970-01-01T00:00:00.000Z", until = new Date().toISOString()) {
+  const row = db.prepare(`SELECT COUNT(*) AS readings, COALESCE(SUM(units),0) AS total,
+    COALESCE(SUM(energy_solar),0) AS solar, COALESCE(SUM(energy_grid),0) AS grid,
+    COALESCE(SUM(energy_battery),0) AS battery,
+    COALESCE(SUM(CASE WHEN energy_solar IS NULL THEN units ELSE 0 END),0) AS unknown
+    FROM usage_events WHERE meter_id=? AND received_at>=? AND received_at<?`).get(meterId, since, until) as Record<string, number>;
+  const percentages = Object.fromEntries(["solar", "grid", "battery", "unknown"].map(key => [key, row.total ? row[key] * 100 / row.total : 0]));
+  return { meterId, since, until, unit: "milli-kWh", basis: "received_usage", readings: row.readings,
+    totalUnits: row.total, units: { solar: row.solar, grid: row.grid, battery: row.battery, unknown: row.unknown },
+    percentages, hasData: row.total > 0 };
+}
+
 export async function persistAndSubmitUsageEvent(input: CreateUsageEventInput) {
   const event = recordUsageEvent(input);
   try {
@@ -1135,7 +1166,7 @@ async function submitUsageEvent(id: number) {
     }
 
     const hash = await adminInvoke("update_usage", [
-      StellarSdk.nativeToScVal(event.meter_id, { type: "symbol" }),
+      StellarSdk.nativeToScVal(event.meter_id, { type: event.reading_id ? "string" : "symbol" }),
       StellarSdk.nativeToScVal(BigInt(event.units), { type: "u64" }),
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);
@@ -1356,7 +1387,7 @@ export function compactUsageEvents(options?: {
   // Archive the oldest slice first (and only) — its rows are also covered by
   // the compaction cutoff below, so they get deleted along with everything
   // else once the archive write has succeeded.
-  const toArchive = db
+  const toArchive = db()
     .prepare("SELECT * FROM usage_events WHERE status = 'submitted' AND received_at < ?")
     .all(archiveCutoff) as UsageEventRecord[];
   const archiveFile = archiveUsageEvents(toArchive);
@@ -1368,7 +1399,7 @@ export function compactUsageEvents(options?: {
     });
   }
 
-  const summaryUpsert = db.prepare(`
+  const summaryUpsert = db().prepare(`
     INSERT INTO usage_summary (date, meter_id, total_units, total_cost, event_count)
     SELECT
       substr(received_at, 1, 10) AS date,
@@ -1385,9 +1416,9 @@ export function compactUsageEvents(options?: {
       event_count = event_count + excluded.event_count
   `);
 
-  const runCompaction = db.transaction((cutoff: string) => {
+  const runCompaction = db().transaction((cutoff: string) => {
     const summaryResult = summaryUpsert.run(cutoff);
-    const deleteResult = db
+    const deleteResult = db()
       .prepare("DELETE FROM usage_events WHERE status = 'submitted' AND received_at < ?")
       .run(cutoff);
     return { summaryRowsTouched: summaryResult.changes, compactedCount: deleteResult.changes };
@@ -1398,7 +1429,7 @@ export function compactUsageEvents(options?: {
   let vacuumed = false;
   if (compactedCount > 0) {
     usageEventsCompacted.inc(compactedCount);
-    db.exec("VACUUM");
+    db().exec("VACUUM");
     vacuumed = true;
     logger.info("Usage event compaction complete", {
       compactedCount,
@@ -1424,13 +1455,13 @@ export function getUsageSummary(
   limit = 90,
 ): Array<{ date: string; meter_id: string; total_units: number; total_cost: number; event_count: number }> {
   if (meterId) {
-    return db
+    return db()
       .prepare(
         "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary WHERE meter_id = ? ORDER BY date DESC LIMIT ?",
       )
       .all(meterId, limit) as any[];
   }
-  return db
+  return db()
     .prepare(
       "SELECT date, meter_id, total_units, total_cost, event_count FROM usage_summary ORDER BY date DESC LIMIT ?",
     )

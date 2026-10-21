@@ -324,199 +324,91 @@ export async function getSeasonalHistory(years?: number): Promise<SeasonalHistor
 }
 
 // ---------------------------------------------------------------------------
-// Virtual Power Plant (VPP)
+// Energy credit derivatives
 // ---------------------------------------------------------------------------
 
-export interface VppParticipant {
-  meterId: string;
-  address?: string;
-  capacityKw: number;
-  shareBasisPoints: number;
-}
+export type DerivativeType = "future" | "call" | "put";
+export type DerivativeStatus = "open" | "settled" | "liquidated" | "expired";
 
-export interface VppPortfolio {
+export interface Derivative {
   id: string;
-  name: string;
-  gridOperatorId?: string;
-  status: string;
-  totalCapacityKw: number;
-  participants: VppParticipant[];
+  type: DerivativeType;
+  holder: string;
+  underlying: string;
+  quantity: number;
+  strikePrice: number;
+  premium: number;
+  margin: number;
+  expiry: string;
+  status: DerivativeStatus;
+  settlementPrice?: number;
+  settlementAmount?: number;
   createdAt: string;
-  updatedAt?: string;
 }
 
-export interface CreateVppPortfolioPayload {
-  name: string;
-  gridOperatorId?: string;
-  participants?: Array<{
-    meterId: string;
-    capacityKw: number;
-    shareBasisPoints: number;
-  }>;
+export interface CreateDerivativePayload {
+  type: DerivativeType;
+  underlying: string;
+  quantity: number;
+  strikePrice: number;
+  expiry: string;
 }
 
-export interface UpdateVppPortfolioPayload {
-  name?: string;
-  gridOperatorId?: string;
-  status?: string;
+export interface DerivativeFilters {
+  type?: DerivativeType;
+  status?: DerivativeStatus;
+  holder?: string;
 }
 
-export interface VppDispatchSignal {
-  id: string;
-  portfolioId: string;
-  gridOperatorId?: string;
-  direction: "charge" | "discharge" | string;
-  targetKw: number;
-  startTime: string;
-  endTime: string;
-  status: string;
-  receivedAt: string;
+export interface SettlementResult {
+  derivative: Derivative;
+  settlementPrice: number;
+  settlementAmount: number;
 }
 
-export interface VppDispatchResult {
-  signalId: string;
-  portfolioId: string;
-  dispatchedKw: number;
-  participatingMeters: number;
-  status: string;
-  allocations: Array<{
-    meterId: string;
-    allocatedKw: number;
-    acknowledged: boolean;
-  }>;
+export interface MarginStatus {
+  holder: string;
+  requiredMargin: number;
+  postedMargin: number;
+  maintenanceMargin: number;
+  equity: number;
+  liquidatable: boolean;
 }
 
-export interface VppPerformance {
-  portfolioId: string;
-  periodStart: string;
-  periodEnd: string;
-  dispatchedKwh: number;
-  deliveredKwh: number;
-  compliancePct: number;
-  revenue: number;
-  signalsHandled: number;
+export async function listDerivatives(filters: DerivativeFilters = {}): Promise<Derivative[]> {
+  const params = new URLSearchParams();
+  if (filters.type) params.set("type", filters.type);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.holder) params.set("holder", filters.holder);
+  const queryString = params.toString();
+  const res = await fetch(`${API_BASE}/derivatives${queryString ? `?${queryString}` : ""}`);
+  if (!res.ok) await parseError(res, "Failed to fetch derivatives");
+  const { derivatives } = (await res.json()) as { derivatives: Derivative[] };
+  return derivatives;
 }
 
-export interface VppDistribution {
-  portfolioId: string;
-  totalRevenue: number;
-  distributedAt?: string;
-  payouts: Array<{
-    meterId: string;
-    amount: number;
-    shareBasisPoints: number;
-    status: string;
-  }>;
-}
-
-export async function getVppPortfolios(): Promise<VppPortfolio[]> {
-  const res = await fetch(`${API_BASE}/vpp/portfolios`);
-  if (!res.ok) await parseError(res, "Failed to fetch VPP portfolios");
-  const { portfolios } = (await res.json()) as { portfolios: VppPortfolio[] };
-  return portfolios;
-}
-
-export async function getVppPortfolio(id: string): Promise<VppPortfolio> {
-  const res = await fetch(`${API_BASE}/vpp/portfolios/${encodeURIComponent(id)}`);
-  if (!res.ok) await parseError(res, "Failed to fetch VPP portfolio");
-  const { portfolio } = (await res.json()) as { portfolio: VppPortfolio };
-  return portfolio;
-}
-
-export async function createVppPortfolio(
-  payload: CreateVppPortfolioPayload,
-): Promise<VppPortfolio> {
-  const res = await fetch(`${API_BASE}/vpp/portfolios`, {
+export async function createDerivative(payload: CreateDerivativePayload): Promise<Derivative> {
+  const res = await fetch(`${API_BASE}/derivatives`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!res.ok) await parseError(res, "Failed to create VPP portfolio");
-  const { portfolio } = (await res.json()) as { portfolio: VppPortfolio };
-  return portfolio;
+  if (!res.ok) await parseError(res, "Failed to create derivative");
+  const { derivative } = (await res.json()) as { derivative: Derivative };
+  return derivative;
 }
 
-export async function updateVppPortfolio(
-  id: string,
-  payload: UpdateVppPortfolioPayload,
-): Promise<VppPortfolio> {
-  const res = await fetch(`${API_BASE}/vpp/portfolios/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
+export async function settleDerivative(id: string): Promise<SettlementResult> {
+  const res = await fetch(`${API_BASE}/derivatives/${encodeURIComponent(id)}/settle`, {
+    method: "POST",
   });
-  if (!res.ok) await parseError(res, "Failed to update VPP portfolio");
-  const { portfolio } = (await res.json()) as { portfolio: VppPortfolio };
-  return portfolio;
+  if (!res.ok) await parseError(res, "Failed to settle derivative");
+  return (await res.json()) as SettlementResult;
 }
 
-export async function deleteVppPortfolio(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/vpp/portfolios/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) await parseError(res, "Failed to delete VPP portfolio");
-}
-
-export async function getVppDispatchSignals(portfolioId: string): Promise<VppDispatchSignal[]> {
-  const res = await fetch(
-    `${API_BASE}/vpp/portfolios/${encodeURIComponent(portfolioId)}/signals`,
-  );
-  if (!res.ok) await parseError(res, "Failed to fetch VPP dispatch signals");
-  const { signals } = (await res.json()) as { signals: VppDispatchSignal[] };
-  return signals;
-}
-
-export async function dispatchVppSignal(
-  portfolioId: string,
-  signalId: string,
-): Promise<VppDispatchResult> {
-  const res = await fetch(
-    `${API_BASE}/vpp/portfolios/${encodeURIComponent(portfolioId)}/dispatch`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ signalId }),
-    },
-  );
-  if (!res.ok) await parseError(res, "Failed to dispatch VPP signal");
-  const { result } = (await res.json()) as { result: VppDispatchResult };
-  return result;
-}
-
-export async function getVppPerformance(
-  portfolioId: string,
-  periodStart?: string,
-  periodEnd?: string,
-): Promise<VppPerformance> {
-  const params = new URLSearchParams();
-  if (periodStart) params.set("periodStart", periodStart);
-  if (periodEnd) params.set("periodEnd", periodEnd);
-  const queryString = params.toString();
-  const res = await fetch(
-    `${API_BASE}/vpp/portfolios/${encodeURIComponent(portfolioId)}/performance${
-      queryString ? `?${queryString}` : ""
-    }`,
-  );
-  if (!res.ok) await parseError(res, "Failed to fetch VPP performance");
-  const { performance } = (await res.json()) as { performance: VppPerformance };
-  return performance;
-}
-
-export async function getVppDistribution(portfolioId: string): Promise<VppDistribution> {
-  const res = await fetch(
-    `${API_BASE}/vpp/portfolios/${encodeURIComponent(portfolioId)}/distribution`,
-  );
-  if (!res.ok) await parseError(res, "Failed to fetch VPP distribution");
-  const { distribution } = (await res.json()) as { distribution: VppDistribution };
-  return distribution;
-}
-
-export async function distributeVppEarnings(portfolioId: string): Promise<VppDistribution> {
-  const res = await fetch(
-    `${API_BASE}/vpp/portfolios/${encodeURIComponent(portfolioId)}/distribution`,
-    { method: "POST" },
-  );
-  if (!res.ok) await parseError(res, "Failed to distribute VPP earnings");
-  const { distribution } = (await res.json()) as { distribution: VppDistribution };
-  return distribution;
+export async function getMarginStatus(holder: string): Promise<MarginStatus> {
+  const res = await fetch(`${API_BASE}/derivatives/margin/${encodeURIComponent(holder)}`);
+  if (!res.ok) await parseError(res, "Failed to fetch margin status");
+  const { margin } = (await res.json()) as { margin: MarginStatus };
+  return margin;
 }

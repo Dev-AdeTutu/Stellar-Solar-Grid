@@ -37,6 +37,66 @@ import { getEdgeStatus } from "../lib/edgeComputing.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
+// ── Co-ownership schemas (Issue #1061) ──────────────────────────────────────
+// Shares are expressed in basis points (1 bps = 0.01%), so a meter's shares
+// must always sum to exactly 10_000 bps (100%).
+const TOTAL_SHARES_BPS = 10_000;
+
+const StellarAddressSchema = z
+  .string()
+  .refine(
+    (value) => {
+      try {
+        StellarSdk.StrKey.decodeEd25519PublicKey(value);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    { message: "Invalid Stellar address" },
+  );
+
+const ShareBpsSchema = z
+  .number()
+  .int("share_bps must be an integer")
+  .positive("share_bps must be positive")
+  .max(TOTAL_SHARES_BPS, `share_bps must not exceed ${TOTAL_SHARES_BPS}`);
+
+const AddShareholderSchema = z.object({
+  address: StellarAddressSchema,
+  share_bps: ShareBpsSchema,
+});
+
+const UpdateShareSchema = z.object({
+  address: StellarAddressSchema,
+  share_bps: ShareBpsSchema,
+});
+
+const TransferShareSchema = z.object({
+  from: StellarAddressSchema,
+  to: StellarAddressSchema,
+  share_bps: ShareBpsSchema,
+});
+
+type Shareholder = { address: string; share_bps: number };
+
+/**
+ * In-memory co-ownership ledger keyed by meter ID.
+ *
+ * The on-chain contract is the source of truth for ownership; this store
+ * mirrors the share table for API reads and validates allocations before
+ * invoking the contract. It is intentionally simple and process-local.
+ */
+const coOwnershipStore = new Map<string, Shareholder[]>();
+
+function getShareholders(meterId: string): Shareholder[] {
+  return coOwnershipStore.get(meterId) ?? [];
+}
+
+function totalAllocatedBps(shareholders: Shareholder[]): number {
+  return shareholders.reduce((sum, s) => sum + s.share_bps, 0);
+}
+
 export function createMeterRouter(stellar: StellarService) {
   const meterRouter = Router();
 
@@ -504,6 +564,38 @@ export function createMeterRouter(stellar: StellarService) {
         StellarSdk.nativeToScVal(req.params.address, { type: "address" }),
       ]);
       res.json({ meters: StellarSdk.scValToNative(result), owner: req.params.address });
+    }),
+  /**
+   * GET /api/meters/:id/billing-history — billing cycle information and history (#971).
+   */
+  meterRouter.get(
+    "/:id/billing-history",
+    asyncHandler(async (req, res) => {
+      const history = getBillingHistory(req.params.id);
+      res.json(history);
+    }),
+  );
+
+  /**
+   * GET /api/meters/:id/carbon-footprint — carbon emissions savings and impact calculator (#972).
+   */
+  meterRouter.get(
+    "/:id/carbon-footprint",
+    asyncHandler(async (req, res) => {
+      const region = String(req.query.region ?? "US");
+      const footprint = getMeterCarbonFootprint(req.params.id, region);
+      res.json(footprint);
+    }),
+  );
+
+  /**
+   * GET /api/meters/:id/benchmark — meter performance benchmark and peer group comparison (#974).
+   */
+  meterRouter.get(
+    "/:id/benchmark",
+    asyncHandler(async (req, res) => {
+      const benchmark = benchmarkMeter(req.params.id);
+      res.json(benchmark);
     }),
   );
 
@@ -1239,6 +1331,269 @@ export function createMeterRouter(stellar: StellarService) {
       } catch (err: any) {
         return res.status(500).json({ error: err.message, code: "CONTRACT_ERROR" });
       }
+    }),
+  );
+
+  /**
+   * GET /api/meters/:id/shareholders — list co-owners and their shares (Issue #1061).
+   *
+   * Returns each shareholder's address, share in basis points, and the
+   * equivalent percentage, plus the total allocated and remaining shares.
+   */
+  meterRouter.get(
+    "/:id/shareholders",
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const shareholders = getShareholders(meterId);
+      const allocated = totalAllocatedBps(shareholders);
+
+      return res.json({
+        meter_id: meterId,
+        shareholders: shareholders.map((s) => ({
+          address: s.address,
+          share_bps: s.share_bps,
+          share_percent: s.share_bps / 100,
+        })),
+        total_allocated_bps: allocated,
+        remaining_bps: TOTAL_SHARES_BPS - allocated,
+        total_shares_bps: TOTAL_SHARES_BPS,
+      });
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/shareholders — add a co-owner with a share (Issue #1061).
+   *
+   * Rejects allocations that would exceed 100% of the meter's shares.
+   */
+  meterRouter.post(
+    "/:id/shareholders",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      const parsed = AddShareholderSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: parsed.error.issues[0]?.message ?? "Invalid request body",
+          code: "VALIDATION_ERROR",
+          details: parsed.error.issues,
+        });
+      }
+      const { address, share_bps } = parsed.data;
+
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const shareholders = getShareholders(meterId);
+      if (shareholders.some((s) => s.address === address)) {
+        return res.status(409).json({
+          error: "Address is already a shareholder of this meter",
+          code: "ALREADY_SHAREHOLDER",
+        });
+      }
+
+      const allocated = totalAllocatedBps(shareholders);
+      if (allocated + share_bps > TOTAL_SHARES_BPS) {
+        return res.status(400).json({
+          error: `Allocation exceeds 100% of shares: ${allocated} bps already allocated, ${share_bps} bps requested, only ${TOTAL_SHARES_BPS - allocated} bps remaining`,
+          code: "OVER_ALLOCATED",
+          total_allocated_bps: allocated,
+          remaining_bps: TOTAL_SHARES_BPS - allocated,
+        });
+      }
+
+      const updated = [...shareholders, { address, share_bps }];
+      coOwnershipStore.set(meterId, updated);
+
+      const hash = await stellar.invoke("add_shareholder", [
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        StellarSdk.nativeToScVal(address, { type: "address" }),
+        StellarSdk.nativeToScVal(share_bps, { type: "u32" }),
+      ]);
+
+      invalidateCache(`/api/meters/${meterId}`);
+
+      return res.status(201).json({
+        hash,
+        meter_id: meterId,
+        shareholder: { address, share_bps, share_percent: share_bps / 100 },
+        total_allocated_bps: allocated + share_bps,
+        remaining_bps: TOTAL_SHARES_BPS - (allocated + share_bps),
+      });
+    }),
+  );
+
+  /**
+   * PATCH /api/meters/:id/shareholders — update an existing shareholder's share (Issue #1061).
+   *
+   * Rejects updates that would push total allocation above 100%.
+   */
+  meterRouter.patch(
+    "/:id/shareholders",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      const parsed = UpdateShareSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: parsed.error.issues[0]?.message ?? "Invalid request body",
+          code: "VALIDATION_ERROR",
+          details: parsed.error.issues,
+        });
+      }
+      const { address, share_bps } = parsed.data;
+
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const shareholders = getShareholders(meterId);
+      const existing = shareholders.find((s) => s.address === address);
+      if (!existing) {
+        return res.status(404).json({
+          error: "Address is not a shareholder of this meter",
+          code: "SHAREHOLDER_NOT_FOUND",
+        });
+      }
+
+      const allocated = totalAllocatedBps(shareholders);
+      const projected = allocated - existing.share_bps + share_bps;
+      if (projected > TOTAL_SHARES_BPS) {
+        return res.status(400).json({
+          error: `Allocation exceeds 100% of shares: ${allocated} bps already allocated, update would require ${projected} bps`,
+          code: "OVER_ALLOCATED",
+          total_allocated_bps: allocated,
+          remaining_bps: TOTAL_SHARES_BPS - allocated,
+        });
+      }
+
+      const updated = shareholders.map((s) =>
+        s.address === address ? { address, share_bps } : s,
+      );
+      coOwnershipStore.set(meterId, updated);
+
+      const hash = await stellar.invoke("update_shareholder_share", [
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        StellarSdk.nativeToScVal(address, { type: "address" }),
+        StellarSdk.nativeToScVal(share_bps, { type: "u32" }),
+      ]);
+
+      invalidateCache(`/api/meters/${meterId}`);
+
+      return res.json({
+        hash,
+        meter_id: meterId,
+        shareholder: { address, share_bps, share_percent: share_bps / 100 },
+        total_allocated_bps: projected,
+        remaining_bps: TOTAL_SHARES_BPS - projected,
+      });
+    }),
+  );
+
+  /**
+   * POST /api/meters/:id/shareholders/transfer — move shares between addresses (Issue #1061).
+   *
+   * Transfers part or all of `from`'s share to `to`. If `to` is not yet a
+   * shareholder, a new entry is created for them.
+   */
+  meterRouter.post(
+    "/:id/shareholders/transfer",
+    requireAdminKey,
+    asyncHandler(async (req, res) => {
+      const meterId = req.params.id;
+      const parsed = TransferShareSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({
+          error: parsed.error.issues[0]?.message ?? "Invalid request body",
+          code: "VALIDATION_ERROR",
+          details: parsed.error.issues,
+        });
+      }
+      const { from, to, share_bps } = parsed.data;
+
+      if (from === to) {
+        return res.status(400).json({
+          error: "Cannot transfer shares to the same address",
+          code: "VALIDATION_ERROR",
+        });
+      }
+
+      try {
+        await stellar.query("get_meter", [
+          StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        ]);
+      } catch {
+        return res.status(404).json({ error: "Meter not found", code: "NOT_FOUND" });
+      }
+
+      const shareholders = getShareholders(meterId);
+      const sender = shareholders.find((s) => s.address === from);
+      if (!sender) {
+        return res.status(404).json({
+          error: "Sender is not a shareholder of this meter",
+          code: "SHAREHOLDER_NOT_FOUND",
+        });
+      }
+      if (sender.share_bps < share_bps) {
+        return res.status(400).json({
+          error: `Insufficient shares: sender holds ${sender.share_bps} bps, ${share_bps} bps requested`,
+          code: "INSUFFICIENT_SHARES",
+          available_bps: sender.share_bps,
+        });
+      }
+
+      const updated = shareholders
+        .map((s) => (s.address === from ? { ...s, share_bps: s.share_bps - share_bps } : s))
+        .filter((s) => s.share_bps > 0);
+
+      const recipient = updated.find((s) => s.address === to);
+      if (recipient) {
+        recipient.share_bps += share_bps;
+      } else {
+        updated.push({ address: to, share_bps });
+      }
+
+      coOwnershipStore.set(meterId, updated);
+
+      const hash = await stellar.invoke("transfer_shares", [
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        StellarSdk.nativeToScVal(from, { type: "address" }),
+        StellarSdk.nativeToScVal(to, { type: "address" }),
+        StellarSdk.nativeToScVal(share_bps, { type: "u32" }),
+      ]);
+
+      invalidateCache(`/api/meters/${meterId}`);
+
+      return res.json({
+        hash,
+        meter_id: meterId,
+        from,
+        to,
+        share_bps,
+        shareholders: updated.map((s) => ({
+          address: s.address,
+          share_bps: s.share_bps,
+          share_percent: s.share_bps / 100,
+        })),
+        total_allocated_bps: totalAllocatedBps(updated),
+      });
     }),
   );
 

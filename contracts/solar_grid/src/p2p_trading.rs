@@ -161,6 +161,7 @@ impl SolarGridContract {
         listing_id: u64,
         kwh_to_buy: u64,
     ) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         buyer.require_auth();
         Self::execute_peer_buy(&env, &buyer, listing_id, kwh_to_buy)
     }

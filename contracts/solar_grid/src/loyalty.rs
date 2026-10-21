@@ -107,6 +107,7 @@ impl SolarGridContract {
         user: Address,
         payment_stroops: i128,
     ) -> Result<LoyaltyAccount, ContractError> {
+        Self::require_not_paused(&env)?;
         if payment_stroops <= 0 {
             return Err(ContractError::InvalidAmount);
         }

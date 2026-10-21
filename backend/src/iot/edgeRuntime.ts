@@ -46,6 +46,42 @@ export interface EdgeRuntimeConfig {
   bufferMaxSize?: number;
   anomalyThreshold?: number;
   syncBatchSize?: number;
+  /** Learning rate used by local federated training. Defaults to 0.01. */
+  learningRate?: number;
+  /** Maximum number of local training samples per round. Defaults to 1000. */
+  maxLocalSamples?: number;
+  /** Privacy budget (epsilon) consumed per local training round. Defaults to 1. */
+  privacyBudgetPerRound?: number;
+}
+
+/**
+ * A privacy-preserving model update produced by local training.
+ * Contains only weight/bias deltas and a sample count — never raw readings.
+ */
+export interface ModelUpdate {
+  meterId: string;
+  modelVersion: string;
+  /** Delta applied to each weight (trained - base). */
+  weightDeltas: number[];
+  /** Delta applied to the bias (trained - base). */
+  biasDelta: number;
+  /** Number of local samples used to compute the update. */
+  sampleCount: number;
+  /** Privacy budget consumed by this update. */
+  privacyBudgetSpent: number;
+  /** Timestamp when the update was produced. */
+  createdAt: number;
+}
+
+export interface LocalTrainingResult {
+  update: ModelUpdate;
+  /** Number of samples actually used in this round. */
+  samplesUsed: number;
+  /** Loss before and after the local update. */
+  lossBefore: number;
+  lossAfter: number;
+  /** Remaining privacy budget. */
+  privacyBudgetRemaining: number;
 }
 
 export interface MqttClientLike {
@@ -60,7 +96,12 @@ export interface BufferStore {
 
 const DEFAULT_BUFFER_MAX_SIZE = 10000;
 const DEFAULT_SYNC_BATCH_SIZE = 100;
+const DEFAULT_LEARNING_RATE = 0.01;
+const DEFAULT_MAX_LOCAL_SAMPLES = 1000;
+const DEFAULT_PRIVACY_BUDGET_PER_ROUND = 1;
+const DEFAULT_TOTAL_PRIVACY_BUDGET = 10;
 const SYNC_TOPIC = 'meters/edge/results';
+const MODEL_UPDATE_TOPIC = 'meters/edge/model-updates';
 
 /**
  * In-memory buffer store used when no persistent store is provided.
@@ -88,6 +129,10 @@ export class EdgeRuntime extends EventEmitter {
   private mqttClient: MqttClientLike | null = null;
   private initialized = false;
   private flushing = false;
+  private localSampleCount = 0;
+  private privacyBudgetSpent = 0;
+  private totalPrivacyBudget = DEFAULT_TOTAL_PRIVACY_BUDGET;
+  private lastUpdate: ModelUpdate | null = null;
 
   constructor(config: EdgeRuntimeConfig, store?: BufferStore) {
     super();
@@ -131,6 +176,120 @@ export class EdgeRuntime extends EventEmitter {
 
   getBufferedResults(): InferenceResult[] {
     return [...this.buffer];
+  }
+
+  getLocalSampleCount(): number {
+    return this.localSampleCount;
+  }
+
+  getPrivacyBudgetSpent(): number {
+    return this.privacyBudgetSpent;
+  }
+
+  getPrivacyBudgetRemaining(): number {
+    return Math.max(0, this.totalPrivacyBudget - this.privacyBudgetSpent);
+  }
+
+  /**
+   * Return the most recent model update, or null if no local training
+   * has been performed yet.
+   */
+  getModelUpdate(): ModelUpdate | null {
+    return this.lastUpdate ? { ...this.lastUpdate } : null;
+  }
+
+  /**
+   * Train the linear model locally on buffered meter readings using
+   * gradient descent. Raw readings never leave the device; only the
+   * resulting weight/bias deltas are exposed via getModelUpdate().
+   *
+   * @param readings Optional explicit readings to train on. When omitted,
+   *   the buffered inference results are used as training samples.
+   */
+  async trainLocal(readings?: MeterReading[]): Promise<LocalTrainingResult> {
+    this.ensureInitialized();
+    const model = this.config.model;
+    const learningRate = this.config.learningRate ?? DEFAULT_LEARNING_RATE;
+    const maxSamples = this.config.maxLocalSamples ?? DEFAULT_MAX_LOCAL_SAMPLES;
+    const budgetPerRound = this.config.privacyBudgetPerRound ?? DEFAULT_PRIVACY_BUDGET_PER_ROUND;
+
+    const samples = this.collectTrainingSamples(readings, maxSamples);
+    if (samples.length === 0) {
+      throw new Error('No local training samples available');
+    }
+
+    const baseWeights = [...model.weights];
+    const baseBias = model.bias;
+    const weights = [...model.weights];
+    let bias = model.bias;
+
+    const lossBefore = this.computeLoss(samples, weights, bias, model);
+
+    // Gradient-descent style update over the local samples.
+    for (const sample of samples) {
+      const normalized = this.normalize(sample.features, model);
+      const prediction = this.predict(normalized, weights, bias);
+      const error = prediction - sample.target;
+      for (let i = 0; i < weights.length; i++) {
+        weights[i] -= learningRate * error * (normalized[i] ?? 0);
+      }
+      bias -= learningRate * error;
+    }
+
+    const lossAfter = this.computeLoss(samples, weights, bias, model);
+
+    // Apply the trained parameters to the local model.
+    model.weights = weights;
+    model.bias = bias;
+
+    this.localSampleCount += samples.length;
+    this.privacyBudgetSpent += budgetPerRound;
+
+    const update: ModelUpdate = {
+      meterId: samples[0].meterId,
+      modelVersion: model.version,
+      weightDeltas: weights.map((w, i) => w - (baseWeights[i] ?? 0)),
+      biasDelta: bias - baseBias,
+      sampleCount: samples.length,
+      privacyBudgetSpent: budgetPerRound,
+      createdAt: Date.now(),
+    };
+    this.lastUpdate = update;
+
+    this.emit('local-training', {
+      samplesUsed: samples.length,
+      lossBefore,
+      lossAfter,
+      privacyBudgetRemaining: this.getPrivacyBudgetRemaining(),
+    });
+
+    return {
+      update,
+      samplesUsed: samples.length,
+      lossBefore,
+      lossAfter,
+      privacyBudgetRemaining: this.getPrivacyBudgetRemaining(),
+    };
+  }
+
+  /**
+   * Publish the latest model update to the coordinator via MQTT.
+   * Returns true when the update was published successfully.
+   */
+  async publishModelUpdate(): Promise<boolean> {
+    if (!this.lastUpdate) {
+      return false;
+    }
+    if (!this.mqttClient || !this.mqttClient.connected) {
+      this.emit('model-update-skipped', { reason: 'offline' });
+      return false;
+    }
+    const payload = JSON.stringify({ update: this.lastUpdate });
+    const ok = await this.publish(MODEL_UPDATE_TOPIC, payload);
+    if (ok) {
+      this.emit('model-update-published', this.lastUpdate);
+    }
+    return ok;
   }
 
   /**
@@ -260,6 +419,76 @@ export class EdgeRuntime extends EventEmitter {
     }
   }
 
+  private collectTrainingSamples(
+    readings: MeterReading[] | undefined,
+    maxSamples: number
+  ): Array<{ meterId: string; features: number[]; target: number }> {
+    const model = this.config.model;
+    const samples: Array<{ meterId: string; features: number[]; target: number }> = [];
+
+    if (readings && readings.length > 0) {
+      for (const reading of readings) {
+        if (samples.length >= maxSamples) break;
+        const features = this.extractFeatures(reading, model.features);
+        samples.push({
+          meterId: reading.meterId,
+          features,
+          target: this.deriveTarget(reading),
+        });
+      }
+      return samples;
+    }
+
+    // Fall back to buffered inference results as training samples.
+    for (const result of this.buffer) {
+      if (samples.length >= maxSamples) break;
+      samples.push({
+        meterId: result.meterId,
+        features: model.features.map(() => 0),
+        target: result.prediction,
+      });
+    }
+    return samples;
+  }
+
+  private deriveTarget(reading: MeterReading): number {
+    const power = reading.power;
+    if (typeof power === 'number' && Number.isFinite(power)) {
+      return power;
+    }
+    const energy = reading.energy;
+    if (typeof energy === 'number' && Number.isFinite(energy)) {
+      return energy;
+    }
+    return 0;
+  }
+
+  private predict(normalized: number[], weights: number[], bias: number): number {
+    let prediction = bias;
+    for (let i = 0; i < normalized.length; i++) {
+      prediction += normalized[i] * (weights[i] ?? 0);
+    }
+    return prediction;
+  }
+
+  private computeLoss(
+    samples: Array<{ features: number[]; target: number }>,
+    weights: number[],
+    bias: number,
+    model: EdgeModel
+  ): number {
+    if (samples.length === 0) {
+      return 0;
+    }
+    let sum = 0;
+    for (const sample of samples) {
+      const normalized = this.normalize(sample.features, model);
+      const error = this.predict(normalized, weights, bias) - sample.target;
+      sum += error * error;
+    }
+    return sum / samples.length;
+  }
+
   private extractFeatures(reading: MeterReading, featureNames: string[]): number[] {
     return featureNames.map((name) => {
       const value = reading[name];
@@ -343,6 +572,27 @@ export function detectAnomalies(readings: MeterReading[]): InferenceResult[] {
  */
 export async function flushOfflineBuffer(): Promise<number> {
   return requireRuntime().flushBuffer();
+}
+
+/**
+ * Train the default runtime's model locally on buffered readings.
+ */
+export async function trainLocal(readings?: MeterReading[]): Promise<LocalTrainingResult> {
+  return requireRuntime().trainLocal(readings);
+}
+
+/**
+ * Get the latest model update from the default runtime.
+ */
+export function getModelUpdate(): ModelUpdate | null {
+  return requireRuntime().getModelUpdate();
+}
+
+/**
+ * Publish the latest model update from the default runtime.
+ */
+export async function publishModelUpdate(): Promise<boolean> {
+  return requireRuntime().publishModelUpdate();
 }
 
 function requireRuntime(): EdgeRuntime {

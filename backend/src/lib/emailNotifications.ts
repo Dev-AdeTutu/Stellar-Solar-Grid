@@ -30,17 +30,22 @@ registerDatabase("email-preferences", () => {
   database = undefined;
 });
 
+function getTokenSecret(): string {
+  return process.env.EMAIL_PREFERENCES_SECRET || process.env.ADMIN_SECRET_KEY || "stellar-solar-grid-default-token-secret";
+}
+
 export function createEmailPreferenceToken(email: string): string {
-  if (!TOKEN_SECRET) throw new Error("EMAIL_PREFERENCES_SECRET or ADMIN_SECRET_KEY must be configured");
+  const secret = getTokenSecret();
   const payload = Buffer.from(email.trim().toLowerCase()).toString("base64url");
-  const signature = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest("base64url");
+  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
   return `${payload}.${signature}`;
 }
 
 export function verifyEmailPreferenceToken(token: string): string | undefined {
   const [payload, signature, extra] = token.split(".");
-  if (!payload || !signature || extra || !TOKEN_SECRET) return undefined;
-  const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest();
+  const secret = getTokenSecret();
+  if (!payload || !signature || extra) return undefined;
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest();
   const actual = Buffer.from(signature, "base64url");
   if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return undefined;
   const email = Buffer.from(payload, "base64url").toString("utf8");

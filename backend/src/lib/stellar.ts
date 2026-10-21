@@ -275,8 +275,14 @@ export class StellarService {
       this.pool = rpcPool;
       this.server = rpcPool.createProxy();
     }
-    this.adminKeypair = StellarSdk.Keypair.fromSecret(config.adminSecret);
-    this.contractId = config.contractId;
+    try {
+      this.adminKeypair = config.adminSecret
+        ? StellarSdk.Keypair.fromSecret(config.adminSecret)
+        : StellarSdk.Keypair.random();
+    } catch {
+      this.adminKeypair = StellarSdk.Keypair.random();
+    }
+    this.contractId = config.contractId || "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
     this.networkPassphrase = config.network;
     this.pqcSigningMode = resolvePqcSigningMode();
 

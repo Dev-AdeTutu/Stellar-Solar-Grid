@@ -124,10 +124,16 @@ import { startTheftMonitor } from "./lib/theftDetection.js";
 import { workOrdersRouter } from "./routes/workOrders.js";
 import { surveysRouter } from "./routes/surveys.js";
 import { lifespanRouter } from "./routes/lifespan.js";
+import { capacityPlanningRouter } from "./routes/capacityPlanning.js";
+import { storageOptimizationRouter } from "./routes/storageOptimization.js";
+import { impactRouter } from "./routes/impact.js";
 import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
 import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
 import { shadowsRouter } from "./routes/shadows.js";
 import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
+// #1046: federated learning coordinator
+import { federatedRouter } from "./routes/federated.js";
+import { startFederatedCoordinator, stopFederatedCoordinator } from "./lib/federatedLearning.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -220,6 +226,7 @@ app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
+app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/export", exportRouter);
@@ -257,12 +264,21 @@ startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
 // #1079: meter lifespan extension recommendations
 app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1050: predictive grid capacity planning
+app.use("/api/capacity-planning", capacityPlanningRouter);
+// #1053: energy storage optimization AI
+app.use("/api/storage-optimization", storageOptimizationRouter);
+// #1054: social impact measurement
+app.use("/api/impact", impactRouter);
 // #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
 app.use("/api/rate-limits", rateLimitTiersRouter);
 // #1081: meter device shadows (desired vs reported state)
 app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
 // #1082: 7-day energy forecasting dashboard
 app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
+// #1046: federated learning (local training + privacy-preserving aggregation)
+app.use("/api/federated", writeLimiter, federatedRouter);
+startFederatedCoordinator();
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
@@ -297,6 +313,16 @@ app.use("/api/privacy", writeLimiter, privacyRouter);
 app.use("/api/work-orders", writeLimiter, workOrdersRouter);
 // #994: customer satisfaction surveys
 app.use("/api/surveys", writeLimiter, surveysRouter);
+
+// #1064: Regulatory sandbox mode. The sandbox middleware tags every request
+// with its sandbox context so downstream compliance flows can isolate
+// sandbox traffic from production. Sandbox routes are only mounted when the
+// sandbox environment is explicitly enabled.
+app.use(sandboxMiddleware);
+if (isSandboxEnabled()) {
+  app.use("/api/sandbox", writeLimiter, sandboxRouter);
+  logger.info("Regulatory sandbox mode enabled");
+}
 
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);
@@ -397,7 +423,7 @@ httpServer.listen(PORT, () => {
   startRecommendationWorker();
 });
 
-export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner };
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);

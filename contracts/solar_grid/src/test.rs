@@ -689,155 +689,397 @@ mod batch_and_market_tests {
     }
 
     // ------------------------------------------------------------------
-    // State channel tests
+    // Demand response automation tests
     // ------------------------------------------------------------------
 
-    fn setup_channel(
+    fn setup_dr_meter(
         env: &Env,
         client: &SolarGridContractClient<'static>,
         token_address: &Address,
-        deposit: i128,
-    ) -> (Address, u64) {
-        let user = Address::generate(env);
-        token::StellarAssetClient::new(env, token_address).mint(&user, &deposit);
-        let channel_id = client.open_channel(&user, &deposit);
-        (user, channel_id)
+        owner: &Address,
+        meter_id: &String,
+    ) {
+        let token_admin_client = token::StellarAssetClient::new(env, token_address);
+        client.allowlist_add(owner);
+        client.register_meter(meter_id, owner);
+        token_admin_client.mint(owner, &10_000_000_i128);
+        client.make_payment(meter_id, owner, &10_000_000_i128, &PaymentPlan::Daily);
     }
 
     #[test]
-    fn test_channel_open_locks_deposit() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let deposit = 10_000_000_i128;
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, deposit);
+    fn test_create_dr_event_with_curtailment_target() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128, // curtailment target (watts)
+            &500_i128,   // incentive pool
+        );
 
-        let channel = client.get_channel(&channel_id).unwrap();
-        assert_eq!(channel.user, user);
-        assert_eq!(channel.deposit, deposit);
-        assert_eq!(channel.balance, deposit);
-        assert_eq!(channel.nonce, 0);
-        assert!(channel.open);
-
-        // Funds are escrowed by the contract.
-        let tc = token::Client::new(&env, &token_address);
-        assert_eq!(tc.balance(&user), 0);
-        assert_eq!(tc.balance(&client.address), deposit);
+        let event = client.get_dr_event(&event_id).unwrap();
+        assert_eq!(event.curtailment_target, 1_000_i128);
+        assert_eq!(event.incentive_pool, 500_i128);
+        assert_eq!(event.start, now);
+        assert_eq!(event.end, now + 3_600);
+        assert!(event.active);
     }
 
     #[test]
-    fn test_channel_offchain_updates_accumulate() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
-
-        // Simulate off-chain usage updates; only the latest state is submitted.
-        client.update_channel(&channel_id, &user, &1_000_000_i128, &1);
-        client.update_channel(&channel_id, &user, &2_500_000_i128, &2);
-        client.update_channel(&channel_id, &user, &4_000_000_i128, &3);
-
-        let channel = client.get_channel(&channel_id).unwrap();
-        assert_eq!(channel.balance, 6_000_000);
-        assert_eq!(channel.nonce, 3);
-        assert!(channel.open);
-    }
-
-    #[test]
-    fn test_channel_settle_transfers_balance() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
-        client.update_channel(&channel_id, &user, &3_000_000_i128, &1);
-
-        client.settle_channel(&channel_id, &user);
-
-        let channel = client.get_channel(&channel_id).unwrap();
-        assert!(!channel.open);
-        assert_eq!(channel.balance, 0);
-
-        let tc = token::Client::new(&env, &token_address);
-        assert_eq!(tc.balance(&user), 7_000_000);
-        assert_eq!(tc.balance(&client.address), 3_000_000);
-    }
-
-    #[test]
-    fn test_channel_stale_nonce_rejected() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
-        client.update_channel(&channel_id, &user, &1_000_000_i128, &5);
-
-        let result = client.try_update_channel(&channel_id, &user, &2_000_000_i128, &4);
-        assert!(result.is_err());
-        // State unchanged after rejected update.
-        assert_eq!(client.get_channel(&channel_id).unwrap().balance, 9_000_000);
-    }
-
-    #[test]
-    fn test_channel_overdraft_rejected() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 1_000_000);
-
-        let result = client.try_update_channel(&channel_id, &user, &2_000_000_i128, &1);
-        assert!(result.is_err());
-        assert_eq!(client.get_channel(&channel_id).unwrap().balance, 1_000_000);
-    }
-
-    #[test]
-    fn test_channel_dispute_resolution() {
-        let (env, client, admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
-        client.update_channel(&channel_id, &user, &4_000_000_i128, &1);
-
-        // User disputes the latest state; channel is frozen for settlement.
-        client.dispute_channel(&channel_id, &user);
-        let channel = client.get_channel(&channel_id).unwrap();
-        assert!(channel.disputed);
-
-        // No further off-chain updates while disputed.
-        assert!(client
-            .try_update_channel(&channel_id, &user, &1_000_000_i128, &2)
-            .is_err());
-
-        // Admin resolves in favor of the recorded state and settles.
-        client.resolve_dispute(&channel_id, &admin, &6_000_000_i128);
-        let resolved = client.get_channel(&channel_id).unwrap();
-        assert!(!resolved.disputed);
-        assert!(!resolved.open);
-
-        let tc = token::Client::new(&env, &token_address);
-        assert_eq!(tc.balance(&user), 6_000_000);
-    }
-
-    #[test]
-    fn test_channel_unauthorized_update_rejected() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let (_user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
+    fn test_create_dr_event_non_admin_rejected() {
+        let (env, client, _admin, _token_address) = setup_with_token();
         let attacker = Address::generate(&env);
+        let now = env.ledger().timestamp();
+        let result = client.try_create_dr_event(
+            &attacker,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
 
-        let result = client.try_update_channel(&channel_id, &attacker, &1_000_000_i128, &1);
+    #[test]
+    fn test_create_dr_event_invalid_window_rejected() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let result = client.try_create_dr_event(
+            &admin,
+            &(now + 3_600),
+            &now,
+            &1_000_i128,
+            &500_i128,
+        );
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_channel_cost_reduction() {
+    fn test_dr_opt_in_records_load_preferences() {
         let (env, client, _admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 100_000_000);
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
 
-        // 100 off-chain micro-updates, then a single on-chain settlement.
-        for nonce in 1..=100u64 {
-            client.update_channel(&channel_id, &user, &100_000_i128, &nonce);
-        }
-        client.settle_channel(&channel_id, &user);
+        client.dr_opt_in(&meter_id, &owner, &300_i128, &true);
 
-        let channel = client.get_channel(&channel_id).unwrap();
-        assert_eq!(channel.balance, 0);
-        // Only one settlement touched the token ledger for 100 updates.
-        let tc = token::Client::new(&env, &token_address);
-        assert_eq!(tc.balance(&user), 90_000_000);
+        let pref = client.get_dr_preference(&meter_id).unwrap();
+        assert_eq!(pref.max_curtailment, 300_i128);
+        assert!(pref.auto_curtail);
+        assert!(pref.opted_in);
     }
 
     #[test]
-    fn test_channel_settle_twice_rejected() {
+    fn test_dr_opt_in_non_owner_rejected() {
         let (env, client, _admin, token_address) = setup_with_token();
-        let (user, channel_id) = setup_channel(&env, &client, &token_address, 10_000_000);
-        client.settle_channel(&channel_id, &user);
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
 
-        assert!(client.try_settle_channel(&channel_id, &user).is_err());
+        let attacker = Address::generate(&env);
+        let result = client.try_dr_opt_in(&meter_id, &attacker, &300_i128, &true);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_dr_opt_out_removes_participation() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        client.dr_opt_in(&meter_id, &owner, &300_i128, &true);
+        client.dr_opt_out(&meter_id, &owner);
+
+        let pref = client.get_dr_preference(&meter_id).unwrap();
+        assert!(!pref.opted_in);
+    }
+
+    #[test]
+    fn test_automated_curtailment_reduces_load() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+
+        // Automated curtailment should reduce the meter's load.
+        let reduced = client.apply_dr_curtailment(&event_id, &meter_id);
+        assert_eq!(reduced, 400_i128);
+
+        let participation = client.get_dr_participation(&event_id, &meter_id).unwrap();
+        assert_eq!(participation.curtailed, 400_i128);
+    }
+
+    #[test]
+    fn test_curtailment_respects_opt_in_preference() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        // Opted out: no automatic curtailment.
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+        client.dr_opt_out(&meter_id, &owner);
+
+        let reduced = client.apply_dr_curtailment(&event_id, &meter_id);
+        assert_eq!(reduced, 0_i128);
+    }
+
+    #[test]
+    fn test_curtailment_capped_by_max_preference() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &250_i128, &true);
+
+        let reduced = client.apply_dr_curtailment(&event_id, &meter_id);
+        assert_eq!(reduced, 250_i128);
+    }
+
+    #[test]
+    fn test_incentive_calculation_and_distribution() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+        client.apply_dr_curtailment(&event_id, &meter_id);
+
+        let incentive = client.calculate_dr_incentive(&event_id, &meter_id);
+        assert!(incentive > 0);
+
+        let tc = token::Client::new(&env, &token_address);
+        let before = tc.balance(&owner);
+        client.distribute_dr_incentive(&event_id, &meter_id);
+        let after = tc.balance(&owner);
+        assert_eq!(after - before, incentive);
+    }
+
+    #[test]
+    fn test_incentive_zero_without_participation() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        // No opt-in / curtailment recorded.
+        let incentive = client.calculate_dr_incentive(&event_id, &meter_id);
+        assert_eq!(incentive, 0_i128);
+    }
+
+    #[test]
+    fn test_dr_performance_verification() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+        client.apply_dr_curtailment(&event_id, &meter_id);
+
+        let perf = client.verify_dr_performance(&event_id, &meter_id);
+        assert_eq!(perf.curtailed, 400_i128);
+        assert!(perf.verified);
+    }
+
+    // ------------------------------------------------------------------
+    // Meter lifecycle tracking tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_lifecycle_records_manufacturing_origin() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128, // copper grams
+            &500_i128,   // silicon grams
+        );
+
+        let record = client.get_lifecycle(&meter_id).unwrap();
+        assert_eq!(record.manufacturer, manufacturer);
+        assert_eq!(record.materials.copper, 1_000_i128);
+        assert_eq!(record.materials.silicon, 500_i128);
+        assert_eq!(record.stage, LifecycleStage::Manufactured);
+    }
+
+    #[test]
+    fn test_lifecycle_installation_repair_upgrade() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        let owner = Address::generate(&env);
+        client.allowlist_add(&owner);
+        client.register_meter(&meter_id, &owner);
+        client.record_installation(&admin, &meter_id, &owner);
+        assert_eq!(client.get_lifecycle(&meter_id).unwrap().stage, LifecycleStage::Installed);
+
+        client.record_repair(&admin, &meter_id, &String::from_str(&env, "firmware reset"));
+        client.record_upgrade(&admin, &meter_id, &String::from_str(&env, "v2.0"));
+
+        let record = client.get_lifecycle(&meter_id).unwrap();
+        assert_eq!(record.repairs, 1);
+        assert_eq!(record.upgrades, 1);
+    }
+
+    #[test]
+    fn test_lifecycle_recycling_certification() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        let recycler = String::from_str(&env, "GreenRecycle");
+        client.certify_recycling(&admin, &meter_id, &recycler, &900_i128, &450_i128);
+
+        let record = client.get_lifecycle(&meter_id).unwrap();
+        assert_eq!(record.stage, LifecycleStage::Recycled);
+        assert_eq!(record.recycler, Some(recycler));
+        assert!(record.recycling_certified);
+    }
+
+    #[test]
+    fn test_lifecycle_material_recovery_tracking() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        client.certify_recycling(
+            &admin,
+            &meter_id,
+            &String::from_str(&env, "GreenRecycle"),
+            &900_i128,
+            &450_i128,
+        );
+
+        let recovery = client.get_material_recovery(&meter_id).unwrap();
+        assert_eq!(recovery.copper_recovered, 900_i128);
+        assert_eq!(recovery.silicon_recovered, 450_i128);
+        // Recovery rate should be within [0, 100].
+        assert!(recovery.recovery_rate <= 100);
+    }
+
+    #[test]
+    fn test_lifecycle_compliance_check() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        // Not yet recycled -> non-compliant.
+        assert!(!client.check_lifecycle_compliance(&meter_id));
+
+        client.certify_recycling(
+            &admin,
+            &meter_id,
+            &String::from_str(&env, "GreenRecycle"),
+            &900_i128,
+            &450_i128,
+        );
+        assert!(client.check_lifecycle_compliance(&meter_id));
+    }
+
+    #[test]
+    fn test_lifecycle_non_admin_rejected() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let attacker = Address::generate(&env);
+        let result = client.try_record_manufacturing(
+            &attacker,
+            &meter_id,
+            &String::from_str(&env, "AcmeMeters"),
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
 }
