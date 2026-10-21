@@ -54,6 +54,7 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { emergencyContactsRouter } from "./routes/emergencyContacts.js";
+import { supportTicketsRouter } from "./routes/supportTickets.js";
 import { creditScoreRouter } from "./routes/creditScore.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
@@ -249,6 +250,8 @@ app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
 app.use("/api/communities", communitiesRouter);
+// #968: Customer support ticketing
+app.use("/api/tickets", writeLimiter, supportTicketsRouter);
 app.use("/api/smart-home", smartHomeRouter);
 // #989: voice assistant (Alexa / Google Assistant) skill endpoints
 app.use("/api/voice", readLimiter, voiceAssistantRouter);

@@ -68,6 +68,7 @@ export async function subscribeAlgorithm(user: string, algoId: number): Promise<
     new StellarSdk.Address(user).toScVal(),
     StellarSdk.nativeToScVal(algoId, { type: "u32" }),
   ]);
+}
 // Issue #981: Family/Household Account Sharing — delegation service helpers.
 
 export type DelegatePermission = "view" | "pay" | "admin";
