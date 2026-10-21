@@ -212,6 +212,7 @@ impl SolarGridContract {
         period_end: u64,
         reading_hash: BytesN<32>,
     ) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::issue_certificate(
             env,
             issuer,
@@ -246,9 +247,7 @@ impl SolarGridContract {
         vintage: u32,
         country: String,
     ) -> Result<u64, ContractError> {
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
+        Self::require_not_paused(&env)?;
         let admin: Address = env
             .storage()
             .instance()
@@ -383,6 +382,7 @@ impl SolarGridContract {
         id: u64,
         to: Address,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let mut certificate = load(&env, id)?;
         certificate.owner.require_auth();
         if certificate.status == CertificateStatus::Revoked {
@@ -419,6 +419,7 @@ impl SolarGridContract {
     /// Retire (claim) a certificate. The holder must authorize; this is
     /// irreversible and the certificate stays with the retiring holder.
     pub fn retire_export_certificate(env: Env, id: u64) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let mut certificate = load(&env, id)?;
         certificate.owner.require_auth();
         if certificate.status == CertificateStatus::Revoked {
@@ -447,6 +448,7 @@ impl SolarGridContract {
         verifier: Address,
         enabled: bool,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let admin: Address = env
             .storage()
             .instance()
@@ -489,6 +491,7 @@ impl SolarGridContract {
         id: u64,
         proof_hash: BytesN<32>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         verifier.require_auth();
         if !Self::is_certificate_verifier(env.clone(), verifier.clone()) {
             return Err(ContractError::Unauthorized);
@@ -532,6 +535,7 @@ impl SolarGridContract {
         id: u64,
         reason: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let admin: Address = env
             .storage()
             .instance()
