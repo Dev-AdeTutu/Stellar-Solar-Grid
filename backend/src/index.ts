@@ -226,6 +226,7 @@ app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
+app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/export", exportRouter);
