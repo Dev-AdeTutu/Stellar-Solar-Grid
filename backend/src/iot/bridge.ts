@@ -40,6 +40,8 @@ import {
   runEdgeInference,
   flushEdgeResults,
   isEdgeRuntimeAvailable,
+  trainLocalModel,
+  applyGlobalModel,
 } from "../lib/edgeRuntime.js";
 import {
   getActiveDrEvent,
@@ -59,6 +61,10 @@ const LOCATION_TOPIC = "solargrid/meters/+/location";
 // Issue #1047: meters publish their actual curtailed load here during a DR event.
 const DR_CURTAILMENT_TOPIC = "solargrid/meters/+/dr/curtailment";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
+
+// Issue #1046: how often each meter trains locally and ships its update.
+const FL_TRAIN_INTERVAL_MS = Number(process.env.FL_TRAIN_INTERVAL_MS ?? 300_000);
+let flTrainIntervalHandle: ReturnType<typeof setInterval> | null = null;
 
 /** Issue #993: remote diagnostic commands a technician can trigger. */
 export const DIAGNOSTIC_COMMANDS = ["reboot", "self_test", "check_connectivity"] as const;
@@ -383,6 +389,10 @@ export async function stopIoTBridge(): Promise<void> {
   if (flushIntervalHandle !== null) {
     clearInterval(flushIntervalHandle);
     flushIntervalHandle = null;
+  }
+  if (flTrainIntervalHandle !== null) {
+    clearInterval(flTrainIntervalHandle);
+    flTrainIntervalHandle = null;
   }
   let flushed = false;
   if (pendingCount > 0) {
@@ -784,6 +794,85 @@ function flushEdgeResultsSafely(): void {
   }
 }
 
+/**
+ * Issue #1046: run one federated-learning round for a single meter. Training
+ * happens entirely on the edge runtime; only the resulting model update
+ * (weights/gradients + sample count) leaves the device — never raw readings.
+ * Best-effort: any failure is logged and swallowed so billing is unaffected.
+ */
+async function runFederatedTrainingRound(meterId: string): Promise<void> {
+  try {
+    if (!isEdgeRuntimeAvailable()) return;
+    const update = await trainLocalModel(meterId);
+    if (!update) return;
+    await submitFederatedUpdate(meterId, update);
+    logger.info("Federated learning update submitted", {
+      event: "fl_update_submitted",
+      meterId,
+      samples: update.sampleCount,
+    });
+  } catch (err) {
+    logger.warn("Federated training round failed", { meterId, err });
+  }
+}
+
+/**
+ * Issue #1046: trigger a local training round for every meter currently
+ * tracked by the bridge. Runs on FL_TRAIN_INTERVAL_MS.
+ */
+function runFederatedTrainingCycle(): void {
+  const meterIds = new Set<string>();
+  for (const reading of pending) meterIds.add(reading.meterId);
+  if (meterIds.size === 0) return;
+  for (const meterId of meterIds) {
+    void runFederatedTrainingRound(meterId);
+  }
+}
+
+/**
+ * Issue #1046: handle a global-model distribution message from the
+ * coordinator. Payload: { version, weights }. Applies the new model to the
+ * edge runtime so subsequent local training starts from the global state.
+ */
+export function handleFederatedGlobalModelMessage(payload: Buffer): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(payload.toString());
+  } catch (err) {
+    logger.error("Malformed federated global-model payload (not JSON), skipping", { err });
+    return;
+  }
+  const { version, weights } = (raw ?? {}) as { version?: unknown; weights?: unknown };
+  if (typeof version !== "number" || !Array.isArray(weights)) {
+    logger.error("Invalid federated global-model payload, skipping", {
+      raw: payload.toString(),
+    });
+    return;
+  }
+  try {
+    applyGlobalModel({ version, weights: weights as number[] });
+    logger.info("Global federated model applied to edge runtime", { version });
+  } catch (err) {
+    logger.error("Failed to apply global federated model", { version, err });
+  }
+}
+
+/**
+ * Issue #1046: on (re)connect, pull the latest global model from the
+ * coordinator so the meter trains from the current global state.
+ */
+async function syncGlobalModelSafely(): Promise<void> {
+  try {
+    if (!isEdgeRuntimeAvailable()) return;
+    const model = await getLatestGlobalModel();
+    if (!model) return;
+    applyGlobalModel(model);
+    logger.info("Synced latest global federated model", { version: model.version });
+  } catch (err) {
+    logger.warn("Global federated model sync failed", { err });
+  }
+}
+
 export function startIoTBridge() {
   if (bridgeStarted) {
     logger.warn("IoT bridge already started, skipping duplicate initialization");
@@ -792,6 +881,8 @@ export function startIoTBridge() {
   bridgeStarted = true;
   startMqttBridge();
   startContractEventListener();
+  // Issue #1046: periodically train locally and publish model updates.
+  flTrainIntervalHandle = setInterval(runFederatedTrainingCycle, FL_TRAIN_INTERVAL_MS);
 }
 
 function startMqttBridge() {
@@ -875,6 +966,8 @@ function startMqttBridge() {
     // meter/bridge was offline. Best-effort so a sync failure can't break
     // the MQTT session.
     flushEdgeResultsSafely();
+    // Issue #1046: pull the latest global model before training resumes.
+    void syncGlobalModelSafely();
     // Issue #731: subscribe at QoS 2 (exactly-once, ordered) for meter usage so
     // the broker guarantees delivery AND ordering for billing-critical data.
     client.subscribe(TOPIC, { qos: 2 }, (err) => {
@@ -918,6 +1011,10 @@ function startMqttBridge() {
       } catch (err) {
         logger.error("Firmware status handling failed", { topic, err });
       }
+      return;
+    }
+    if (topic === FL_GLOBAL_MODEL_TOPIC) {
+      handleFederatedGlobalModelMessage(payload);
       return;
     }
     if (handleDeviceTelemetryTopic(topic, payload)) return;

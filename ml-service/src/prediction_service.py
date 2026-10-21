@@ -16,6 +16,7 @@ import time
 
 from model import LoadForecastingModel
 from preprocessing import DataPreprocessor
+from federated_learning import FederatedCoordinator
 
 # Configure logging
 logging.basicConfig(
@@ -45,6 +46,9 @@ CORS(app)
 model: Optional[LoadForecastingModel] = None
 preprocessor: Optional[DataPreprocessor] = None
 model_metadata: Dict = {}
+
+# Global federated learning coordinator
+federated_coordinator: Optional[FederatedCoordinator] = None
 
 
 def load_model(model_dir: str = './models/latest'):
@@ -424,6 +428,153 @@ def export_edge_model():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/federated/update', methods=['POST'])
+def federated_update():
+    """
+    Accept a client weight update for federated learning
+
+    Request body:
+    {
+        "client_id": "meter-123",
+        "round_id": 1,
+        "weights": {...},          // serialized model weights
+        "num_samples": 100,        // optional sample count
+        "metrics": {...}           // optional client metrics
+    }
+
+    Response:
+    {
+        "status": "accepted",
+        "client_id": "meter-123",
+        "round_id": 1,
+        "updates_received": 3
+    }
+    """
+    if federated_coordinator is None:
+        return jsonify({'error': 'Federated coordinator not initialized'}), 503
+
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'Missing request body'}), 400
+
+        client_id = data.get('client_id')
+        weights = data.get('weights')
+
+        if not client_id:
+            return jsonify({'error': 'Missing client_id'}), 400
+        if weights is None:
+            return jsonify({'error': 'Missing weights'}), 400
+
+        round_id = data.get('round_id')
+        num_samples = data.get('num_samples', 1)
+        client_metrics = data.get('metrics', {})
+
+        accepted = federated_coordinator.receive_update(
+            client_id=client_id,
+            weights=weights,
+            round_id=round_id,
+            num_samples=num_samples,
+            metrics=client_metrics
+        )
+
+        if not accepted:
+            return jsonify({
+                'error': 'Update rejected (stale round or invalid payload)'
+            }), 400
+
+        return jsonify({
+            'status': 'accepted',
+            'client_id': client_id,
+            'round_id': federated_coordinator.current_round,
+            'updates_received': federated_coordinator.num_pending_updates()
+        })
+
+    except Exception as e:
+        logger.error(f"Error receiving federated update: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/federated/model', methods=['GET'])
+def federated_model():
+    """
+    Return the current global federated model weights
+
+    Response:
+    {
+        "round_id": 2,
+        "version": "20240101000000",
+        "weights": {...},
+        "num_clients": 5,
+        "updated_at": "2024-01-01T00:00:00"
+    }
+    """
+    if federated_coordinator is None:
+        return jsonify({'error': 'Federated coordinator not initialized'}), 503
+
+    try:
+        global_model = federated_coordinator.get_global_model()
+        if global_model is None:
+            return jsonify({'error': 'No global model available yet'}), 404
+
+        return jsonify(global_model)
+
+    except Exception as e:
+        logger.error(f"Error fetching federated model: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/federated/aggregate', methods=['POST'])
+def federated_aggregate():
+    """
+    Trigger a federated aggregation round
+
+    Request body (optional):
+    {
+        "min_clients": 2,          // minimum updates required to aggregate
+        "force": false             // aggregate even if below min_clients
+    }
+
+    Response:
+    {
+        "status": "success",
+        "round_id": 2,
+        "num_clients": 5,
+        "aggregated_at": "2024-01-01T00:00:00"
+    }
+    """
+    if federated_coordinator is None:
+        return jsonify({'error': 'Federated coordinator not initialized'}), 503
+
+    try:
+        data = request.get_json(silent=True) or {}
+        min_clients = data.get('min_clients', 2)
+        force = data.get('force', False)
+
+        result = federated_coordinator.train_federated_round(
+            min_clients=min_clients,
+            force=force
+        )
+
+        if not result.get('success'):
+            return jsonify({
+                'status': 'skipped',
+                'reason': result.get('reason', 'aggregation not performed'),
+                'updates_received': federated_coordinator.num_pending_updates()
+            }), 409
+
+        return jsonify({
+            'status': 'success',
+            'round_id': result['round_id'],
+            'num_clients': result['num_clients'],
+            'aggregated_at': result['aggregated_at']
+        })
+
+    except Exception as e:
+        logger.error(f"Error aggregating federated round: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/metrics', methods=['GET'])
 def metrics():
     """Prometheus metrics endpoint"""
@@ -465,6 +616,14 @@ def main():
                         help='Port to bind to')
     
     args = parser.parse_args()
+    
+    # Initialize federated learning coordinator
+    global federated_coordinator
+    try:
+        federated_coordinator = FederatedCoordinator()
+        logger.info("Federated learning coordinator initialized")
+    except Exception as e:
+        logger.warning(f"Federated coordinator not initialized: {e}")
     
     # Load model
     if not load_model(args.model_dir):
