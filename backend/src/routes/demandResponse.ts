@@ -10,7 +10,14 @@ import {
   detectPeakDemand,
   processParticipation,
   notifyUsers,
-  updateEventStatus
+  updateEventStatus,
+  createDREvent,
+  optInToDRProgram,
+  optOutOfDRProgram,
+  getDROptIn,
+  triggerCurtailment,
+  getPerformanceTracking,
+  getIncentiveHistory
 } from '../lib/demandResponse.js';
 import { logger } from '../lib/logger.js';
 import { requireAdmin } from '../middleware/adminAuth.js';
@@ -283,6 +290,233 @@ router.put('/events/:eventId/status', requireAdmin, async (req: Request, res: Re
     });
   } catch (error: any) {
     logger.error('Error updating event status', { error: error.message });
+    next(error);
+  }
+});
+
+/**
+ * POST /api/demand-response/events
+ * Create a new demand response event with a curtailment target (admin only)
+ */
+router.post('/events', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const {
+      startTime,
+      endTime,
+      curtailmentTarget,
+      threshold,
+      predictedDemand,
+      incentiveRate
+    } = req.body;
+
+    if (!startTime || !endTime) {
+      return res.status(400).json({
+        success: false,
+        error: 'startTime and endTime are required'
+      });
+    }
+
+    if (curtailmentTarget === undefined || curtailmentTarget === null || Number(curtailmentTarget) <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'curtailmentTarget must be a positive number'
+      });
+    }
+
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: 'startTime and endTime must be valid dates'
+      });
+    }
+
+    if (end.getTime() <= start.getTime()) {
+      return res.status(400).json({
+        success: false,
+        error: 'endTime must be after startTime'
+      });
+    }
+
+    const event = createDREvent({
+      startTime: start,
+      endTime: end,
+      curtailmentTarget: Number(curtailmentTarget),
+      threshold: threshold !== undefined ? Number(threshold) : undefined,
+      predictedDemand: predictedDemand !== undefined ? Number(predictedDemand) : undefined,
+      incentiveRate: incentiveRate !== undefined ? Number(incentiveRate) : undefined
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Demand response event created',
+      event: {
+        ...event,
+        startTime: event.startTime.toISOString(),
+        endTime: event.endTime.toISOString(),
+        createdAt: event.createdAt.toISOString()
+      }
+    });
+  } catch (error: any) {
+    logger.error('Error creating DR event', { error: error.message });
+    next(error);
+  }
+});
+
+/**
+ * POST /api/demand-response/opt-in
+ * Opt a meter into the DR program with load preferences
+ */
+router.post('/opt-in', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { meterId, loadPreferences, maxCurtailmentKw, autoCurtail } = req.body;
+
+    if (!meterId) {
+      return res.status(400).json({
+        success: false,
+        error: 'meterId is required'
+      });
+    }
+
+    if (maxCurtailmentKw !== undefined && (isNaN(Number(maxCurtailmentKw)) || Number(maxCurtailmentKw) < 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'maxCurtailmentKw must be a non-negative number'
+      });
+    }
+
+    const optIn = optInToDRProgram({
+      meterId,
+      loadPreferences,
+      maxCurtailmentKw: maxCurtailmentKw !== undefined ? Number(maxCurtailmentKw) : undefined,
+      autoCurtail: autoCurtail !== undefined ? Boolean(autoCurtail) : undefined
+    });
+
+    res.json({
+      success: true,
+      message: 'Opted into demand response program',
+      optIn: {
+        ...optIn,
+        createdAt: optIn.createdAt.toISOString(),
+        updatedAt: optIn.updatedAt.toISOString()
+      }
+    });
+  } catch (error: any) {
+    logger.error('Error opting into DR program', { error: error.message });
+    next(error);
+  }
+});
+
+/**
+ * DELETE /api/demand-response/opt-in/:meterId
+ * Opt a meter out of the DR program
+ */
+router.delete('/opt-in/:meterId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { meterId } = req.params;
+
+    const existing = getDROptIn(meterId);
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        error: 'Meter is not opted into the demand response program'
+      });
+    }
+
+    optOutOfDRProgram(meterId);
+
+    res.json({
+      success: true,
+      message: 'Opted out of demand response program',
+      meterId
+    });
+  } catch (error: any) {
+    logger.error('Error opting out of DR program', { error: error.message });
+    next(error);
+  }
+});
+
+/**
+ * POST /api/demand-response/events/:eventId/curtail
+ * Trigger automated load curtailment for an event (admin only)
+ */
+router.post('/events/:eventId/curtail', requireAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { eventId } = req.params;
+
+    const event = getPeakEvent(eventId);
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        error: 'Event not found'
+      });
+    }
+
+    const result = triggerCurtailment(eventId);
+
+    res.json({
+      success: true,
+      message: 'Automated curtailment triggered',
+      eventId,
+      result: {
+        curtailedMeters: result.curtailedMeters,
+        totalCurtailedKw: result.totalCurtailedKw,
+        targetKw: result.targetKw,
+        targetMet: result.targetMet
+      }
+    });
+  } catch (error: any) {
+    logger.error('Error triggering curtailment', { error: error.message });
+    next(error);
+  }
+});
+
+/**
+ * GET /api/demand-response/performance/:meterId
+ * Get performance tracking and verification for a meter
+ */
+router.get('/performance/:meterId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { meterId } = req.params;
+    const performance = getPerformanceTracking(meterId);
+
+    res.json({
+      success: true,
+      meterId,
+      performance
+    });
+  } catch (error: any) {
+    logger.error('Error fetching performance tracking', { error: error.message });
+    next(error);
+  }
+});
+
+/**
+ * GET /api/demand-response/incentives/:meterId
+ * Get incentive payment history for a meter
+ */
+router.get('/incentives/:meterId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { meterId } = req.params;
+    const incentives = getIncentiveHistory(meterId);
+
+    const totalPaid = incentives.reduce((sum, i) => sum + i.amount, 0);
+
+    res.json({
+      success: true,
+      meterId,
+      incentives: incentives.map(i => ({
+        ...i,
+        paidAt: i.paidAt ? i.paidAt.toISOString() : null
+      })),
+      summary: {
+        paymentCount: incentives.length,
+        totalPaid
+      }
+    });
+  } catch (error: any) {
+    logger.error('Error fetching incentive history', { error: error.message });
     next(error);
   }
 });

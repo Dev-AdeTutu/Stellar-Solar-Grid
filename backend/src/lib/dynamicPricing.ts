@@ -77,6 +77,34 @@ const priceHistory: PricePoint[] = [];
 const MAX_HISTORY = 672; // 7 days × 96 intervals/day
 
 let currentPrice: PricePoint | null = null;
+import { EventEmitter } from "node:events";
+
+export const pricingEvents = new EventEmitter();
+
+let currentMultiplier = 1.0;
+let activePricingRule = "balanced_demand";
+
+export function getPricingMultiplier(): number {
+  return currentMultiplier;
+}
+
+export function getCurrentSeason(now = new Date()): { season: string; multiplier?: number } {
+  const active = getActiveSeason(now);
+  if (active) return { season: String(active.season), multiplier: active.multiplier };
+  const month = now.getUTCMonth();
+  const season = month >= 2 && month <= 4 ? "spring" : month >= 5 && month <= 7 ? "summer" : month >= 8 && month <= 10 ? "fall" : "winter";
+  return { season, multiplier: 1.0 };
+}
+
+export function updatePricingMultiplier(multiplier: number, rule = "admin_override"): PricePoint {
+  currentMultiplier = Math.max(0.1, Math.min(10.0, multiplier));
+  activePricingRule = rule;
+  const current = getCurrentPrice() ?? calculatePrice(100, 100);
+  const point = calculatePrice(current.supplyKwh, current.demandKwh);
+  recordPrice(point);
+  return point;
+}
+
 let schedulerTimer: NodeJS.Timeout | null = null;
 
 export function getTier(hour: number): PriceTier {
@@ -103,7 +131,7 @@ export function calculatePrice(supplyKwh: number, demandKwh: number, now = new D
   const activeSeason = getActiveSeason(now);
   const seasonMultiplier = activeSeason ? activeSeason.multiplier : 1.0;
 
-  const rawPrice = config.basePrice * tierMultiplier * demandMultiplier * seasonMultiplier;
+  const rawPrice = config.basePrice * tierMultiplier * demandMultiplier * seasonMultiplier * currentMultiplier;
   const pricePerKwh = Math.max(config.minPrice, Math.min(config.maxPrice, rawPrice));
 
   return {
@@ -122,6 +150,12 @@ export function recordPrice(point: PricePoint): void {
   priceHistory.push(point);
   if (priceHistory.length > MAX_HISTORY) priceHistory.shift();
   currentPrice = point;
+  pricingEvents.emit("PriceUpdated", {
+    pricePerKwh: point.pricePerKwh,
+    multiplier: currentMultiplier,
+    rule: activePricingRule,
+    timestamp: point.timestamp,
+  });
 }
 
 export function getCurrentPrice(): PricePoint | null {

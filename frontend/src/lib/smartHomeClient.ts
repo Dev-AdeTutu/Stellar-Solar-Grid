@@ -123,3 +123,91 @@ export async function cancelVoicePayment(token: string, confirmationToken: strin
     body: JSON.stringify({ confirmationToken }),
   });
 }
+
+export type DrEventStatus = "scheduled" | "active" | "completed" | "cancelled";
+
+export type DrEvent = {
+  id: string;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  curtailmentTargetKw: number;
+  incentiveRateStroopsPerKwh: string;
+  status: DrEventStatus;
+};
+
+export type DrEnrollment = {
+  eventId: string;
+  address: string;
+  optedIn: boolean;
+  loadPreferences: Record<string, number>;
+};
+
+export type DrPerformance = {
+  eventId: string;
+  address: string;
+  baselineKw: number;
+  actualKw: number;
+  curtailedKw: number;
+  verified: boolean;
+};
+
+export type DrIncentive = {
+  eventId: string;
+  address: string;
+  amountStroops: string;
+  distributed: boolean;
+  txHash?: string;
+};
+
+export type CreateDrEventInput = {
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  curtailmentTargetKw: number;
+  incentiveRateStroopsPerKwh: string;
+};
+
+export type OptInDrInput = {
+  eventId: string;
+  loadPreferences: Record<string, number>;
+};
+
+export async function getDrEvents(token: string): Promise<DrEvent[]> {
+  return smartHomeFetch<DrEvent[]>(token, "/dr/events");
+}
+
+export async function createDrEvent(token: string, input: CreateDrEventInput): Promise<DrEvent> {
+  return smartHomeFetch<DrEvent>(token, "/dr/events", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function optInDr(token: string, input: OptInDrInput): Promise<DrEnrollment> {
+  return smartHomeFetch<DrEnrollment>(token, "/dr/opt-in", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function optOutDr(token: string, eventId: string): Promise<void> {
+  return smartHomeFetch<void>(token, "/dr/opt-out", {
+    method: "POST",
+    body: JSON.stringify({ eventId }),
+  });
+}
+
+export async function getDrPerformance(token: string, eventId: string): Promise<DrPerformance[]> {
+  return smartHomeFetch<DrPerformance[]>(token, `/dr/events/${encodeURIComponent(eventId)}/performance`);
+}
+
+export async function getDrIncentives(token: string, eventId: string): Promise<DrIncentive[]> {
+  return smartHomeFetch<DrIncentive[]>(token, `/dr/events/${encodeURIComponent(eventId)}/incentives`);
+}
+
+export async function triggerDrCurtailment(token: string, eventId: string): Promise<DrEvent> {
+  return smartHomeFetch<DrEvent>(token, `/dr/events/${encodeURIComponent(eventId)}/curtail`, {
+    method: "POST",
+  });
+}

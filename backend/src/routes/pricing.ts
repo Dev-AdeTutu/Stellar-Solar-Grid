@@ -25,6 +25,8 @@ import {
   getSeasonalRates,
   setSeasonalRates,
   getCurrentSeason,
+  updatePricingMultiplier,
+  getPricingMultiplier,
   SeasonalRate,
 } from "../lib/dynamicPricing.js";
 
@@ -37,9 +39,29 @@ pricingRouter.get(
     if (!price) {
       const point = calculatePrice(100, 100);
       recordPrice(point);
-      return res.json(point);
+      return res.json({ ...point, multiplier: getPricingMultiplier() });
     }
-    res.json(price);
+    res.json({ ...price, multiplier: getPricingMultiplier() });
+  }),
+);
+
+pricingRouter.post(
+  "/multiplier",
+  requireAdminKey,
+  asyncHandler(async (req: Request, res: Response) => {
+    const multiplier = Number(req.body?.multiplier);
+    const rule = req.body?.rule ? String(req.body.rule) : "admin_demand_adjustment";
+    if (isNaN(multiplier) || multiplier < 0.1 || multiplier > 10) {
+      return res.status(400).json({ error: "Invalid multiplier (must be between 0.1 and 10)", code: "INVALID_ARGUMENT" });
+    }
+    const updated = updatePricingMultiplier(multiplier, rule);
+    res.json({
+      success: true,
+      multiplier,
+      rule,
+      pricePerKwh: updated.pricePerKwh,
+      timestamp: updated.timestamp,
+    });
   }),
 );
 

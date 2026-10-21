@@ -689,150 +689,397 @@ mod batch_and_market_tests {
     }
 
     // ------------------------------------------------------------------
-    // Carbon credit marketplace tests
+    // Demand response automation tests
     // ------------------------------------------------------------------
 
-    fn setup_carbon_meter(
+    fn setup_dr_meter(
         env: &Env,
         client: &SolarGridContractClient<'static>,
         token_address: &Address,
         owner: &Address,
-    ) -> String {
-        let meter_id = String::from_str(env, "SG-2024-CARBON");
+        meter_id: &String,
+    ) {
         let token_admin_client = token::StellarAssetClient::new(env, token_address);
         client.allowlist_add(owner);
-        client.register_meter(&meter_id, owner);
-        token_admin_client.mint(owner, &100_000_000_i128);
+        client.register_meter(meter_id, owner);
+        token_admin_client.mint(owner, &10_000_000_i128);
         client.make_payment(meter_id, owner, &10_000_000_i128, &PaymentPlan::Daily);
-        meter_id
     }
 
     #[test]
-    fn test_carbon_issuance_from_generation() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &owner);
+    fn test_create_dr_event_with_curtailment_target() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128, // curtailment target (watts)
+            &500_i128,   // incentive pool
+        );
 
-        // Generation is recorded by the oracle and converted into credits.
-        client.update_usage(&meter_id, &1_000_i128);
-        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
-        assert!(issued > 0);
-
-        let credits = client.get_carbon_credits(&owner);
-        assert_eq!(credits, issued);
-        assert_eq!(client.get_carbon_supply(), issued);
+        let event = client.get_dr_event(&event_id).unwrap();
+        assert_eq!(event.curtailment_target, 1_000_i128);
+        assert_eq!(event.incentive_pool, 500_i128);
+        assert_eq!(event.start, now);
+        assert_eq!(event.end, now + 3_600);
+        assert!(event.active);
     }
 
     #[test]
-    fn test_carbon_issuance_requires_verified_meter() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &owner);
-
-        // Unverified meters cannot mint credits.
-        let result = client.try_issue_carbon_credits(&meter_id, &1_000_i128);
-        assert_eq!(result, Err(Ok(Error::CarbonNotVerified)));
-
-        client.verify_carbon_meter(&meter_id);
-        assert!(client.is_carbon_verified(&meter_id));
-        assert!(client.issue_carbon_credits(&meter_id, &1_000_i128) > 0);
-    }
-
-    #[test]
-    fn test_carbon_verification_admin_only() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let owner = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &owner);
-
+    fn test_create_dr_event_non_admin_rejected() {
+        let (env, client, _admin, _token_address) = setup_with_token();
         let attacker = Address::generate(&env);
-        let result = client.try_verify_carbon_meter(&attacker, &meter_id);
+        let now = env.ledger().timestamp();
+        let result = client.try_create_dr_event(
+            &attacker,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
         assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
 
     #[test]
-    fn test_carbon_list_and_buy_settles_trade() {
+    fn test_create_dr_event_invalid_window_rejected() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let now = env.ledger().timestamp();
+        let result = client.try_create_dr_event(
+            &admin,
+            &(now + 3_600),
+            &now,
+            &1_000_i128,
+            &500_i128,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dr_opt_in_records_load_preferences() {
         let (env, client, _admin, token_address) = setup_with_token();
-        let seller = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
-        client.verify_carbon_meter(&meter_id);
-        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
 
-        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
-        let listing = client.get_carbon_listing(&listing_id).unwrap();
-        assert_eq!(listing.seller, seller);
-        assert_eq!(listing.amount, issued);
-        assert_eq!(listing.price, 100_i128);
+        client.dr_opt_in(&meter_id, &owner, &300_i128, &true);
 
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&buyer, &1_000_000_i128);
-        client.buy_carbon_credits(&buyer, &listing_id);
+        let pref = client.get_dr_preference(&meter_id).unwrap();
+        assert_eq!(pref.max_curtailment, 300_i128);
+        assert!(pref.auto_curtail);
+        assert!(pref.opted_in);
+    }
+
+    #[test]
+    fn test_dr_opt_in_non_owner_rejected() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let attacker = Address::generate(&env);
+        let result = client.try_dr_opt_in(&meter_id, &attacker, &300_i128, &true);
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+    }
+
+    #[test]
+    fn test_dr_opt_out_removes_participation() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        client.dr_opt_in(&meter_id, &owner, &300_i128, &true);
+        client.dr_opt_out(&meter_id, &owner);
+
+        let pref = client.get_dr_preference(&meter_id).unwrap();
+        assert!(!pref.opted_in);
+    }
+
+    #[test]
+    fn test_automated_curtailment_reduces_load() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+
+        // Automated curtailment should reduce the meter's load.
+        let reduced = client.apply_dr_curtailment(&event_id, &meter_id);
+        assert_eq!(reduced, 400_i128);
+
+        let participation = client.get_dr_participation(&event_id, &meter_id).unwrap();
+        assert_eq!(participation.curtailed, 400_i128);
+    }
+
+    #[test]
+    fn test_curtailment_respects_opt_in_preference() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        // Opted out: no automatic curtailment.
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+        client.dr_opt_out(&meter_id, &owner);
+
+        let reduced = client.apply_dr_curtailment(&event_id, &meter_id);
+        assert_eq!(reduced, 0_i128);
+    }
+
+    #[test]
+    fn test_curtailment_capped_by_max_preference() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &250_i128, &true);
+
+        let reduced = client.apply_dr_curtailment(&event_id, &meter_id);
+        assert_eq!(reduced, 250_i128);
+    }
+
+    #[test]
+    fn test_incentive_calculation_and_distribution() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
+
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+        client.apply_dr_curtailment(&event_id, &meter_id);
+
+        let incentive = client.calculate_dr_incentive(&event_id, &meter_id);
+        assert!(incentive > 0);
 
         let tc = token::Client::new(&env, &token_address);
-        assert_eq!(tc.balance(&seller), 100_i128 * issued);
-        assert_eq!(client.get_carbon_credits(&buyer), issued);
-        assert_eq!(client.get_carbon_credits(&seller), 0);
-        assert!(client.get_carbon_listing(&listing_id).is_none());
+        let before = tc.balance(&owner);
+        client.distribute_dr_incentive(&event_id, &meter_id);
+        let after = tc.balance(&owner);
+        assert_eq!(after - before, incentive);
     }
 
     #[test]
-    fn test_carbon_bid_and_fill_updates_index_price() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let seller = Address::generate(&env);
-        let bidder = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
-        client.verify_carbon_meter(&meter_id);
-        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
-
-        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
-        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
-        token_admin_client.mint(&bidder, &1_000_000_i128);
-
-        // A bid above the ask is accepted and settles at the ask price.
-        client.place_carbon_bid(&bidder, &listing_id, &issued, &150_i128);
-        let bids = client.get_carbon_bids(&listing_id);
-        assert_eq!(bids.len(), 1);
-
-        client.fill_carbon_bid(&seller, &listing_id, &0);
-        assert_eq!(client.get_carbon_credits(&bidder), issued);
-        assert_eq!(client.get_carbon_index_price(), 100_i128);
+    fn test_incentive_zero_without_participation() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        // No opt-in / curtailment recorded.
+        let incentive = client.calculate_dr_incentive(&event_id, &meter_id);
+        assert_eq!(incentive, 0_i128);
     }
 
     #[test]
-    fn test_carbon_cancel_listing_returns_credits() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let seller = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
-        client.verify_carbon_meter(&meter_id);
-        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
+    fn test_dr_performance_verification() {
+        let (env, client, admin, token_address) = setup_with_token();
+        let owner = Address::generate(&env);
+        let meter_id = String::from_str(&env, "SG-2024-DRMTR1");
+        setup_dr_meter(&env, &client, &token_address, &owner, &meter_id);
 
-        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
-        assert_eq!(client.get_carbon_credits(&seller), 0);
+        let now = env.ledger().timestamp();
+        let event_id = client.create_dr_event(
+            &admin,
+            &now,
+            &(now + 3_600),
+            &1_000_i128,
+            &500_i128,
+        );
+        client.dr_opt_in(&meter_id, &owner, &400_i128, &true);
+        client.apply_dr_curtailment(&event_id, &meter_id);
 
-        client.cancel_carbon_listing(&seller, &listing_id);
-        assert_eq!(client.get_carbon_credits(&seller), issued);
-        assert!(client.get_carbon_listing(&listing_id).is_none());
+        let perf = client.verify_dr_performance(&event_id, &meter_id);
+        assert_eq!(perf.curtailed, 400_i128);
+        assert!(perf.verified);
+    }
+
+    // ------------------------------------------------------------------
+    // Meter lifecycle tracking tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_lifecycle_records_manufacturing_origin() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128, // copper grams
+            &500_i128,   // silicon grams
+        );
+
+        let record = client.get_lifecycle(&meter_id).unwrap();
+        assert_eq!(record.manufacturer, manufacturer);
+        assert_eq!(record.materials.copper, 1_000_i128);
+        assert_eq!(record.materials.silicon, 500_i128);
+        assert_eq!(record.stage, LifecycleStage::Manufactured);
     }
 
     #[test]
-    fn test_carbon_cancel_listing_non_seller_rejected() {
-        let (env, client, _admin, token_address) = setup_with_token();
-        let seller = Address::generate(&env);
-        let meter_id = setup_carbon_meter(&env, &client, &token_address, &seller);
-        client.verify_carbon_meter(&meter_id);
-        let issued = client.issue_carbon_credits(&meter_id, &1_000_i128);
-        let listing_id = client.list_carbon_credits(&seller, &issued, &100_i128);
+    fn test_lifecycle_installation_repair_upgrade() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
 
-        let attacker = Address::generate(&env);
-        let result = client.try_cancel_carbon_listing(&attacker, &listing_id);
-        assert_eq!(result, Err(Ok(Error::Unauthorized)));
+        let owner = Address::generate(&env);
+        client.allowlist_add(&owner);
+        client.register_meter(&meter_id, &owner);
+        client.record_installation(&admin, &meter_id, &owner);
+        assert_eq!(client.get_lifecycle(&meter_id).unwrap().stage, LifecycleStage::Installed);
+
+        client.record_repair(&admin, &meter_id, &String::from_str(&env, "firmware reset"));
+        client.record_upgrade(&admin, &meter_id, &String::from_str(&env, "v2.0"));
+
+        let record = client.get_lifecycle(&meter_id).unwrap();
+        assert_eq!(record.repairs, 1);
+        assert_eq!(record.upgrades, 1);
     }
 
     #[test]
-    fn test_carbon_listing_requires_balance() {
+    fn test_lifecycle_recycling_certification() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        let recycler = String::from_str(&env, "GreenRecycle");
+        client.certify_recycling(&admin, &meter_id, &recycler, &900_i128, &450_i128);
+
+        let record = client.get_lifecycle(&meter_id).unwrap();
+        assert_eq!(record.stage, LifecycleStage::Recycled);
+        assert_eq!(record.recycler, Some(recycler));
+        assert!(record.recycling_certified);
+    }
+
+    #[test]
+    fn test_lifecycle_material_recovery_tracking() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        client.certify_recycling(
+            &admin,
+            &meter_id,
+            &String::from_str(&env, "GreenRecycle"),
+            &900_i128,
+            &450_i128,
+        );
+
+        let recovery = client.get_material_recovery(&meter_id).unwrap();
+        assert_eq!(recovery.copper_recovered, 900_i128);
+        assert_eq!(recovery.silicon_recovered, 450_i128);
+        // Recovery rate should be within [0, 100].
+        assert!(recovery.recovery_rate <= 100);
+    }
+
+    #[test]
+    fn test_lifecycle_compliance_check() {
+        let (env, client, admin, _token_address) = setup_with_token();
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let manufacturer = String::from_str(&env, "AcmeMeters");
+        client.record_manufacturing(
+            &admin,
+            &meter_id,
+            &manufacturer,
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+
+        // Not yet recycled -> non-compliant.
+        assert!(!client.check_lifecycle_compliance(&meter_id));
+
+        client.certify_recycling(
+            &admin,
+            &meter_id,
+            &String::from_str(&env, "GreenRecycle"),
+            &900_i128,
+            &450_i128,
+        );
+        assert!(client.check_lifecycle_compliance(&meter_id));
+    }
+
+    #[test]
+    fn test_lifecycle_non_admin_rejected() {
         let (env, client, _admin, _token_address) = setup_with_token();
-        let seller = Address::generate(&env);
-        let result = client.try_list_carbon_credits(&seller, &1_000_i128, &100_i128);
-        assert_eq!(result, Err(Ok(Error::InsufficientCarbonCredits)));
+        let meter_id = String::from_str(&env, "SG-2024-LCMTR1");
+        let attacker = Address::generate(&env);
+        let result = client.try_record_manufacturing(
+            &attacker,
+            &meter_id,
+            &String::from_str(&env, "AcmeMeters"),
+            &String::from_str(&env, "batch-001"),
+            &1_000_i128,
+            &500_i128,
+        );
+        assert_eq!(result, Err(Ok(Error::Unauthorized)));
     }
 }

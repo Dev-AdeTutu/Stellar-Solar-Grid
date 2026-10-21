@@ -124,6 +124,9 @@ import { startTheftMonitor } from "./lib/theftDetection.js";
 import { workOrdersRouter } from "./routes/workOrders.js";
 import { surveysRouter } from "./routes/surveys.js";
 import { lifespanRouter } from "./routes/lifespan.js";
+import { capacityPlanningRouter } from "./routes/capacityPlanning.js";
+import { storageOptimizationRouter } from "./routes/storageOptimization.js";
+import { impactRouter } from "./routes/impact.js";
 import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
 import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
 import { shadowsRouter } from "./routes/shadows.js";
@@ -260,6 +263,12 @@ startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
 // #1079: meter lifespan extension recommendations
 app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1050: predictive grid capacity planning
+app.use("/api/capacity-planning", capacityPlanningRouter);
+// #1053: energy storage optimization AI
+app.use("/api/storage-optimization", storageOptimizationRouter);
+// #1054: social impact measurement
+app.use("/api/impact", impactRouter);
 // #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
 app.use("/api/rate-limits", rateLimitTiersRouter);
 // #1081: meter device shadows (desired vs reported state)
@@ -303,6 +312,16 @@ app.use("/api/privacy", writeLimiter, privacyRouter);
 app.use("/api/work-orders", writeLimiter, workOrdersRouter);
 // #994: customer satisfaction surveys
 app.use("/api/surveys", writeLimiter, surveysRouter);
+
+// #1064: Regulatory sandbox mode. The sandbox middleware tags every request
+// with its sandbox context so downstream compliance flows can isolate
+// sandbox traffic from production. Sandbox routes are only mounted when the
+// sandbox environment is explicitly enabled.
+app.use(sandboxMiddleware);
+if (isSandboxEnabled()) {
+  app.use("/api/sandbox", writeLimiter, sandboxRouter);
+  logger.info("Regulatory sandbox mode enabled");
+}
 
 // #979: scheduled maintenance windows
 app.use("/api/maintenance", writeLimiter, maintenanceRouter);

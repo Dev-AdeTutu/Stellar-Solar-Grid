@@ -44,9 +44,11 @@ import {
   applyGlobalModel,
 } from "../lib/edgeRuntime.js";
 import {
-  submitFederatedUpdate,
-  getLatestGlobalModel,
-} from "../lib/federatedLearning.js";
+  getActiveDrEvent,
+  getDrEnrollment,
+  recordDrCurtailment,
+  listDrEnrollments,
+} from "../lib/demandResponse.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -56,8 +58,8 @@ const HEARTBEAT_TOPIC = "solargrid/meters/+/heartbeat";
 const DEVICE_TELEMETRY_TOPIC = "solargrid/devices/+/telemetry";
 const FREQUENCY_TOPIC = "solargrid/meters/+/frequency";
 const LOCATION_TOPIC = "solargrid/meters/+/location";
-// Issue #1046: coordinator distributes the aggregated global model here.
-const FL_GLOBAL_MODEL_TOPIC = "solargrid/fl/global-model";
+// Issue #1047: meters publish their actual curtailed load here during a DR event.
+const DR_CURTAILMENT_TOPIC = "solargrid/meters/+/dr/curtailment";
 const MAX_REPLAY_LEDGERS = Number(process.env.MAX_REPLAY_LEDGERS ?? 1000);
 
 // Issue #1046: how often each meter trains locally and ships its update.
@@ -111,6 +113,115 @@ export function sendDiagnosticCommand(meterId: string, command: DiagnosticComman
     (err) => { if (err) logger.error({ meterId, command, err }, "Failed to publish diagnostic command"); },
   );
   return true;
+}
+
+/**
+ * Issue #1047: publish an automated load-curtailment command to a meter (or
+ * the smart-home hub fronting its circuits). `targetKw` is the load the meter
+ * should shed; `eventId` lets the meter tag its performance report back to the
+ * right DR event. Returns false when the MQTT bridge is not connected.
+ */
+export function sendCurtailmentCommand(
+  meterId: string,
+  eventId: string,
+  targetKw: number,
+  source: string = "dr_automation",
+): boolean {
+  if (!mqttClient?.connected) return false;
+  const topic = `solargrid/meters/${meterId}/control`;
+  logger.info(
+    { event: "dr_curtailment_command", meterId, eventId, targetKw, topic, source },
+    "Sending automated DR curtailment command",
+  );
+  mqttClient.publish(
+    topic,
+    JSON.stringify({
+      cmd: "CURTAIL",
+      eventId,
+      targetKw,
+      source,
+      timestamp: new Date().toISOString(),
+    }),
+    { qos: 1 },
+    (err) => { if (err) logger.error({ meterId, eventId, err }, "Failed to publish CURTAIL command"); },
+  );
+  return true;
+}
+
+/**
+ * Issue #1047: enforce the currently-active DR event across all opted-in
+ * enrollments. Sends a curtailment command to each enrolled meter scaled by
+ * its opt-in load preference. Safe to call repeatedly (e.g. on event start and
+ * on each poll) — meters treat a repeated CURTAIL as idempotent.
+ */
+export async function enforceActiveDrEvent(): Promise<number> {
+  const active = getActiveDrEvent();
+  if (!active) return 0;
+  let commanded = 0;
+  for (const enrollment of listDrEnrollments()) {
+    if (!enrollment.optedIn) continue;
+    const targetKw = Math.max(0, enrollment.maxCurtailmentKw);
+    if (targetKw <= 0) continue;
+    if (sendCurtailmentCommand(enrollment.meterId, active.id, targetKw)) {
+      commanded++;
+    }
+  }
+  if (commanded > 0) {
+    logger.info(
+      { event: "dr_curtailment_dispatched", drEventId: active.id, commanded },
+      "Automated DR curtailment dispatched",
+    );
+  }
+  return commanded;
+}
+
+/**
+ * Issue #1047: handle a meter's DR performance report. Payload:
+ * `{ eventId, curtailedKw }`. The reported curtailment is fed back into the
+ * demand-response library so incentive verification can score participation.
+ */
+export function handleDrCurtailmentMessage(meterId: string, payload: Buffer): void {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(payload.toString());
+  } catch (err) {
+    logger.error("Malformed DR curtailment payload (not JSON), skipping", {
+      meterId,
+      raw: payload.toString(),
+      err,
+    });
+    return;
+  }
+
+  const { eventId, curtailedKw } = (raw ?? {}) as {
+    eventId?: unknown;
+    curtailedKw?: unknown;
+  };
+
+  if (
+    typeof eventId !== "string" ||
+    typeof curtailedKw !== "number" ||
+    !Number.isFinite(curtailedKw) ||
+    curtailedKw < 0
+  ) {
+    logger.error("Invalid DR curtailment payload, skipping", {
+      meterId,
+      raw: payload.toString(),
+    });
+    return;
+  }
+
+  try {
+    const enrollment = getDrEnrollment(meterId);
+    if (!enrollment) {
+      logger.warn("DR curtailment report from unenrolled meter ignored", { meterId, eventId });
+      return;
+    }
+    recordDrCurtailment(eventId, meterId, curtailedKw);
+    logger.info("DR curtailment performance recorded", { meterId, eventId, curtailedKw });
+  } catch (err) {
+    logger.error("DR curtailment handling failed", { meterId, eventId, err });
+  }
 }
 
 /**
@@ -212,6 +323,13 @@ export function handleGridServiceTelemetryTopic(topic: string, payload: Buffer):
     if (segments[3] === "location") {
       verifyMeterLocation({ meterId, latitude: Number(data.latitude), longitude: Number(data.longitude) });
       return true;
+    }
+    if (segments[3] === "dr") {
+      // Issue #1047: solargrid/meters/{id}/dr/curtailment — performance report.
+      if (segments.length === 5 && segments[4] === "curtailment") {
+        handleDrCurtailmentMessage(meterId, payload);
+        return true;
+      }
     }
   } catch (err) { logger.warn("Grid-service telemetry rejected", { topic, err }); return true; }
   return false;
@@ -863,9 +981,11 @@ function startMqttBridge() {
     });
     client.subscribe(FREQUENCY_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT frequency subscribe error", { err }); });
     client.subscribe(LOCATION_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT location subscribe error", { err }); });
-    // Issue #1046: receive aggregated global-model distributions.
-    client.subscribe(FL_GLOBAL_MODEL_TOPIC, { qos: 1 }, (err) => {
-      if (err) logger.error("MQTT federated global-model subscribe error", { err });
+    client.subscribe(DR_CURTAILMENT_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT DR curtailment subscribe error", { err }); });
+    // Issue #1047: (re)apply any active DR event on connect so curtailment
+    // survives a bridge restart mid-event.
+    void enforceActiveDrEvent().catch((err) => {
+      logger.error("DR enforcement on connect failed", { err });
     });
   });
 
@@ -1222,6 +1342,39 @@ export async function handleContractEvent(
           newLimit: Number(newLimit),
         });
         contractEventsProcessed.inc({ topic: eventKey });
+        break;
+      }
+
+      case "solargrid:dr_start": {
+        // Issue #1047: a DR event went live — dispatch automated curtailment
+        // to every opted-in enrollment.
+        logger.info("DR event started contract event", { drEventId: subject });
+        contractEventsProcessed.inc({ topic: eventKey });
+        await enforceActiveDrEvent();
+        break;
+      }
+
+      case "solargrid:dr_end": {
+        // Issue #1047: DR event ended — release curtailment so meters resume
+        // normal load.
+        logger.info("DR event ended contract event", { drEventId: subject });
+        contractEventsProcessed.inc({ topic: eventKey });
+        for (const enrollment of listDrEnrollments()) {
+          if (!enrollment.optedIn) continue;
+          mqttClient?.publish(
+            `solargrid/meters/${enrollment.meterId}/control`,
+            JSON.stringify({
+              cmd: "RESTORE",
+              eventId: subject,
+              source: "dr_automation",
+              timestamp: new Date().toISOString(),
+            }),
+            { qos: 1 },
+            (err) => {
+              if (err) logger.error({ meterId: enrollment.meterId, err }, "Failed to publish RESTORE command");
+            },
+          );
+        }
         break;
       }
 

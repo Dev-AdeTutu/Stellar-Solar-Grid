@@ -9,7 +9,9 @@
 //! When a meter's balance falls below a configured threshold, low-priority circuits are
 //! automatically shed. When balance is restored (e.g. after payment), shed circuits are restored.
 
-use crate::{ContractError, SolarGridContract, SolarGridContractArgs, SolarGridContractClient, EVT_NS};
+use crate::{
+    ContractError, SolarGridContract, SolarGridContractArgs, SolarGridContractClient, EVT_NS,
+};
 use soroban_sdk::{contractimpl, contracttype, Env, String, Symbol, Vec};
 
 #[contracttype]
@@ -35,6 +37,20 @@ pub struct CircuitLoad {
 #[derive(Clone)]
 pub enum LoadSheddingKey {
     Circuits(String),
+    /// Circuits curtailed by a specific demand response event (for verification).
+    DrCurtailed(String, u64),
+}
+
+/// Result of applying a demand response curtailment target to a meter's circuits.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DrCurtailmentResult {
+    /// Circuits that were newly curtailed by this DR event.
+    pub curtailed: Vec<u32>,
+    /// Number of circuits that were shed (newly or already) toward the target.
+    pub curtailed_count: u32,
+    /// Whether the curtailment target was fully satisfied.
+    pub target_met: bool,
 }
 
 #[contractimpl]
@@ -121,6 +137,98 @@ impl SolarGridContract {
             .persistent()
             .set(&LoadSheddingKey::Circuits(meter_id), &updated);
         Ok(updated)
+    }
+
+    /// Apply a demand response curtailment target to a meter's circuits.
+    ///
+    /// Sheds non-essential circuits (priority > 1) in ascending priority order
+    /// (lowest priority first, i.e. priority 4 before 3 before 2) until the
+    /// requested number of circuits (`curtailment_target`) has been curtailed.
+    /// Essential circuits (priority 1) are never shed.
+    ///
+    /// The set of circuits curtailed by this event is recorded under
+    /// `LoadSheddingKey::DrCurtailed(meter_id, event_id)` so that performance
+    /// can be verified later. Emits `load_shed` events for newly curtailed circuits.
+    pub fn apply_dr_curtailment(
+        env: Env,
+        meter_id: String,
+        event_id: u64,
+        curtailment_target: u32,
+    ) -> Result<DrCurtailmentResult, ContractError> {
+        Self::require_not_paused(&env)?;
+        let circuits = Self::get_load_priorities(env.clone(), meter_id.clone());
+
+        let mut updated = Vec::new(&env);
+        let mut curtailed: Vec<u32> = Vec::new(&env);
+        let mut curtailed_count: u32 = 0;
+
+        // First pass: count already-shed non-essential circuits.
+        for i in 0..circuits.len() {
+            let c = circuits.get(i).unwrap();
+            if c.priority > 1 && c.is_shed {
+                curtailed_count += 1;
+            }
+        }
+
+        // Second pass: shed additional non-essential circuits, lowest priority first.
+        // Priorities range 2..=4; iterate 4 -> 2 so the least critical loads go first.
+        let mut priority = 4u32;
+        while priority >= 2 {
+            for i in 0..circuits.len() {
+                let mut circuit = circuits.get(i).unwrap();
+                if circuit.priority == priority && !circuit.is_shed {
+                    if curtailed_count < curtailment_target {
+                        circuit.is_shed = true;
+                        curtailed_count += 1;
+                        curtailed.push_back(circuit.circuit_id);
+                        env.events().publish(
+                            (EVT_NS, Symbol::new(&env, "load_shed"), meter_id.clone()),
+                            circuit.circuit_id,
+                        );
+                    }
+                }
+                updated.push_back(circuit);
+            }
+            if priority == 2 {
+                break;
+            }
+            priority -= 1;
+        }
+
+        // Preserve circuits that were not part of the priority loop (e.g. essential
+        // circuits with priority 1) so the full configuration is retained.
+        let mut final_circuits = Vec::new(&env);
+        for i in 0..circuits.len() {
+            let original = circuits.get(i).unwrap();
+            if original.priority < 2 || original.priority > 4 {
+                final_circuits.push_back(original);
+            }
+        }
+        for i in 0..updated.len() {
+            final_circuits.push_back(updated.get(i).unwrap());
+        }
+
+        env.storage()
+            .persistent()
+            .set(&LoadSheddingKey::Circuits(meter_id.clone()), &final_circuits);
+        env.storage().persistent().set(
+            &LoadSheddingKey::DrCurtailed(meter_id, event_id),
+            &curtailed,
+        );
+
+        Ok(DrCurtailmentResult {
+            curtailed,
+            curtailed_count,
+            target_met: curtailed_count >= curtailment_target,
+        })
+    }
+
+    /// Retrieve the circuits curtailed by a given demand response event.
+    pub fn get_dr_curtailed_circuits(env: Env, meter_id: String, event_id: u64) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&LoadSheddingKey::DrCurtailed(meter_id, event_id))
+            .unwrap_or_else(|| Vec::new(&env))
     }
 
     /// Manually or remotely toggle a single circuit (e.g. via IoT MQTT command).

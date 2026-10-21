@@ -17,17 +17,16 @@ mod quantum_crypto;
 mod recs;
 mod scheduling;
 mod staking;
+mod dynamic_pricing;
 mod warranty;
 mod loyalty;
 mod load_shedding;
 mod p2p_trading;
+mod demand_response;
+mod lifecycle;
 #[cfg(test)]
 mod test_assets_warranty;
-pub use carbon::{
-    CarbonCredit, CarbonListing, CarbonOrder, CarbonOrderSide, CarbonOrderStatus, CarbonProject,
-    CarbonTrade, CarbonVerification, CarbonVerificationStatus, CarbonConfig, CarbonIndexPrice,
-    CARBON_PRICE_SCALE, MAX_CARBON_PAGE, MAX_CARBON_QUANTITY,
-};
+pub use dynamic_pricing::*;
 pub use certificates::{ExportCertificate, MAX_CERTIFICATE_PAGE};
 pub use commons::{
     CommonsConflict, CommonsMember, CommonsResource, CommonsRule, CommonsSanction,
@@ -48,6 +47,14 @@ pub use staking::{StakeInfo, StakingConfig, StakingPool, UnstakeRequest};
 pub use loyalty::{LoyaltyAccount, LoyaltyTier};
 pub use load_shedding::{CircuitLoad, CircuitPriority};
 pub use p2p_trading::EnergyListing;
+pub use demand_response::{
+    DrEvent, DrEventStatus, DrLoadPreference, DrParticipation, DrPerformance, DrProgram,
+    DrProgramConfig, MAX_DR_CURTAILMENT_BPS, MAX_DR_EVENT_PAGE, MAX_DR_EVENTS,
+};
+pub use lifecycle::{
+    LifecycleEvent, LifecycleEventType, LifecycleStage, MaterialRecovery, MeterLifecycle,
+    RecyclingCertification, MAX_LIFECYCLE_EVENTS, MAX_LIFECYCLE_PAGE,
+};
 
 // ── Error types ───────────────────────────────────────────────────────────────
 
@@ -196,6 +203,7 @@ pub enum ContractError {
 pub mod algo_market;
 pub mod batching;
 pub mod verification;
+pub mod oracle_network;
 
 use algo_market::{split_fee, AlgoKey, Algorithm};
 use batching::{AdminAction, MAX_BATCH_ACTIONS};
