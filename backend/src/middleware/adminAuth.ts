@@ -72,23 +72,20 @@ function hasValidSessionToken(req: Request): boolean {
  */
 export function requireAdminKey(req: Request, res: Response, next: NextFunction) {
   if (!ADMIN_API_KEY) {
-    if (process.env.NODE_ENV === 'production') {
-      logger.error('ADMIN_API_KEY not set in production');
-      return res.status(503).json({ error: 'Server misconfiguration' });
-    }
-    logger.warn('ADMIN_API_KEY not set — skipping auth check (dev mode)');
-    // Still audit dev-mode admin calls so the log trail is complete
-    auditLog(buildAuditEntry(req));
-    return next();
+    logger.error('ADMIN_API_KEY not set — rejecting admin request');
+    return res.status(503).json({ error: 'Server misconfiguration', code: 'MISCONFIGURED' });
   }
 
   const provided = req.headers['x-admin-key'];
   if (provided === ADMIN_API_KEY || hasValidSessionToken(req)) {
     // Successful auth — skip the failure limiter entirely
+    auditLog(buildAuditEntry(req));
     return next();
   }
 
-  // Auth passed — emit structured audit entry before continuing
-  auditLog(buildAuditEntry(req));
-  next();
+  // Only failed attempts consume the dedicated authentication failure budget.
+  return adminFailureLimiter(req, res, () => {
+    logger.warn({ ip: req.ip, path: req.path }, 'Unauthorized admin request');
+    res.status(401).json({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
+  });
 }

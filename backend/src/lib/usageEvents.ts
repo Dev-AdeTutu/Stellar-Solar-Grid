@@ -30,6 +30,7 @@ export type UsageEventRecord = {
   last_error: string | null;
   on_chain_tx_hash: string | null;
   submitted_at: string | null;
+  reading_id?: string | null;
 };
 
 type CreateUsageEventInput = {
@@ -37,6 +38,8 @@ type CreateUsageEventInput = {
   units: number;
   cost: number;
   sourceTopic?: string | null;
+  readingId?: string;
+  energySources?: { solar: number; grid: number; battery: number };
 };
 
 // Cast needed: `moduleResolution: node16` resolves better-sqlite3's export= type
@@ -81,6 +84,22 @@ function openDatabase() {
     CREATE INDEX IF NOT EXISTS idx_usage_events_status_submitted_at
       ON usage_events (status, submitted_at);
   `);
+  const columns = (database.pragma("table_info(usage_events)") as Array<{ name: string }>).map(c => c.name);
+  for (const name of ["reading_id", "energy_solar", "energy_grid", "energy_battery"]) {
+    if (!columns.includes(name)) database.exec(`ALTER TABLE usage_events ADD COLUMN ${name} ${name === "reading_id" ? "TEXT" : "INTEGER"}`);
+  }
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_reading_id ON usage_events(meter_id, reading_id) WHERE reading_id IS NOT NULL");
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS usage_reading_receipts (
+      meter_id TEXT NOT NULL, reading_id TEXT NOT NULL, event_id INTEGER NOT NULL,
+      PRIMARY KEY(meter_id, reading_id)
+    );
+    INSERT OR IGNORE INTO usage_reading_receipts SELECT meter_id, reading_id, id FROM usage_events WHERE reading_id IS NOT NULL;
+    CREATE TRIGGER IF NOT EXISTS usage_reading_receipt AFTER INSERT ON usage_events
+      WHEN NEW.reading_id IS NOT NULL BEGIN
+        INSERT INTO usage_reading_receipts(meter_id, reading_id, event_id) VALUES(NEW.meter_id, NEW.reading_id, NEW.id);
+      END;
+  `);
   return database;
 }
 
@@ -98,6 +117,19 @@ export function setKV(key: string, value: string) {
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
+  if (input.readingId) {
+    const receipt = db.prepare("SELECT event_id FROM usage_reading_receipts WHERE meter_id=? AND reading_id=?").get(input.meterId, input.readingId) as { event_id: number } | undefined;
+    const existing = receipt ? getUsageEventById(receipt.event_id) as any : undefined;
+    // Retention may remove history, but must never allow replay billing of the same reading.
+    if (receipt && !existing) throw new Error("Reading already processed; usage history has expired");
+    if (existing) {
+      // A stable ID must never be rebound to different usage/source data.
+      if (existing.units !== input.units || existing.cost !== String(input.cost) ||
+          existing.energy_solar !== input.energySources?.solar || existing.energy_grid !== input.energySources?.grid ||
+          existing.energy_battery !== input.energySources?.battery) throw new Error("Conflicting readingId");
+      return existing as UsageEventRecord;
+    }
+  }
   const receivedAt = new Date().toISOString();
   const statement = db.prepare(`
     INSERT INTO usage_events (
@@ -107,8 +139,8 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
       received_at,
       source_topic,
       status,
-      attempt_count
-    ) VALUES (?, ?, ?, ?, ?, 'pending', 0)
+      attempt_count, reading_id, energy_solar, energy_grid, energy_battery
+    ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)
   `);
 
   const result = statement.run(
@@ -116,7 +148,11 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
     input.units,
     String(input.cost),
     receivedAt,
-    input.sourceTopic ?? null
+    input.sourceTopic ?? null,
+    input.readingId ?? null,
+    input.energySources?.solar ?? null,
+    input.energySources?.grid ?? null,
+    input.energySources?.battery ?? null,
   );
 
   usageEvents.inc({ status: "pending" });
@@ -170,6 +206,19 @@ export function getTypicalWeeklyUsageStroops(meterId: string): number {
     .get(meterId) as { weekly_cost: number | null };
 
   return Number(row?.weekly_cost ?? 0);
+}
+
+/** Energy-weighted attribution of locally received usage, including unreported legacy energy. */
+export function getEnergyMix(meterId: string, since = "1970-01-01T00:00:00.000Z", until = new Date().toISOString()) {
+  const row = db.prepare(`SELECT COUNT(*) AS readings, COALESCE(SUM(units),0) AS total,
+    COALESCE(SUM(energy_solar),0) AS solar, COALESCE(SUM(energy_grid),0) AS grid,
+    COALESCE(SUM(energy_battery),0) AS battery,
+    COALESCE(SUM(CASE WHEN energy_solar IS NULL THEN units ELSE 0 END),0) AS unknown
+    FROM usage_events WHERE meter_id=? AND received_at>=? AND received_at<?`).get(meterId, since, until) as Record<string, number>;
+  const percentages = Object.fromEntries(["solar", "grid", "battery", "unknown"].map(key => [key, row.total ? row[key] * 100 / row.total : 0]));
+  return { meterId, since, until, unit: "milli-kWh", basis: "received_usage", readings: row.readings,
+    totalUnits: row.total, units: { solar: row.solar, grid: row.grid, battery: row.battery, unknown: row.unknown },
+    percentages, hasData: row.total > 0 };
 }
 
 export async function persistAndSubmitUsageEvent(input: CreateUsageEventInput) {
@@ -326,7 +375,7 @@ async function submitUsageEvent(id: number) {
 
   try {
     const hash = await adminInvoke("update_usage", [
-      StellarSdk.nativeToScVal(event.meter_id, { type: "symbol" }),
+      StellarSdk.nativeToScVal(event.meter_id, { type: event.reading_id ? "string" : "symbol" }),
       StellarSdk.nativeToScVal(BigInt(event.units), { type: "u64" }),
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);

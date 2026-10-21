@@ -240,6 +240,9 @@ export function MeterCard({
       >
         Print Report
       </Link>
+      <Link href={`/meters/${encodeURIComponent(meterId)}/energy`} className="block text-center text-sm underline mt-3">
+        View energy mix
+      </Link>
     </div>
   );
 }

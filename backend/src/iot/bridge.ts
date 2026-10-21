@@ -29,6 +29,8 @@ import {
 } from "../lib/stellar.js";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { mqttMessages, activeMeters, paymentVolume, mqttReconnectExhausted, contractEventsProcessed } from "../lib/metrics.js";
+import { SourceUsageSchema, DeviceIdSchema } from "./telemetrySchemas.js";
+import { registeredMeter, processOperationalMessage, startMeterOperations, stopMeterOperations } from "./meterOperations.js";
 
 const BROKER = process.env.MQTT_BROKER ?? "mqtt://localhost:1883";
 const TOPIC = "solargrid/meters/+/usage";
@@ -79,6 +81,7 @@ async function flush() {
 }
 
 export async function stopIoTBridge(): Promise<void> {
+  stopMeterOperations();
   const pendingCount = pending.length;
   if (flushIntervalHandle !== null) {
     clearInterval(flushIntervalHandle);
@@ -281,12 +284,29 @@ function isDuplicateMessage(topic: string, payload: Buffer): boolean {
   return false;
 }
 
-export async function processMqttMessage(topic: string, payload: Buffer) {
-  if (isDuplicateMessage(topic, payload)) {
-    logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
-    return;
+async function processSourceUsage(topic: string, raw: unknown): Promise<boolean> {
+  if (!raw || typeof raw !== "object" || !("energySource" in raw || "energySources" in raw || "readingId" in raw)) return false;
+  const match = /^solargrid\/meters\/([^/]+)\/usage$/.exec(topic);
+  const parsed = SourceUsageSchema.safeParse(raw);
+  if (!match || !DeviceIdSchema.safeParse(match[1]).success || !parsed.success) {
+    logger.warn({ topic }, "Invalid source-aware usage reading");
+    return true;
   }
+  const meterId = match[1];
+  // Fail closed for new attribution data. Legacy payloads keep their existing path.
+  const meter = await registeredMeter(meterId);
+  if (!meter) return true;
+  const reading = parsed.data;
+  const energySources = reading.energySources ?? { solar: 0, grid: 0, battery: 0 };
+  if (reading.energySource) energySources[reading.energySource] = reading.units;
+  const event = await persistAndSubmitUsageEvent({ meterId, units: reading.units, cost: reading.cost,
+    readingId: reading.readingId, energySources, sourceTopic: topic });
+  if (event.on_chain_tx_hash) void checkAndNotifyLowBalance(meterId);
+  // Durable submission worker owns retries; never enqueue this reading again for batch billing.
+  return true;
+}
 
+export async function processMqttMessage(topic: string, payload: Buffer) {
   const meterId = topic.split("/")[2];
   const rawStr = payload.toString();
 
@@ -299,6 +319,11 @@ export async function processMqttMessage(topic: string, payload: Buffer) {
     return;
   }
 
+  if (await processSourceUsage(topic, raw)) return;
+  if (isDuplicateMessage(topic, payload)) {
+    logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+    return;
+  }
   // Merge meterId from the topic so the full { meterId, units, cost } triple is validated together
   const parsed = UsageUpdateSchema.safeParse(raw as object);
   if (!parsed.success) {
@@ -392,20 +417,26 @@ function startMqttBridge() {
     client.subscribe(TOPIC, (err) => {
       if (err) logger.error("MQTT subscribe error", { err });
     });
+    client.subscribe(["solargrid/meters/+/telemetry", "solargrid/meters/+/ack"], { qos: 1 });
+    startMeterOperations((topic, payload) => new Promise<void>((resolve, reject) => {
+      if (!client.connected) return reject(new Error("MQTT bridge disconnected"));
+      const timer = setTimeout(() => reject(new Error("MQTT publish timed out")), 5000);
+      client.publish(topic, payload, { qos: 1, retain: false }, err => {
+        clearTimeout(timer);
+        if (err) reject(err); else resolve();
+      });
+    }));
   });
 
-  client.on("message", async (topic, payload) => {
+  client.on("message", async (topic, payload, packet) => {
     const segments = topic.split("/");
     const labelTopic = segments.slice(0, 2).join("/"); // e.g. "solargrid/meters"
     mqttMessages.inc({ topic: labelTopic });
     try {
-      // Issue #765: ignore broker-redelivered duplicates (QoS 1/2 resend on a
-      // missed ack) before they're persisted/submitted a second time.
-      if (isDuplicateMessage(topic, payload)) {
-        logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+      if (/\/(telemetry|ack)$/.test(topic)) {
+        await processOperationalMessage(topic, payload, Boolean(packet?.retain));
         return;
       }
-
       const meterId = topic.split("/")[2];
 
       let raw: unknown;
@@ -416,6 +447,12 @@ function startMqttBridge() {
         return;
       }
 
+      if (await processSourceUsage(topic, raw)) return;
+      // Legacy wire-content TTL dedupe stays unchanged; enriched readings use durable IDs.
+      if (isDuplicateMessage(topic, payload)) {
+        logger.warn("Duplicate MQTT message ignored (already processed)", { topic });
+        return;
+      }
       const parsed = UsageUpdateSchema.safeParse(raw as object);
       if (!parsed.success) {
         logger.error("Invalid MQTT payload (schema validation failed)", {

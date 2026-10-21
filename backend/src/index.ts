@@ -41,6 +41,7 @@ import {
 } from "./lib/usageEvents.js";
 import { initMeterNotesStore } from "./lib/meterNotes.js";
 import { getReqId } from "./lib/requestContext.js";
+import { createMeterOperationsRouter } from "./routes/meterOperations.js";
 
 // ── Rate-limit config ────────────────────────────────────────────────────────
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -204,6 +205,7 @@ try {
 app.use("/api/admin/login", writeLimiter, adminLoginRouter);
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
+app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/webhooks", writeLimiter, webhookRouter);

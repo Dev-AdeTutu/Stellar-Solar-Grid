@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Navbar from "@/components/Navbar";
+import MeterOperationsDashboard from "@/components/MeterOperationsDashboard";
 
 export default function AdminPage() {
   const router = useRouter();
@@ -40,6 +41,7 @@ export default function AdminPage() {
           <p className="text-gray-400 text-sm">
             You are authenticated. Admin actions are available here.
           </p>
+          <MeterOperationsDashboard />
         </div>
       </main>
     </>
