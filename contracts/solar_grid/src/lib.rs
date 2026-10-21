@@ -168,6 +168,7 @@ pub enum ContractError {
 pub mod algo_market;
 pub mod batching;
 pub mod verification;
+pub mod oracle_network;
 
 use algo_market::{split_fee, AlgoKey, Algorithm};
 use batching::{AdminAction, MAX_BATCH_ACTIONS};
