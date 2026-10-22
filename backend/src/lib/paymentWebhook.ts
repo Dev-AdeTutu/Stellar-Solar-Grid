@@ -16,6 +16,8 @@ export interface PaymentWebhookPayload {
   transaction_hash: string;
   timestamp: string; // ISO 8601
   updated_balance: number; // updated meter balance in stroops
+  installment_plan_id?: number; // installment plan this event relates to (Issue #987)
+  installment_status?: "created" | "paid" | "defaulted"; // installment lifecycle event (Issue #987)
 }
 
 /**
@@ -90,6 +92,64 @@ export async function sendPaymentWebhook(
       correlationId,
     });
     // Don't rethrow — webhook failures should not block payment API responses
+  }
+}
+
+/**
+ * Send an installment lifecycle webhook notification (Issue #987).
+ * Reuses the same HMAC signing and retry logic as one-off payment webhooks,
+ * allowing downstream consumers to receive installment created/paid/defaulted events.
+ *
+ * @param payload Payment webhook payload carrying installment fields
+ * @param webhookUrl URL to send the webhook to (can be overridden; defaults to env var)
+ */
+export async function sendInstallmentWebhook(
+  payload: PaymentWebhookPayload,
+  webhookUrl?: string,
+): Promise<void> {
+  const url = webhookUrl || process.env.PAYMENT_WEBHOOK_URL;
+
+  if (!url) {
+    // Webhook not configured — silently skip
+    return;
+  }
+
+  const payloadJson = JSON.stringify(payload);
+  const secret = getPaymentWebhookSecret();
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  // Add HMAC signature if secret is configured (Issue #692)
+  if (secret) {
+    headers["X-Webhook-Signature"] = generateWebhookSignature(payloadJson, secret);
+  }
+
+  const correlationId = getReqId();
+
+  logger.info("Sending installment webhook", {
+    meter_id: payload.meter_id,
+    payer_address: payload.payer_address,
+    amount_xlm: payload.amount_xlm,
+    installment_plan_id: payload.installment_plan_id,
+    installment_status: payload.installment_status,
+    url,
+    correlationId,
+  });
+
+  // Fire async webhook with retry logic from webhookRegistry
+  try {
+    await fireWebhook(url, payloadJson, correlationId);
+  } catch (err: any) {
+    logger.error("Failed to send installment webhook", {
+      meter_id: payload.meter_id,
+      installment_plan_id: payload.installment_plan_id,
+      url,
+      error: err.message,
+      correlationId,
+    });
+    // Don't rethrow — webhook failures should not block installment API responses
   }
 }
 

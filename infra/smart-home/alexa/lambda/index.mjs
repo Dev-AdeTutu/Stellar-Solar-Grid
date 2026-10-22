@@ -12,6 +12,10 @@
  *
  * Trigger: add an "Alexa Smart Home" and an "Alexa Skills Kit" trigger, both
  * restricted to ALEXA_SKILL_ID.
+ *
+ * Custom intents GetStatusIntent, MakePaymentIntent and ConfirmPaymentIntent
+ * (#989) are handled entirely by the backend; this proxy forwards the full
+ * event (including event.request.locale for multi-language support) as-is.
  */
 const TIMEOUT_MS = 7000;
 
@@ -53,6 +57,9 @@ export const handler = async (event) => {
     }
   }
 
+  if (!event.request) {
+    throw new Error("Malformed request: missing event.request");
+  }
   const appId = event.context?.System?.application?.applicationId ?? event.session?.application?.applicationId;
   if (process.env.ALEXA_SKILL_ID && appId !== process.env.ALEXA_SKILL_ID) {
     throw new Error("Request is not from the SolarGrid skill");

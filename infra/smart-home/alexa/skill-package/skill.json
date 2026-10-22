@@ -5,10 +5,12 @@
         "en-US": {
           "name": "SolarGrid",
           "summary": "Control your SolarGrid solar meters and check your energy balance by voice.",
-          "description": "Link your SolarGrid account to switch your solar meters on and off, run your energy routines, and ask for your balance and today's usage.\n\nTry: \"Alexa, turn off the shop meter\", \"Alexa, turn on Night Saver\", or \"Alexa, ask Solar Grid what's my balance\".",
+          "description": "Link your SolarGrid account to switch your solar meters on and off, run your energy routines, and manage your prepaid energy by voice. Check your balance, review today's usage, get meter status, and make secure payments.\n\nTry: \"Alexa, turn off the shop meter\", \"Alexa, ask Solar Grid what's my balance\", \"Alexa, ask Solar Grid how much energy I used today\", \"Alexa, ask Solar Grid what's the status of the shop meter\", or \"Alexa, ask Solar Grid to pay 5 XLM for the shop meter\".",
           "examplePhrases": [
             "Alexa, ask Solar Grid what's my balance",
             "Alexa, ask Solar Grid how much energy I used today",
+            "Alexa, ask Solar Grid what's the status of the shop meter",
+            "Alexa, ask Solar Grid to pay 5 XLM for the shop meter",
             "Alexa, ask Solar Grid to run Night Saver"
           ],
           "keywords": ["solar", "energy", "meter", "stellar", "prepaid"],
@@ -17,7 +19,7 @@
         }
       },
       "isAvailableWorldwide": true,
-      "testingInstructions": "Link with a testnet wallet that owns at least one meter. Use the consent page to share the meter with control permission.",
+      "testingInstructions": "Link with a testnet wallet that owns at least one meter. Use the consent page to share the meter with control permission. Voice payments require a 2FA/PIN configured on the account before any payment can be confirmed.",
       "category": "SMART_HOME",
       "distributionCountries": []
     },

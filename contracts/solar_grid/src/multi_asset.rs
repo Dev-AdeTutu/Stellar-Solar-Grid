@@ -5,8 +5,12 @@
 //! asset are converted to canonical units before being credited, so every
 //! balance and revenue figure in the contract stays in a single unit.
 
-use crate::{ContractError, SolarGridContract, SolarGridContractArgs, SolarGridContractClient};
-use soroban_sdk::{contractimpl, contracttype, symbol_short, token, Address, Env, Symbol, Vec};
+use crate::{
+    quantum_crypto, ContractError, SolarGridContract, SolarGridContractArgs, SolarGridContractClient,
+};
+use soroban_sdk::{
+    contractimpl, contracttype, symbol_short, token, Address, BytesN, Env, Symbol, Vec,
+};
 
 /// Fixed-point scale for conversion rates: `rate = canonical units per 1 asset unit * RATE_SCALE`.
 pub const RATE_SCALE: i128 = 10_000_000;
@@ -40,6 +44,7 @@ pub fn to_canonical(amount: i128, rate: i128) -> Result<i128, ContractError> {
 impl SolarGridContract {
     /// Admin: whitelist `asset` (or update its rate). `rate` must be > 0.
     pub fn add_supported_asset(env: Env, asset: Address, rate: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if rate <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -61,6 +66,7 @@ impl SolarGridContract {
 
     /// Admin: remove `asset` from the whitelist.
     pub fn remove_supported_asset(env: Env, asset: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         let list: Vec<Address> = env
             .storage()
@@ -80,6 +86,7 @@ impl SolarGridContract {
 
     /// Admin: update the conversion rate of an already-supported asset.
     pub fn set_asset_rate(env: Env, asset: Address, rate: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if rate <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -111,16 +118,35 @@ impl SolarGridContract {
     /// Pay for a meter in any supported asset. The asset amount is transferred
     /// to the contract and the meter is credited in canonical units.
     /// Returns the credited canonical amount.
+    ///
+    /// Quantum-resistant migration (Issue #1067): if the payer has registered a
+    /// post-quantum public key, a valid PQC signature over the payment payload
+    /// is required in addition to the legacy Stellar signature. Payers without
+    /// a registered PQC key continue to work legacy-only.
     pub fn make_asset_payment(
         env: Env,
         meter_id: soroban_sdk::String,
         payer: Address,
         asset: Address,
         amount: i128,
+        pqc_signature: Option<BytesN<64>>,
     ) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         payer.require_auth();
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
+        }
+        // Enforce the PQC signature when the payer has opted in to a PQC key.
+        if quantum_crypto::has_pqc_key(&env, &payer) {
+            let signature = pqc_signature.ok_or(ContractError::InvalidSignature)?;
+            let payload = quantum_crypto::asset_payment_payload(
+                &env,
+                &meter_id,
+                &payer,
+                &asset,
+                amount,
+            );
+            quantum_crypto::verify_pqc_signature(&env, &payer, &payload, &signature)?;
         }
         // Ensure the meter exists.
         Self::get_meter_metadata(env.clone(), meter_id.clone())?;

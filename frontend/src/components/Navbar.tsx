@@ -4,6 +4,15 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { useWalletStore } from "@/store/walletStore";
+
+const NAV_LINKS = [
+  { href: "/dashboard/user", label: "My Meter" },
+  { href: "/pay", label: "Pay" },
+  { href: "/dashboard/provider", label: "Provider" },
+  { href: "/history", label: "History" },
+  { href: "/marketplace", label: "Algos" },
+  { href: "/admin/batch", label: "Batch" },
+];
 import { WalletConnectButton } from "@/components/WalletConnectButton";
 import { NetworkMismatchBanner } from "@/components/NetworkMismatchBanner";
 import { useLocale, type Locale, LOCALE_OPTIONS } from "@/components/I18nProvider";
@@ -25,6 +34,7 @@ export default function Navbar() {
     { href: "/analytics", label: t("analytics") },
     { href: "/resilience", label: t("resilience") },
     { href: "/privacy", label: t("privacy") },
+    { href: "/support", label: "Support" },
     { href: "/bills", label: t("bills") },
     { href: "/communities", label: t("communities") },
     { href: "/competitions", label: t("competitions") },
@@ -36,6 +46,9 @@ export default function Navbar() {
     { href: "/market-analytics", label: "Market Analytics" },
     { href: "/asset-info", label: "Asset Info" },
     { href: "/sms-preferences", label: "SMS Alerts" },
+    { href: "/leases", label: "Meter leasing" },
+    { href: "/compliance", label: "Compliance" },
+    { href: "/recs", label: "RECs" },
   ];
 
   useEffect(() => {

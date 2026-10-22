@@ -95,6 +95,25 @@ function applyConsumptionAnalyticsSchema(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_consumption_weekly_reports_meter
       ON consumption_weekly_reports (meter_id, week_start DESC);
+
+    CREATE TABLE IF NOT EXISTS appliance_usage (
+      id TEXT PRIMARY KEY,
+      meter_id TEXT NOT NULL,
+      appliance_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      energy_kwh REAL NOT NULL,
+      cost_stroops INTEGER NOT NULL,
+      UNIQUE (meter_id, appliance_id, period_start, period_end)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_appliance_usage_meter_period
+      ON appliance_usage (meter_id, period_start DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_appliance_usage_appliance
+      ON appliance_usage (meter_id, appliance_id, period_start DESC);
   `);
 }
 
@@ -538,6 +557,382 @@ export function generateAllWeeklyReports(now = new Date()): { reports: number } 
     }
   }
   return { reports };
+}
+
+// ── Appliance disaggregation ─────────────────────────────────────────────────
+
+/** Appliance categories the disaggregator can attribute load to. */
+export type ApplianceCategory =
+  | "refrigeration"
+  | "hvac"
+  | "water_heating"
+  | "lighting"
+  | "ev_charging"
+  | "other";
+
+export type ApplianceBreakdownEntry = {
+  applianceId: string;
+  name: string;
+  category: ApplianceCategory;
+  energyKwh: number;
+  costStroops: number;
+  sharePct: number;
+  /** Change vs the previous equal-length period, null when no baseline. */
+  trendPct: number | null;
+  trendDirection: "up" | "down" | "flat";
+  recommendation: string;
+};
+
+export type ApplianceBreakdown = {
+  meterId: string;
+  generatedAt: string;
+  periodStart: string;
+  periodEnd: string;
+  windowDays: number;
+  totalKwh: number;
+  totalCostStroops: number;
+  appliances: ApplianceBreakdownEntry[];
+  sufficientData: boolean;
+};
+
+export type DisaggregateOptions = {
+  days?: number;
+  now?: Date;
+  tariffXlmPerKwh?: number;
+  /** Skip writing the computed breakdown to SQLite. */
+  persist?: boolean;
+};
+
+/** Human-readable names per category, used for the default appliance label. */
+const APPLIANCE_NAMES: Record<ApplianceCategory, string> = {
+  refrigeration: "Refrigeration",
+  hvac: "HVAC",
+  water_heating: "Water heating",
+  lighting: "Lighting",
+  ev_charging: "EV charging",
+  other: "Other loads",
+};
+
+const STROOPS_PER_XLM = 10_000_000;
+
+function toStroops(energyKwh: number, tariffXlmPerKwh: number): number {
+  return Math.round(energyKwh * tariffXlmPerKwh * STROOPS_PER_XLM);
+}
+
+/**
+ * Classify a cluster of hourly samples into an appliance category from the
+ * shape of its daily profile.
+ *
+ * The heuristics mirror how these loads actually behave on a meter:
+ *  - a flat, always-on baseload with a low coefficient of variation is
+ *    refrigeration (compressors cycling around a setpoint),
+ *  - a strong morning/evening double peak is HVAC (thermostat schedules),
+ *  - a concentrated early-morning block is water heating (timed tanks),
+ *  - a sharp evening block is lighting,
+ *  - a large, sustained overnight block is EV charging,
+ *  - anything else falls through to "other".
+ */
+function classifyCluster(samples: HourlyEnergySample[]): ApplianceCategory {
+  if (samples.length === 0) return "other";
+  const mean = samples.reduce((sum, s) => sum + s.energyKwh, 0) / samples.length;
+  if (mean <= 0) return "other";
+
+  const variance = samples.reduce((sum, s) => sum + (s.energyKwh - mean) ** 2, 0) / samples.length;
+  const coefficientOfVariation = Math.sqrt(variance) / mean;
+
+  const byHour = new Array<number>(24).fill(0);
+  for (const sample of samples) {
+    byHour[new Date(sample.timestamp).getUTCHours()] += sample.energyKwh;
+  }
+  const total = byHour.reduce((sum, v) => sum + v, 0);
+  if (total <= 0) return "other";
+  const share = byHour.map((v) => v / total);
+
+  const sumRange = (from: number, to: number) => {
+    let acc = 0;
+    for (let hour = from; hour <= to; hour++) acc += share[hour];
+    return acc;
+  };
+
+  const morning = sumRange(6, 9);
+  const evening = sumRange(17, 21);
+  const overnight = sumRange(0, 5) + sumRange(22, 23);
+  const earlyMorning = sumRange(4, 7);
+
+  // Steady baseload: low variation and load spread across the whole day.
+  if (coefficientOfVariation < 0.35 && overnight < 0.45) return "refrigeration";
+  // Large sustained overnight block: EV charging.
+  if (overnight >= 0.45 && morning < 0.2) return "ev_charging";
+  // Double peak (morning + evening): HVAC.
+  if (morning >= 0.2 && evening >= 0.2) return "hvac";
+  // Concentrated early-morning block: water heating.
+  if (earlyMorning >= 0.35) return "water_heating";
+  // Sharp evening block: lighting.
+  if (evening >= 0.35) return "lighting";
+  return "other";
+}
+
+function recommendationFor(category: ApplianceCategory, trendPct: number | null): string {
+  const rising = trendPct !== null && trendPct > 10;
+  switch (category) {
+    case "refrigeration":
+      return rising
+        ? "Refrigeration use is climbing — check door seals and condenser coils, and confirm the thermostat setpoint."
+        : "Keep refrigerator coils clean and leave clearance around the unit to hold this steady baseload down.";
+    case "hvac":
+      return rising
+        ? "HVAC load is up — review the schedule and filter condition, and consider a smart thermostat setback."
+        : "Shift HVAC pre-cooling to off-peak hours and seal draughts to trim this load further.";
+    case "water_heating":
+      return rising
+        ? "Water heating is trending up — insulate the tank and pipes, and lower the setpoint a few degrees."
+        : "Schedule water heating for off-peak hours and insulate the tank to cut standby losses.";
+    case "lighting":
+      return rising
+        ? "Lighting use increased — check for lights left on and replace remaining fixtures with LEDs."
+        : "Add occupancy sensors and timers so lighting only runs when the space is in use.";
+    case "ev_charging":
+      return rising
+        ? "EV charging is growing — move charging sessions to off-peak windows to cut cost."
+        : "Keep EV charging in the off-peak window and cap the charge rate to avoid demand spikes.";
+    default:
+      return "Review always-on loads in this band and switch idle devices off at the plug.";
+  }
+}
+
+type ApplianceUsageRow = {
+  id: string;
+  meter_id: string;
+  appliance_id: string;
+  name: string;
+  category: string;
+  period_start: string;
+  period_end: string;
+  energy_kwh: number;
+  cost_stroops: number;
+};
+
+function persistApplianceUsage(
+  meterId: string,
+  periodStart: string,
+  periodEnd: string,
+  entries: Array<{ applianceId: string; name: string; category: ApplianceCategory; energyKwh: number; costStroops: number }>,
+): void {
+  if (entries.length === 0) return;
+  pool.withConnection((database) => {
+    const statement = database.prepare(`
+      INSERT INTO appliance_usage
+        (id, meter_id, appliance_id, name, category, period_start, period_end, energy_kwh, cost_stroops)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(meter_id, appliance_id, period_start, period_end) DO UPDATE SET
+        name = excluded.name,
+        category = excluded.category,
+        energy_kwh = excluded.energy_kwh,
+        cost_stroops = excluded.cost_stroops
+    `);
+    for (const entry of entries) {
+      statement.run(
+        `${meterId}:${entry.applianceId}:${periodStart}`,
+        meterId,
+        entry.applianceId,
+        entry.name,
+        entry.category,
+        periodStart,
+        periodEnd,
+        entry.energyKwh,
+        entry.costStroops,
+      );
+    }
+  });
+}
+
+function loadStoredApplianceUsage(
+  meterId: string,
+  periodStart: string,
+  periodEnd: string,
+): Map<string, { energyKwh: number; costStroops: number; name: string; category: ApplianceCategory }> {
+  const rows = pool
+    .primaryDb()
+    .prepare(
+      `SELECT * FROM appliance_usage
+       WHERE meter_id = ? AND period_start = ? AND period_end = ?`,
+    )
+    .all(meterId, periodStart, periodEnd) as ApplianceUsageRow[];
+  const map = new Map<string, { energyKwh: number; costStroops: number; name: string; category: ApplianceCategory }>();
+  for (const row of rows) {
+    map.set(row.appliance_id, {
+      energyKwh: row.energy_kwh,
+      costStroops: row.cost_stroops,
+      name: row.name,
+      category: row.category as ApplianceCategory,
+    });
+  }
+  return map;
+}
+
+/**
+ * Disaggregate a meter's hourly usage into per-appliance consumption.
+ *
+ * The hourly series is clustered with the same daily-profile clustering used
+ * for pattern detection; each cluster is then classified into an appliance
+ * category from its daily shape. Results are persisted per period so trends
+ * can be computed against the previous equal-length window.
+ */
+export function disaggregateAppliances(
+  meterId: string,
+  options: DisaggregateOptions = {},
+): ApplianceBreakdown {
+  const now = options.now ?? new Date();
+  const days = options.days ?? 30;
+  const tariff = options.tariffXlmPerKwh ?? DEFAULT_TARIFF_XLM_PER_KWH;
+
+  const periodEnd = new Date(now);
+  periodEnd.setUTCMinutes(0, 0, 0);
+  const periodStart = new Date(periodEnd.getTime() - days * 86_400_000);
+  const previousStart = new Date(periodStart.getTime() - days * 86_400_000);
+
+  const samples = loadSamples(meterId, days, now);
+  const previousSamples = loadSamples(meterId, days * 2, now).filter(
+    (sample) => Date.parse(sample.timestamp) < periodStart.getTime(),
+  );
+
+  const clusters = clusterDailyProfiles(samples);
+  const previousClusters = clusterDailyProfiles(previousSamples);
+
+  const previousByCategory = new Map<ApplianceCategory, number>();
+  for (const cluster of previousClusters) {
+    const category = classifyCluster(cluster.samples);
+    previousByCategory.set(category, (previousByCategory.get(category) ?? 0) + cluster.totalKwh);
+  }
+
+  const aggregated = new Map<ApplianceCategory, number>();
+  for (const cluster of clusters) {
+    const category = classifyCluster(cluster.samples);
+    aggregated.set(category, (aggregated.get(category) ?? 0) + cluster.totalKwh);
+  }
+
+  const totalKwh = [...aggregated.values()].reduce((sum, v) => sum + v, 0);
+  const periodStartIso = periodStart.toISOString();
+  const periodEndIso = periodEnd.toISOString();
+
+  const entries: ApplianceBreakdownEntry[] = [...aggregated.entries()]
+    .filter(([, energyKwh]) => energyKwh > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([category, energyKwh]) => {
+      const previousKwh = previousByCategory.get(category) ?? 0;
+      const trendPct =
+        previousKwh > 0 ? Number((((energyKwh - previousKwh) / previousKwh) * 100).toFixed(1)) : null;
+      const trendDirection: ApplianceBreakdownEntry["trendDirection"] =
+        trendPct === null || Math.abs(trendPct) < 5 ? "flat" : trendPct > 0 ? "up" : "down";
+      return {
+        applianceId: category,
+        name: APPLIANCE_NAMES[category],
+        category,
+        energyKwh: Number(energyKwh.toFixed(3)),
+        costStroops: toStroops(energyKwh, tariff),
+        sharePct: totalKwh > 0 ? Number(((energyKwh / totalKwh) * 100).toFixed(1)) : 0,
+        trendPct,
+        trendDirection,
+        recommendation: recommendationFor(category, trendPct),
+      };
+    });
+
+  if (options.persist !== false && entries.length > 0) {
+    persistApplianceUsage(meterId, periodStartIso, periodEndIso, entries);
+  }
+
+  return {
+    meterId,
+    generatedAt: now.toISOString(),
+    periodStart: periodStartIso,
+    periodEnd: periodEndIso,
+    windowDays: days,
+    totalKwh: Number(totalKwh.toFixed(3)),
+    totalCostStroops: entries.reduce((sum, entry) => sum + entry.costStroops, 0),
+    appliances: entries,
+    sufficientData: samples.length >= 24,
+  };
+}
+
+export type ApplianceTrendPoint = {
+  periodStart: string;
+  periodEnd: string;
+  energyKwh: number;
+  costStroops: number;
+};
+
+export type ApplianceTrend = {
+  meterId: string;
+  applianceId: string;
+  name: string | null;
+  category: ApplianceCategory | null;
+  days: number;
+  points: ApplianceTrendPoint[];
+  totalKwh: number;
+  averageKwh: number;
+  trendPct: number | null;
+  trendDirection: "up" | "down" | "flat";
+};
+
+/**
+ * Stored usage history for a single appliance, oldest first, with the change
+ * between the most recent period and the one before it.
+ */
+export function getApplianceTrends(meterId: string, applianceId: string, days = 30): ApplianceTrend {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  const rows = pool
+    .primaryDb()
+    .prepare(
+      `SELECT * FROM appliance_usage
+       WHERE meter_id = ? AND appliance_id = ? AND period_start >= ?
+       ORDER BY period_start ASC`,
+    )
+    .all(meterId, applianceId, since) as ApplianceUsageRow[];
+
+  const points: ApplianceTrendPoint[] = rows.map((row) => ({
+    periodStart: row.period_start,
+    periodEnd: row.period_end,
+    energyKwh: row.energy_kwh,
+    costStroops: row.cost_stroops,
+  }));
+
+  const totalKwh = points.reduce((sum, point) => sum + point.energyKwh, 0);
+  const latest = points.at(-1);
+  const previous = points.at(-2);
+  const trendPct =
+    latest && previous && previous.energyKwh > 0
+      ? Number((((latest.energyKwh - previous.energyKwh) / previous.energyKwh) * 100).toFixed(1))
+      : null;
+  const trendDirection: ApplianceTrend["trendDirection"] =
+    trendPct === null || Math.abs(trendPct) < 5 ? "flat" : trendPct > 0 ? "up" : "down";
+
+  return {
+    meterId,
+    applianceId,
+    name: rows[0]?.name ?? null,
+    category: (rows[0]?.category as ApplianceCategory | undefined) ?? null,
+    days,
+    points,
+    totalKwh: Number(totalKwh.toFixed(3)),
+    averageKwh: points.length === 0 ? 0 : Number((totalKwh / points.length).toFixed(3)),
+    trendPct,
+    trendDirection,
+  };
+}
+
+/** Read back the stored breakdown for a period without recomputing it. */
+export function getStoredApplianceBreakdown(
+  meterId: string,
+  periodStart: string,
+  periodEnd: string,
+): Array<{ applianceId: string; name: string; category: ApplianceCategory; energyKwh: number; costStroops: number }> {
+  return [...loadStoredApplianceUsage(meterId, periodStart, periodEnd).entries()].map(([applianceId, value]) => ({
+    applianceId,
+    name: value.name,
+    category: value.category,
+    energyKwh: value.energyKwh,
+    costStroops: value.costStroops,
+  }));
 }
 
 export function getConsumptionAnalyticsPoolStatus(): SqlitePoolStatus {

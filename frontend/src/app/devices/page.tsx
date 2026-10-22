@@ -146,8 +146,10 @@ function DeviceRow({ device, onChanged }: { device: Device; onChanged: () => voi
                 )}
               </ul>
             ) : (
-              <p className="opacity-60">No telemetry yet. Devices publish to solargrid/devices/{device.id}/telemetry.</p>
-              <p className="mt-2">Grid stability: {stability?.stabilityScore === null || stability?.stabilityScore === undefined ? "No readings" : `${stability.stabilityScore}%`}</p>
+              <>
+                <p className="opacity-60">No telemetry yet. Devices publish to solargrid/devices/{device.id}/telemetry.</p>
+                <p className="mt-2">Grid stability: {stability?.stabilityScore === null || stability?.stabilityScore === undefined ? "No readings" : `${stability.stabilityScore}%`}</p>
+              </>
             )}
           </div>
           <div>

@@ -214,5 +214,26 @@
     "dismiss": "Descartar",
     "estimatedSavings": "Ahorro semanal estimado",
     "actualSavings": "Ahorro semanal real"
+  },
+  "voiceAssistant": {
+    "title": "Asistente de voz",
+    "description": "Consulta el estado de tu medidor y realiza pagos con Alexa o el Asistente de Google.",
+    "enablePayments": "Permitir pagos por voz",
+    "language": "Idioma de voz",
+    "supportedAssistants": "Asistentes compatibles",
+    "alexa": "Alexa",
+    "google": "Asistente de Google",
+    "linkAssistant": "Vincular asistente",
+    "paymentRequiresPin": "Los pagos por voz requieren tu PIN de confirmación.",
+    "confirmPayment": "Confirmar pago",
+    "cancelPayment": "Cancelar pago",
+    "paymentSuccess": "Pago realizado correctamente.",
+    "paymentFailed": "El pago no se pudo completar. Inténtalo de nuevo.",
+    "utterances": {
+      "checkBalance": "Alexa, pregúntale a SolarGrid cuál es el saldo de mi medidor",
+      "checkUsage": "Oye Google, pregúntale a SolarGrid cuánta energía he usado",
+      "makePayment": "Alexa, pídele a SolarGrid que pague 10 XLM de mi medidor",
+      "confirmPayment": "Oye Google, confirma mi pago de SolarGrid"
+    }
   }
 }

@@ -217,5 +217,44 @@
     "dismiss": "Dismiss",
     "estimatedSavings": "Estimated weekly savings",
     "actualSavings": "Actual weekly savings"
+  },
+  "delegation": {
+    "title": "Account Delegation",
+    "addDelegate": "Add Delegate",
+    "delegateAddress": "Delegate Address",
+    "permissions": "Permissions",
+    "viewOnly": "View Only",
+    "pay": "Pay",
+    "admin": "Admin",
+    "expiry": "Expiry",
+    "remove": "Remove",
+    "noDelegates": "No delegates added yet.",
+    "added": "Delegate added successfully.",
+    "removed": "Delegate removed successfully."
+  },
+  "technician": {
+    "title": "Technician Portal",
+    "workOrders": "Work Orders",
+    "assignedTo": "Assigned To",
+    "complete": "Complete",
+    "notes": "Notes",
+    "scanMeter": "Scan Meter",
+    "uploadPhoto": "Upload Photo",
+    "noOrders": "No work orders assigned."
+  },
+  "seasonal": {
+    "currentSeason": "Current Season",
+    "multiplier": "Rate Multiplier",
+    "history": "Seasonal History",
+    "comparison": "Seasonal Comparison"
+  },
+  "surveys": {
+    "title": "Customer Satisfaction Surveys",
+    "nps": "Net Promoter Score",
+    "promoters": "Promoters",
+    "passives": "Passives",
+    "detractors": "Detractors",
+    "responses": "Responses",
+    "averageScore": "Average Score"
   }
 }

@@ -293,3 +293,56 @@ fn reinitialize_is_rejected() {
         Err(Ok(ContractError::AlreadyInitialized))
     );
 }
+
+#[test]
+fn multisig_2_of_3_and_3_of_5_admin_action_flow() {
+    let fx = Fixture::new();
+    fx.set_time(100);
+
+    // 2-of-3 configuration
+    let admins_3 = vec![
+        &fx.env,
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+    ];
+    fx.client.configure_multisig(&admins_3, &2);
+
+    let prop_id = fx.client.propose_admin_action(
+        &admins_3.get(0).unwrap(),
+        &AdminOperation::Pause,
+        &1_000,
+    );
+    fx.client
+        .approve_admin_action(&prop_id, &admins_3.get(1).unwrap());
+    fx.client.execute_admin_action(&prop_id);
+    assert!(fx.client.is_paused());
+
+    // 3-of-5 configuration for parameter change and admin rotation
+    let admins_5 = vec![
+        &fx.env,
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+        Address::generate(&fx.env),
+    ];
+    fx.client.configure_multisig(&admins_5, &3);
+
+    let param_prop = fx.client.propose_admin_action(
+        &admins_5.get(0).unwrap(),
+        &AdminOperation::SetGracePeriod(96),
+        &2_000,
+    );
+    fx.client
+        .approve_admin_action(&param_prop, &admins_5.get(1).unwrap());
+    assert_eq!(
+        fx.client.try_execute_admin_action(&param_prop),
+        Err(Ok(ContractError::ProposalNotReady))
+    );
+    fx.client
+        .approve_admin_action(&param_prop, &admins_5.get(2).unwrap());
+    fx.client.execute_admin_action(&param_prop);
+    assert_eq!(fx.client.get_grace_period(), 96);
+}
+

@@ -217,5 +217,59 @@
     "dismiss": "Ignorer",
     "estimatedSavings": "Économies hebdomadaires estimées",
     "actualSavings": "Économies hebdomadaires réelles"
+  },
+  "voiceAssistant": {
+    "title": "Assistant vocal",
+    "description": "Gérez votre compteur avec Alexa ou l'Assistant Google.",
+    "linkAccount": "Lier le compte",
+    "linked": "Compte lié",
+    "unlink": "Dissocier",
+    "linking": "Liaison…",
+    "linkSuccess": "Votre compte a été lié avec succès à l'assistant vocal.",
+    "linkFailed": "Échec de la liaison du compte. Veuillez réessayer.",
+    "unlinkSuccess": "Votre compte a été dissocié de l'assistant vocal.",
+    "unlinkFailed": "Échec de la dissociation du compte. Veuillez réessayer.",
+    "deviceName": "Nom de l'appareil",
+    "deviceNamePlaceholder": "ex. Cuisine",
+    "defaultMeter": "Compteur par défaut",
+    "language": "Langue de l'assistant vocal",
+    "commands": {
+      "title": "Commandes vocales",
+      "checkBalance": "« Alexa, demande à SolarGrid quel est mon solde »",
+      "checkUsage": "« Alexa, demande à SolarGrid ma consommation d'énergie »",
+      "makePayment": "« Alexa, demande à SolarGrid de payer 10 XLM »",
+      "checkStatus": "« Alexa, demande à SolarGrid le statut de mon compteur »"
+    },
+    "payment": {
+      "title": "Confirmation de paiement",
+      "prompt": "Confirmez-vous un paiement de {amount} XLM pour le compteur {meterId} ?",
+      "confirm": "Confirmer le paiement",
+      "cancel": "Annuler le paiement",
+      "confirming": "Confirmation…",
+      "success": "Paiement confirmé. Votre solde a été mis à jour.",
+      "failed": "Le paiement a échoué. Veuillez réessayer.",
+      "cancelled": "Paiement annulé.",
+      "requiresPin": "Saisissez votre code PIN pour confirmer le paiement.",
+      "pinPlaceholder": "Code PIN",
+      "invalidPin": "Code PIN invalide. Veuillez réessayer."
+    },
+    "responses": {
+      "balance": "Votre solde actuel est de {balance} XLM.",
+      "usage": "Vous avez utilisé {units} unités cette semaine.",
+      "status": "Votre compteur est {status}.",
+      "paymentSuccess": "Paiement de {amount} XLM effectué avec succès.",
+      "notUnderstood": "Désolé, je n'ai pas compris. Veuillez réessayer.",
+      "error": "Une erreur s'est produite. Veuillez réessayer plus tard."
+    },
+    "status": {
+      "active": "actif",
+      "inactive": "inactif",
+      "expired": "expiré"
+    },
+    "languages": {
+      "en": "Anglais",
+      "fr": "Français",
+      "es": "Espagnol"
+    }
   }
 }

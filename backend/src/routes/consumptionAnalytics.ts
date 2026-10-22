@@ -24,6 +24,7 @@ import {
   getTrendSeries,
   retrainAllConsumptionModels,
 } from "../lib/consumptionAnalytics.js";
+import { getApplianceBreakdown } from "../lib/applianceDisaggregation.js";
 
 export const consumptionAnalyticsRouter = Router();
 
@@ -51,6 +52,11 @@ const WeeklyQuery = z.object({
 
 const WeeklyBody = z.object({
   tariffXlmPerKwh: z.number().min(0).optional(),
+});
+
+const ApplianceQuery = z.object({
+  days: z.coerce.number().int().min(1).max(365).optional(),
+  tariffXlmPerKwh: z.coerce.number().min(0).optional(),
 });
 
 function validationError(res: Response, error: z.ZodError) {
@@ -116,6 +122,19 @@ consumptionAnalyticsRouter.post(
     const anomaly = acknowledgeAnomaly(id.data);
     if (!anomaly) return res.status(404).json({ error: "Anomaly not found" });
     res.json(anomaly);
+  }),
+);
+
+consumptionAnalyticsRouter.get(
+  "/:meterId/appliances",
+  asyncHandler(async (req: Request, res: Response) => {
+    const meterId = MeterId.safeParse(req.params.meterId);
+    if (!meterId.success) return res.status(400).json({ error: "meterId is required" });
+    const query = ApplianceQuery.safeParse(req.query);
+    if (!query.success) return validationError(res, query.error);
+    const breakdown = getApplianceBreakdown(meterId.data, query.data);
+    if (!breakdown) return res.status(404).json({ error: "Meter not found" });
+    res.json(breakdown);
   }),
 );
 

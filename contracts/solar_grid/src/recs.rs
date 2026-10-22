@@ -52,6 +52,7 @@ enum RecKey {
     Trade(u32),
     /// Rolling price-discovery inputs for one REC id, so reads are O(1).
     Index(u32),
+    Retired(u32),
 }
 
 #[contracttype]
@@ -252,6 +253,7 @@ impl SolarGridContract {
         compliance_authority: Address,
         fee_bps: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if fee_bps < 0 || fee_bps > MAX_FEE_BPS {
             return Err(ContractError::InvalidConfiguration);
@@ -279,6 +281,11 @@ impl SolarGridContract {
     pub fn get_rec_config(env: Env) -> Result<RecConfig, ContractError> {
         load_config(&env)
     }
+    /// Registry-facing name for issuing one REC per MWh of certified production.
+    pub fn mint_rec(env: Env, producer: Address, meter_id: String, kwh_generated: i128, vintage: u32, registry_ref: String) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
+        Self::issue_rec(env, producer, meter_id, kwh_generated, vintage, registry_ref)
+    }
 
     /// Admin (the registry): issue RECs backed by `kwh_generated` generation.
     ///
@@ -294,10 +301,8 @@ impl SolarGridContract {
         vintage: u32,
         registry_ref: String,
     ) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
         load_config(&env)?;
         if kwh_generated <= 0 {
             return Err(ContractError::InvalidRecQuantity);
@@ -343,6 +348,7 @@ impl SolarGridContract {
 
     /// Compliance authority: attest a REC so it may be traded.
     pub fn verify_rec(env: Env, rec_id: u32, compliance_ref: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let cfg = load_config(&env)?;
         cfg.compliance_authority.require_auth();
         if compliance_ref.is_empty() {
@@ -364,6 +370,7 @@ impl SolarGridContract {
 
     /// Compliance authority: reject a REC permanently.
     pub fn reject_rec(env: Env, rec_id: u32) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let cfg = load_config(&env)?;
         cfg.compliance_authority.require_auth();
         let mut rec = load_rec(&env, rec_id)?;
@@ -376,6 +383,32 @@ impl SolarGridContract {
         Ok(())
     }
 
+    /// Transfer REC units directly between holders (for bilateral trading).
+    pub fn transfer_rec(env: Env, from: Address, to: Address, rec_id: u32, units: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
+        from.require_auth();
+        let rec = load_rec(&env, rec_id)?;
+        require_tradable(&rec)?;
+        if env.storage().persistent().get::<RecKey, bool>(&RecKey::Retired(rec_id)).unwrap_or(false) { return Err(ContractError::CertificateRetired); }
+        transfer_units(&env, rec_id, &from, &to, units)?;
+        env.events().publish((symbol_short!("solar"), symbol_short!("rec_xfer"), rec_id), (from, to, units));
+        Ok(())
+    }
+    /// Retire REC units so they cannot be transferred or counted again.
+    pub fn retire_rec(env: Env, holder: Address, rec_id: u32, units: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
+        holder.require_auth();
+        let rec = load_rec(&env, rec_id)?;
+        require_tradable(&rec)?;
+        if units <= 0 || units > balance_of(&env, rec_id, &holder) { return Err(ContractError::InsufficientBalance); }
+        let retired = env.storage().persistent().get::<RecKey, i128>(&RecKey::Retired(rec_id)).unwrap_or(0);
+        set_balance(&env, rec_id, &holder, balance_of(&env, rec_id, &holder) - units);
+        env.storage().persistent().set(&RecKey::Retired(rec_id), &(retired + units));
+        env.events().publish((symbol_short!("solar"), symbol_short!("rec_ret"), rec_id), (holder, units));
+        Ok(())
+    }
+    pub fn retired_rec_units(env: Env, rec_id: u32) -> i128 { env.storage().persistent().get(&RecKey::Retired(rec_id)).unwrap_or(0) }
+
     /// Producer: post a sell order for up to `units` of `rec_id`.
     pub fn list_recs(
         env: Env,
@@ -384,10 +417,8 @@ impl SolarGridContract {
         units: i128,
         price: i128,
     ) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         seller.require_auth();
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
         load_config(&env)?;
         if units <= 0 || price <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -427,10 +458,8 @@ impl SolarGridContract {
 
     /// Buyer: post a buy order. Funds are not escrowed here; they move on fill.
     pub fn place_bid(env: Env, buyer: Address, rec_id: u32, units: i128, price: i128) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         buyer.require_auth();
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
         load_config(&env)?;
         if units <= 0 || price <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -464,10 +493,8 @@ impl SolarGridContract {
     /// Match `buy_order_id` against resting asks for the same REC and settle
     /// each fill. Returns the trade ids, cheapest fill first.
     pub fn execute_trade(env: Env, buyer: Address, buy_order_id: u32) -> Result<Vec<u32>, ContractError> {
+        Self::require_not_paused(&env)?;
         buyer.require_auth();
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
         let cfg = load_config(&env)?;
         let mut buy = load_order(&env, buy_order_id)?;
         if buy.side != RecSide::Buy {
@@ -557,6 +584,7 @@ impl SolarGridContract {
     /// Cancel an open order the caller owns. Returns the unfilled quantity;
     /// a sell order's units go back to the producer's available balance.
     pub fn cancel_rec_order(env: Env, order_id: u32) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         let mut order = load_order(&env, order_id)?;
         order.owner.require_auth();
         if order.status != RecOrderStatus::Open {

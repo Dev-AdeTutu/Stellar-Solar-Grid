@@ -32,6 +32,25 @@ interface IrradianceZone {
   peakSunHours: number;
 }
 
+/** A single day of the weather-driven solar generation forecast */
+interface WeatherForecastDay {
+  date: string;
+  predictedKwh: number;
+  lowerKwh: number;
+  upperKwh: number;
+  cloudCoverPct: number;
+  daylightHours: number;
+}
+
+interface WeatherForecastResult {
+  meterId: string;
+  days: WeatherForecastDay[];
+  sunlight: {
+    avgCloudCoverPct: number;
+    avgDaylightHours: number;
+  };
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const API_BASE = env.NEXT_PUBLIC_API_URL;
@@ -75,6 +94,74 @@ function ForecastSkeleton() {
   );
 }
 
+/** Confidence-band bar chart for the 7-day weather-driven generation forecast */
+function WeatherForecastChart({ days }: { days: WeatherForecastDay[] }) {
+  const maxKwh = Math.max(...days.map((d) => d.upperKwh), 1);
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-solar-dark p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-white flex items-center gap-1.5">
+          <span aria-hidden="true">🌤️</span> 7-day generation forecast
+        </h3>
+        <p className="text-xs text-gray-500">bars show confidence band</p>
+      </div>
+
+      <div className="flex items-end gap-2 h-40" role="img" aria-label="Seven day solar generation forecast with confidence bands">
+        {days.map((d) => {
+          const bandTop = (d.upperKwh / maxKwh) * 100;
+          const bandBottom = (d.lowerKwh / maxKwh) * 100;
+          const point = (d.predictedKwh / maxKwh) * 100;
+          const label = new Date(d.date).toLocaleDateString(undefined, {
+            weekday: "short",
+          });
+
+          return (
+            <div key={d.date} className="flex-1 flex flex-col items-center gap-1 h-full justify-end">
+              <span className="text-[10px] text-gray-400">{d.predictedKwh.toFixed(1)}</span>
+              <div className="relative w-full flex-1 flex items-end">
+                {/* Confidence band */}
+                <div
+                  className="absolute w-full rounded-t bg-solar-yellow/20"
+                  style={{ bottom: `${bandBottom}%`, height: `${Math.max(bandTop - bandBottom, 0)}%` }}
+                />
+                {/* Predicted value */}
+                <div
+                  className="absolute w-full rounded-t bg-solar-yellow"
+                  style={{ bottom: "0%", height: `${point}%` }}
+                />
+              </div>
+              <span className="text-[10px] text-gray-500">{label}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Sunlight drivers */}
+      <div className="grid grid-cols-2 gap-3 pt-2 border-t border-white/10">
+        <div>
+          <p className="text-xs text-gray-400">Avg cloud cover</p>
+          <p className="text-lg font-semibold text-white">
+            {days.length
+              ? (days.reduce((s, d) => s + d.cloudCoverPct, 0) / days.length).toFixed(0)
+              : "—"}
+            <span className="text-sm font-normal text-gray-400">%</span>
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-gray-400">Avg daylight</p>
+          <p className="text-lg font-semibold text-white">
+            {days.length
+              ? (days.reduce((s, d) => s + d.daylightHours, 0) / days.length).toFixed(1)
+              : "—"}
+            <span className="text-sm font-normal text-gray-400">h</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ForecastCard({ period }: { period: ForecastPeriod }) {
   return (
     <div className="rounded-xl border border-white/10 bg-solar-dark p-4 flex flex-col gap-1">
@@ -108,6 +195,12 @@ export default function SolarForecast() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [zonesLoaded, setZonesLoaded] = useState(false);
+
+  // Weather-driven forecast state
+  const [meterId, setMeterId] = useState("");
+  const [weatherForecast, setWeatherForecast] = useState<WeatherForecastResult | null>(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [weatherError, setWeatherError] = useState<string | null>(null);
 
   // Load irradiance zones lazily on first focus of peakSunHours field
   async function loadZones() {
@@ -154,9 +247,38 @@ export default function SolarForecast() {
     }
   }
 
+  async function runWeatherForecast() {
+    const id = meterId.trim();
+    if (!id) return;
+
+    setWeatherLoading(true);
+    setWeatherError(null);
+
+    try {
+      const res = await fetch(`${API_BASE}/api/meters/${encodeURIComponent(id)}/forecast`);
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error ?? `Request failed (${res.status})`);
+      }
+
+      setWeatherForecast(data as WeatherForecastResult);
+    } catch (err: unknown) {
+      setWeatherError(err instanceof Error ? err.message : "Something went wrong");
+      setWeatherForecast(null);
+    } finally {
+      setWeatherLoading(false);
+    }
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     void runForecast();
+  }
+
+  function handleWeatherSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    void runWeatherForecast();
   }
 
   return (
@@ -306,6 +428,64 @@ export default function SolarForecast() {
             "Calculate forecast"
           )}
         </button>
+      </form>
+
+      {/* Weather-driven forecast */}
+      <form
+        onSubmit={handleWeatherSubmit}
+        className="rounded-2xl border border-white/10 bg-solar-accent p-5 space-y-4"
+      >
+        <div>
+          <h3 className="text-sm font-semibold text-white flex items-center gap-1.5">
+            <span aria-hidden="true">🌦️</span> Weather-based generation forecast
+          </h3>
+          <p className="mt-1 text-xs text-gray-400">
+            Enter a meter with a linked solar device to see a 7-day generation forecast driven by
+            the sunlight forecast.
+          </p>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3">
+          <div className="flex flex-col gap-1.5 flex-1">
+            <label htmlFor="weatherMeterId" className="text-xs font-medium text-gray-300">
+              Meter ID
+            </label>
+            <input
+              id="weatherMeterId"
+              type="text"
+              value={meterId}
+              onChange={(e) => setMeterId(e.target.value)}
+              className="rounded-lg border border-white/10 bg-solar-dark px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+              placeholder="e.g. meter-123"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={weatherLoading || !meterId.trim()}
+            className="sm:self-end rounded-lg border border-solar-yellow/40 bg-solar-yellow/10 px-4 py-2 text-sm font-semibold text-solar-yellow transition hover:bg-solar-yellow/20 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {weatherLoading ? "Loading…" : "Load forecast"}
+          </button>
+        </div>
+
+        {weatherError && (
+          <div
+            role="alert"
+            className="rounded-lg border border-red-500/30 bg-red-900/20 px-4 py-3 text-sm text-red-300"
+          >
+            ✕ {weatherError}
+          </div>
+        )}
+
+        {weatherForecast && !weatherLoading && (
+          <div className="space-y-3" aria-live="polite">
+            <WeatherForecastChart days={weatherForecast.days} />
+            <p className="text-xs text-gray-500">
+              Sunlight forecast: {weatherForecast.sunlight.avgCloudCoverPct.toFixed(0)}% avg cloud
+              cover, {weatherForecast.sunlight.avgDaylightHours.toFixed(1)}h avg daylight.
+            </p>
+          </div>
+        )}
       </form>
 
       {/* Error */}

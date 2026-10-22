@@ -16,6 +16,8 @@ export interface UsageDataPoint {
   date: string;
   /** Energy consumed in kWh. */
   units: number;
+  /** Energy exported to the grid in kWh (optional). */
+  exportUnits?: number;
   /** Cost deducted in XLM (optional). */
   cost?: number;
 }
@@ -171,7 +173,7 @@ function CustomTooltip({
           <span className="text-gray-400">{point.name}:</span>
           <span className="font-medium">
             {point.value == null ? "—" : point.value}
-            {point.name.toLowerCase().includes("usage") ? " kWh" : " XLM"}
+            {point.name.toLowerCase().includes("kwh") ? " kWh" : " XLM"}
           </span>
         </p>
       ))}
@@ -223,14 +225,24 @@ function buildComparisonData(
     if (item.key >= formatDateKey(currentStart) && item.key <= formatDateKey(currentEnd)) {
       const existing = currentByDay.get(item.key);
       currentByDay.set(item.key, existing
-        ? { ...existing, units: existing.units + item.point.units, cost: (existing.cost ?? 0) + (item.point.cost ?? 0) }
+        ? {
+            ...existing,
+            units: existing.units + item.point.units,
+            exportUnits: (existing.exportUnits ?? 0) + (item.point.exportUnits ?? 0),
+            cost: (existing.cost ?? 0) + (item.point.cost ?? 0),
+          }
         : item.point);
     }
     const previousEnd = addDays(currentStart, -1);
     if (item.key >= formatDateKey(previousStart) && item.key <= formatDateKey(previousEnd)) {
       const existing = previousByDay.get(item.key);
       previousByDay.set(item.key, existing
-        ? { ...existing, units: existing.units + item.point.units, cost: (existing.cost ?? 0) + (item.point.cost ?? 0) }
+        ? {
+            ...existing,
+            units: existing.units + item.point.units,
+            exportUnits: (existing.exportUnits ?? 0) + (item.point.exportUnits ?? 0),
+            cost: (existing.cost ?? 0) + (item.point.cost ?? 0),
+          }
         : item.point);
     }
   }
@@ -244,6 +256,7 @@ function buildComparisonData(
     return {
       date: currentKey,
       units: current?.units ?? 0,
+      exportUnits: current?.exportUnits ?? 0,
       cost: current?.cost,
       previousUnits: previous?.units ?? null,
       previousCost: previous?.cost ?? null,
@@ -288,6 +301,7 @@ export function UsageChart({ data: rawData, loading = false, meterId }: UsageCha
   const showPrevCost =
     compareEnabled &&
     comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null);
+  const showExport = data.some((point) => point.exportUnits !== undefined);
 
   const chart = useMemo(
     () => (
@@ -297,13 +311,14 @@ export function UsageChart({ data: rawData, loading = false, meterId }: UsageCha
         <YAxis tick={{ fill: "#6b7280", fontSize: 11 }} axisLine={false} tickLine={false} />
         <Tooltip content={<CustomTooltip />} labelFormatter={formatTooltipLocal} />
         <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
-        <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#F5C518" }} connectNulls={false} />
+        <Line type="monotone" dataKey="units" name="Imported (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#F5C518" }} connectNulls={false} />
+        {showExport && <Line type="monotone" dataKey="exportUnits" name="Exported (kWh)" stroke="#34d399" strokeWidth={2} dot={{ r: 3, fill: "#34d399", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#34d399" }} connectNulls={false} />}
         {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: 4, fill: "#38bdf8" }} connectNulls={false} />}
         {!compareEnabled && showCost && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: 5, fill: "#818cf8" }} />}
         {showPrevCost && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}
       </LineChart>
     ),
-    [chartData, compareEnabled, showCost, showPrevCost],
+    [chartData, compareEnabled, showCost, showPrevCost, showExport],
   );
 
   return (
@@ -393,7 +408,8 @@ export function UsageChart({ data: rawData, loading = false, meterId }: UsageCha
                 trigger={isMobile ? "click" : "hover"}
               />
               <Legend wrapperStyle={{ fontSize: "11px", color: "#9ca3af", paddingTop: "8px" }} />
-              <Line type="monotone" dataKey="units" name="Usage (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: isMobile ? 7 : 5, fill: "#F5C518" }} connectNulls={false} />
+              <Line type="monotone" dataKey="units" name="Imported (kWh)" stroke="#F5C518" strokeWidth={2} dot={{ r: 3, fill: "#F5C518", strokeWidth: 0 }} activeDot={{ r: isMobile ? 7 : 5, fill: "#F5C518" }} connectNulls={false} />
+              {data.some((point) => point.exportUnits !== undefined) && <Line type="monotone" dataKey="exportUnits" name="Exported (kWh)" stroke="#34d399" strokeWidth={2} dot={{ r: 3, fill: "#34d399", strokeWidth: 0 }} activeDot={{ r: isMobile ? 7 : 5, fill: "#34d399" }} connectNulls={false} />}
               {compareEnabled && <Line type="monotone" dataKey="previousUnits" name="Previous period (kWh)" stroke="#38bdf8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 2, fill: "#38bdf8", strokeWidth: 0 }} activeDot={{ r: isMobile ? 6 : 4, fill: "#38bdf8" }} connectNulls={false} />}
               {!compareEnabled && data.some((point) => point.cost !== undefined) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 3, fill: "#818cf8", strokeWidth: 0 }} activeDot={{ r: isMobile ? 7 : 5, fill: "#818cf8" }} />}
               {compareEnabled && comparisonData.some((point) => point.cost !== undefined || point.previousCost !== null) && <Line type="monotone" dataKey="cost" name="Cost (XLM)" stroke="#818cf8" strokeWidth={2} dot={{ r: 2, fill: "#818cf8", strokeWidth: 0 }} />}

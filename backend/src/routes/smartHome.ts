@@ -21,6 +21,11 @@
  *   PATCH  /api/smart-home/routines/:id       DELETE /api/smart-home/routines/:id
  *   POST   /api/smart-home/routines/:id/run
  *   GET    /api/smart-home/activity           DELETE /api/smart-home/data
+ *
+ * Voice assistant (#989). See docs/VOICE_ASSISTANT.md.
+ *   POST   /api/smart-home/voice/parse            (session) { text, locale } → { intent, slots }
+ *   POST   /api/smart-home/voice/payment/confirm  (session) { token, pin }   → { txHash }
+ *   POST   /api/smart-home/voice/payment/cancel   (session) { token }        → { cancelled }
  */
 import crypto from "node:crypto";
 import express, { Router, type NextFunction, type Request, type Response } from "express";
@@ -50,6 +55,15 @@ import {
   type Scope,
 } from "../lib/smartHome.js";
 import { handleAlexaCustom, handleAlexaDirective, handleGoogleFulfillment } from "../lib/smartHomePlatforms.js";
+import {
+  cancelVoicePayment,
+  confirmVoicePayment,
+  parseVoiceCommand,
+  validateVoiceParseInput,
+  validateVoicePaymentConfirmInput,
+  validateVoicePaymentCancelInput,
+} from "../lib/voiceAssistant.js";
+import { readLimiter, validateRequest, writeLimiter } from "../lib/validation.js";
 
 export const smartHomeRouter = Router();
 
@@ -296,3 +310,43 @@ smartHomeRouter.get("/activity", requireSession, (req: OwnerRequest, res) => {
 smartHomeRouter.delete("/data", requireSession, (req: OwnerRequest, res) => {
   res.json({ deleted: eraseOwnerData(req.ownerAddress!) });
 });
+
+// ── Voice assistant (#989) ───────────────────────────────────────────────────
+
+smartHomeRouter.post(
+  "/voice/parse",
+  readLimiter,
+  requireSession,
+  validateRequest(validateVoiceParseInput),
+  asyncHandler(async (req: OwnerRequest, res) => {
+    const { text, locale } = req.body ?? {};
+    const parsed = await parseVoiceCommand({ text, locale, ownerAddress: req.ownerAddress! });
+    res.json(parsed);
+  }),
+);
+
+smartHomeRouter.post(
+  "/voice/payment/confirm",
+  writeLimiter,
+  requireSession,
+  validateRequest(validateVoicePaymentConfirmInput),
+  asyncHandler(async (req: OwnerRequest, res) => {
+    const { token, pin } = req.body ?? {};
+    const result = await confirmVoicePayment({ token, pin, ownerAddress: req.ownerAddress! });
+    if ("error" in result) return res.status(result.status).json({ error: result.error, code: result.code });
+    res.json({ txHash: result.txHash });
+  }),
+);
+
+smartHomeRouter.post(
+  "/voice/payment/cancel",
+  writeLimiter,
+  requireSession,
+  validateRequest(validateVoicePaymentCancelInput),
+  (req: OwnerRequest, res) => {
+    const { token } = req.body ?? {};
+    const cancelled = cancelVoicePayment({ token, ownerAddress: req.ownerAddress! });
+    if (!cancelled) return res.status(404).json({ error: "Confirmation not found", code: "NOT_FOUND" });
+    res.json({ cancelled: true });
+  },
+);

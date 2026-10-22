@@ -2,6 +2,7 @@
 
 import { Suspense, useState, useEffect, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import Navbar from "@/components/Navbar";
 import { MeterStatusBadge } from "@/components/MeterStatusBadge";
 import { SkeletonCard } from "@/components/SkeletonCard";
@@ -182,9 +183,17 @@ function ProviderDashboardPageContent() {
       <Navbar />
       <main id="main-content" tabIndex={-1} className="min-h-screen flex flex-col items-center px-4 py-8 sm:py-16 gap-12">
         <div className="w-full max-w-md">
-          <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow mb-2">
-            Provider Dashboard
-          </h1>
+          <div className="flex items-start justify-between gap-4 mb-2">
+            <h1 className="text-2xl sm:text-3xl font-bold text-solar-yellow">
+              Provider Dashboard
+            </h1>
+            <Link
+              href="/dashboard/provider/analytics"
+              className="shrink-0 text-xs font-medium rounded-lg border border-white/10 bg-solar-accent px-3 py-1.5 text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
+            >
+              Revenue Analytics →
+            </Link>
+          </div>
           <p className="text-gray-400 text-sm mb-6">
             Register new smart meters on the Stellar blockchain.
           </p>

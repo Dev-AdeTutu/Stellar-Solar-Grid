@@ -3,8 +3,8 @@
 ## Objectives
 | Metric | Target |
 |---|---|
-| RPO (max data loss) | < 1 hour — hourly backups |
-| RTO (max downtime) | < 4 hours |
+| RPO (max data loss) | < 15 minutes — DR replication every 5 min (#1060) |
+| RTO (max downtime) | < 1 hour — automated failover (#1060) |
 
 ## Backup strategy
 - `scripts/backup.sh` runs hourly via cron: `0 * * * * /app/scripts/backup.sh`
@@ -27,8 +27,9 @@
 - **Backend**: stateless apart from `backend/data`; any host with a restored data dir can serve.
 
 ## Testing schedule
-- Quarterly drill (Jan/Apr/Jul/Oct, 1st day) via `.github/workflows/dr-drill.yml` running `scripts/dr-drill.sh`,
-  which backs up, restores to a scratch dir, runs `PRAGMA integrity_check`, and fails if RTO is exceeded.
+- Weekly drill (Mondays 03:00 UTC) via `.github/workflows/dr-drill.yml` running `scripts/dr-drill.sh`,
+  which backs up, restores to a scratch dir, runs `PRAGMA integrity_check`, and fails if the 1-hour RTO is exceeded.
+- `POST /api/dr/failover {"drill": true}` exercises the live failover path and switches back to the primary.
 - Record each drill below.
 
 | Date | Operator | Duration | Result | Notes |
@@ -38,3 +39,31 @@
 ## Training
 - New on-call engineers perform one supervised restore using this document.
 - Runbook reviewed after every drill and incident.
+
+## Automation (#1060)
+
+### Database replication to the DR site
+- `scripts/dr-replicate.sh` snapshots every SQLite DB with `sqlite3 .backup` and rsyncs it to `DR_TARGET`.
+- The backend replication scheduler (`startReplicationScheduler`, every 5 min) keeps lag well inside the 15-minute RPO.
+- `GET /api/dr/status` reports `lagMs` and `rpoMet`.
+
+### One-click failover
+`POST /api/dr/failover` (admin key) runs `DisasterRecovery.failover()` in `backend/src/lib/disasterRecovery.ts`:
+1. **check_replication** — measure lag; if RPO is breached, run a **catch_up_replication** cycle first.
+2. **promote_dr** — `scripts/dr-failover.sh dr` starts the stack on `DR_COMPOSE_HOST` and runs `DR_SWITCH_CMD dr` (DNS / LB switch).
+3. **health_check_dr** — polls `DR_SITE_HEALTH_URL` (3 retries).
+4. **rollback_to_primary** — automatic if DR is unhealthy or any step throws.
+
+Each run records duration (`rtoMet`) and data-loss window (`rpoMet`); see `GET /api/dr/history`.
+`POST /api/dr/failback` returns traffic to the primary once `DR_PRIMARY_HEALTH_URL` is healthy.
+
+| Env var | Purpose |
+|---|---|
+| `DR_TARGET` | rsync destination for replicated DBs |
+| `DR_SWITCH_CMD` | command that repoints DNS / load balancer (`$1` = `primary`/`dr`) |
+| `DR_COMPOSE_HOST` | docker context for the DR host |
+| `DR_PRIMARY_HEALTH_URL`, `DR_SITE_HEALTH_URL` | health endpoints for each site |
+
+### Tests
+`backend/tests/disasterRecovery.integration.test.ts` covers successful failover, replication catch-up,
+RPO breach reporting, automatic rollback on failed health checks, drills, RTO breach detection and failback.

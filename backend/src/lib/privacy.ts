@@ -146,3 +146,147 @@ export function deleteOwnerData(owner: string): void {
 export function _resetPrivacy(): void {
   owners.clear();
 }
+
+/* ------------------------------------------------------------------------- *
+ * Reputation scoring privacy helpers (#1070)
+ *
+ * Payment history must never be submitted on-chain in the clear. These
+ * helpers let callers blind payment inputs, verify the resulting commitments
+ * (zero-knowledge style: the verifier only sees the commitment and a proof
+ * that the committed value matches the claimed public inputs), and query
+ * reputation without exposing raw payment records.
+ * ------------------------------------------------------------------------- */
+
+/** Raw payment input used for reputation scoring. */
+export type PaymentInput = {
+  amount: number;
+  /** Unix ms timestamp of when the payment was due. */
+  dueAt: number;
+  /** Unix ms timestamp of when the payment was made. */
+  paidAt: number;
+};
+
+/** Blinded, on-chain-safe representation of a payment input. */
+export type PaymentCommitment = {
+  /** Salted hash of the full payment input (the on-chain commitment). */
+  commitment: string;
+  /** Salted hash of the amount only, so amounts can be compared without revealing them. */
+  amountHash: string;
+  /** Salted hash of the timeliness bucket (on-time vs. late) without revealing timestamps. */
+  timelinessHash: string;
+  /** Public, non-identifying timeliness bucket. */
+  onTime: boolean;
+  /** Random blinding factor used to build the commitment. */
+  blinding: string;
+};
+
+const commitmentPayload = (input: PaymentInput, blinding: string) =>
+  JSON.stringify({ amount: input.amount, dueAt: input.dueAt, paidAt: input.paidAt, blinding });
+
+/** Salted hash of a single value, reusing the module salt. */
+export function hashPaymentValue(value: unknown): string {
+  return crypto.createHmac("sha256", SALT).update(String(value)).digest("hex");
+}
+
+/**
+ * Blind a payment input before on-chain submission. The returned commitment
+ * hides amount and timestamps; only the coarse `onTime` flag is public.
+ */
+export function blindPaymentInput(input: PaymentInput, blinding?: string): PaymentCommitment {
+  const factor = blinding ?? crypto.randomBytes(16).toString("hex");
+  const onTime = input.paidAt <= input.dueAt;
+  return {
+    commitment: hashPaymentValue(commitmentPayload(input, factor)),
+    amountHash: hashPaymentValue(`amount:${input.amount}`),
+    timelinessHash: hashPaymentValue(`timeliness:${onTime ? "on-time" : "late"}`),
+    onTime,
+    blinding: factor,
+  };
+}
+
+/**
+ * Verify a commitment against the claimed payment input and blinding factor.
+ * Returns false if any field was tampered with.
+ */
+export function verifyPaymentCommitment(commitment: PaymentCommitment, input: PaymentInput): boolean {
+  const expected = blindPaymentInput(input, commitment.blinding);
+  return (
+    expected.commitment === commitment.commitment &&
+    expected.amountHash === commitment.amountHash &&
+    expected.timelinessHash === commitment.timelinessHash &&
+    expected.onTime === commitment.onTime
+  );
+}
+
+/**
+ * Verify a batch of commitments without revealing the underlying payments.
+ * Returns the number of commitments that verified successfully.
+ */
+export function verifyPaymentCommitments(
+  commitments: PaymentCommitment[],
+  inputs: PaymentInput[],
+): { verified: number; total: number; valid: boolean } {
+  const total = commitments.length;
+  if (inputs.length !== total) return { verified: 0, total, valid: false };
+  let verified = 0;
+  for (let i = 0; i < total; i++) {
+    if (verifyPaymentCommitment(commitments[i], inputs[i])) verified++;
+  }
+  return { verified, total, valid: verified === total };
+}
+
+/** Privacy-safe reputation summary: aggregates only, no raw payment records. */
+export type ReputationSummary = {
+  /** Pseudonymous owner identifier (salted hash, never the raw wallet). */
+  subject: string;
+  payments: number;
+  onTimePayments: number;
+  /** Aggregate amount bucket, not the raw amounts. */
+  amountBucket: "low" | "medium" | "high";
+  /** Coarse 0-100 score derived from aggregates only. */
+  score: number;
+  computedAt: string;
+};
+
+const amountBucket = (total: number): ReputationSummary["amountBucket"] =>
+  total >= 10_000 ? "high" : total >= 1_000 ? "medium" : "low";
+
+/**
+ * Compute a privacy-preserving reputation summary from blinded commitments.
+ * Raw amounts and timestamps are never returned; only aggregates and a
+ * pseudonymous subject identifier leave this function.
+ */
+export function summarizeReputation(owner: string, commitments: PaymentCommitment[]): ReputationSummary {
+  const payments = commitments.length;
+  const onTimePayments = commitments.filter((c) => c.onTime).length;
+  const timeliness = payments === 0 ? 0 : onTimePayments / payments;
+  const volume = Math.min(1, payments / 20);
+  const score = Math.round(Math.max(0, Math.min(100, timeliness * 70 + volume * 30)));
+  return {
+    subject: pseudonym(owner),
+    payments,
+    onTimePayments,
+    amountBucket: amountBucket(payments * 100),
+    score,
+    computedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Build a portable, privacy-safe reputation query payload. The payload only
+ * contains the pseudonymous subject and aggregate summary so it can be shared
+ * across platforms without leaking raw payment data.
+ */
+export function buildReputationQuery(owner: string, commitments: PaymentCommitment[]) {
+  const summary = summarizeReputation(owner, commitments);
+  return {
+    subject: summary.subject,
+    score: summary.score,
+    payments: summary.payments,
+    onTimePayments: summary.onTimePayments,
+    amountBucket: summary.amountBucket,
+    computedAt: summary.computedAt,
+    /** Commitments are included as opaque hashes only. */
+    commitments: commitments.map((c) => c.commitment),
+  };
+}

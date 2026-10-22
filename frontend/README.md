@@ -33,3 +33,12 @@ Render `AutoTopupSettings` for an authenticated meter owner. The owner must appr
 - offers **Report Issue**, opening a prefilled GitHub issue with the error details.
 
 Tests: `src/__tests__/ErrorBoundary.test.tsx`.
+
+
+## Meter Network Topology Visualization (#1006)
+
+The frontend provides an interactive network topology visualization (`NetworkTopologyMap` component and `/topology` route) that renders the meter hierarchy (`grid -> transformer -> meter`):
+
+- **Endpoint**: Fetches graph nodes and links from `GET /api/network/topology`.
+- **Status Color-Coding**: Nodes and links are color-coded by operational state (`active` green, `inactive` gray, `fault` red).
+- **Interactive Controls**: Supports zoom (`Zoom +`, `Zoom -`, `Reset View`), click-and-drag pan controls, and clicking any node to inspect its voltage, load, and location metadata.

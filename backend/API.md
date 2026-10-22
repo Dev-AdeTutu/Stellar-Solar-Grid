@@ -307,6 +307,105 @@ settled or matched trades yet. `liquidity` is `0` whenever either side of the
 order book (open sell or open buy offers) is empty; otherwise it is the
 smaller side's depth as a fraction of the larger side's (0–1, higher is more
 liquid). `supplyKwh`/`demandKwh` only count currently open, unexpired offers.
+## Weather-Based Usage Forecasting (#982)
+
+`GET /api/meters/:meterId/forecast?days=7`
+
+Returns a weather-driven forecast of energy usage and solar generation for up
+to 7 days (default 7). Each day includes a point estimate plus a confidence
+band, and the response flags whether the meter is predicted to run out of
+credit within the horizon.
+
+The forecast depends on the weather API (OpenWeatherMap or compatible). Set
+`WEATHER_API_KEY` and, optionally, `WEATHER_API_BASE_URL` (default
+`https://api.openweathermap.org/data/2.5`) and `WEATHER_FORECAST_DAYS`. When
+the weather API is unreachable the service falls back to climatology and sets
+`weatherStale: true`; forecasts are still returned but confidence bands widen.
+
+```json
+{
+  "meterId": "METER1",
+  "horizonDays": 7,
+  "weatherStale": false,
+  "generatedAt": "2026-09-29T00:00:00.000Z",
+  "creditAlert": {
+    "willDeplete": true,
+    "estimatedDepletionDate": "2026-10-03",
+    "estimatedDaysRemaining": 4.2
+  },
+  "days": [
+    {
+      "date": "2026-09-29",
+      "predictedUsageKwh": 4.3,
+      "usageConfidence": { "low": 3.8, "high": 4.9, "level": 0.9 },
+      "predictedSolarKwh": 6.1,
+      "solarConfidence": { "low": 4.7, "high": 7.4, "level": 0.9 },
+      "weather": { "temperatureC": 24, "cloudCoverPct": 20, "sunlightHours": 8.4 }
+    }
+  ]
+}
+```
+
+`creditAlert.willDeplete` is `false` when the balance covers the whole horizon
+or no usage history is available.
+
+## Appliance-Level Breakdown (#982)
+
+`GET /api/meters/:meterId/appliances?days=30`
+
+Breaks consumption down per appliance, with a trend against the previous
+window and saving recommendations.
+
+```json
+{
+  "meterId": "METER1",
+  "windowDays": 30,
+  "totalKwh": 128.4,
+  "appliances": [
+    {
+      "applianceId": "fridge",
+      "name": "Refrigerator",
+      "usageKwh": 42.1,
+      "sharePct": 32.8,
+      "trendPct": 4.2,
+      "recommendation": "Shift defrost cycles to off-peak hours to save ~3 kWh/month."
+    }
+  ]
+}
+```
+
+## Meter Diagnostics (#982)
+
+`POST /api/meters/:meterId/diagnostics`
+
+Triggers a diagnostic action on the meter. Body:
+`{ "action": "reboot" | "self-test" | "connectivity" }`. Returns the queued
+diagnostic run.
+
+```json
+{ "diagnosticId": "diag_01H...", "action": "self-test", "status": "queued", "requestedAt": "2026-09-29T00:00:00.000Z" }
+```
+
+`GET /api/meters/:meterId/diagnostic-logs?limit=20`
+
+Returns past diagnostic results with suggested fixes.
+
+```json
+{
+  "meterId": "METER1",
+  "logs": [
+    {
+      "diagnosticId": "diag_01H...",
+      "action": "connectivity",
+      "status": "completed",
+      "result": "degraded",
+      "details": "Packet loss 6% over the last hour.",
+      "suggestedFix": "Check the meter's uplink antenna and retry the connectivity test.",
+      "completedAt": "2026-09-29T00:05:00.000Z"
+    }
+  ]
+}
+```
 
 ## Widget Summary (#901)
 
@@ -401,3 +500,73 @@ Returns `{ on, off, servedKw, shedKw, baselineCost, optimisedCost, savingsPct }`
 See `docs/TRADING_API.md`.
 Google Home and Alexa account linking (OAuth 2.0), device fulfillment, energy routines and privacy controls. Endpoints
 live under `/api/smart-home`. See `docs/SMART_HOME.md`.
+
+---
+
+## Energy Arbitrage Opportunities Detector (#1009)
+
+### `GET /api/meters/:meterId/arbitrage`
+
+Analyzes real-time 24-hour grid prices and solar generation for `:meterId`, computes the optimal battery charge/discharge schedule, estimates daily and monthly profit potential, and returns automated alerts when profitable arbitrage windows are detected.
+
+**Query Parameters:**
+- `batteryCapacityKwh` *(optional, number, default `13.5`)* — Usable battery capacity in kWh.
+- `roundTripEfficiency` *(optional, number, default `0.9`)* — Battery charge/discharge round-trip efficiency (`0..1`).
+- `minSpreadPercent` *(optional, number, default `20`)* — Minimum price spread percentage required to flag an opportunity.
+
+**Response (`200 OK`):**
+```json
+{
+  "meterId": "METER-001",
+  "generatedAt": "2026-10-16T06:30:00.000Z",
+  "batteryCapacityKwh": 13.5,
+  "roundTripEfficiency": 0.9,
+  "currentGridPricePerKwh": 0.08,
+  "currentSolarGenerationKw": 1.09,
+  "estimatedDailyProfitUsd": 5.18,
+  "estimatedMonthlyProfitUsd": 155.4,
+  "opportunities": [
+    {
+      "id": "METER-001-arb-night-peak",
+      "chargeWindowStartHour": 1,
+      "chargeWindowEndHour": 5,
+      "dischargeWindowStartHour": 17,
+      "dischargeWindowEndHour": 21,
+      "avgChargePricePerKwh": 0.08,
+      "avgDischargePricePerKwh": 0.31,
+      "spreadPerKwh": 0.2211,
+      "spreadPercent": 287.5,
+      "recommendedKwh": 10.8,
+      "estimatedProfitUsd": 2.39,
+      "recommendation": "Charge battery from grid between 01:00–05:00 ($0.08/kWh) and discharge during 17:00–21:00 peak ($0.31/kWh)."
+    }
+  ],
+  "optimalSchedule": [],
+  "alerts": []
+}
+```
+
+## Tiered Rate Limiting (#1080)
+
+Routes under `/api/lifespan`, `/api/shadows` and `/api/forecast-dashboard` are limited per consumer according to subscription tier. Consumers are identified by `X-API-Key`, then `X-User-Id`, then IP. Unknown consumers are `free`.
+
+| Tier | Req/min | Req/day | Burst |
+|---|---|---|---|
+| free | 10 | 1,000 | 0 |
+| basic | 60 | 10,000 | 0 |
+| premium | 300 | 100,000 | +150 |
+| enterprise | 1,200 | 1,000,000 | +1,200 |
+
+A token bucket refills at the per-minute rate up to `rate + burst`, so premium/enterprise can absorb spikes.
+
+Response headers: `X-RateLimit-Tier`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Daily-Limit`, `X-RateLimit-Daily-Remaining`, and `X-RateLimit-Upgrade` (suggested tier once ≥80% of the daily quota is used). Over-limit requests get `429` with `Retry-After` and an `upgrade` prompt.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/rate-limits/tiers` | Tier definitions |
+| GET | `/api/rate-limits/usage` | Real-time usage for the caller (`requestsToday`, `quotaUsedPct`, `upgrade`) |
+| PUT | `/api/rate-limits/subscriptions/:consumerId` | Admin (`X-Admin-Key`): `{ "tier": "premium" }` |
+
+## Lifespan, Shadows, Forecast Dashboard (#1079, #1081, #1082)
+
+See `backend/LIFESPAN.md`, `backend/SHADOWS.md` and `frontend/FORECASTING.md`.

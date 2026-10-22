@@ -2,6 +2,8 @@ import { logger } from "./logger.js";
 import { getHourlyUsage, getMeterUsageStats } from "./usageEvents.js";
 import { listDevices, listPerformance } from "./deviceRegistry.js";
 import { predictHourly, trainHourlyModel, type HourlyEnergyModel, type HourlyEnergySample } from "./energyForecastModel.js";
+import { getWeatherReport, type WeatherReport } from "./weather.js";
+import { getMeter } from "./meters.js";
 
 export const FORECAST_TRAINING_WINDOW_DAYS = 90;
 export const FORECAST_RETRAIN_INTERVAL_MS = Number(process.env.ENERGY_FORECAST_RETRAIN_INTERVAL_MS ?? 6 * 60 * 60 * 1000);
@@ -99,6 +101,175 @@ export function stopEnergyForecastRetraining(): void {
 
 export function clearEnergyForecastModelsForTests(): void {
   models.clear();
+  weatherForecastCache.clear();
+}
+
+export type WeatherUsageForecastDay = {
+  date: string;
+  predictedUsageKwh: number;
+  lowerKwh: number;
+  upperKwh: number;
+  avgTemperatureC: number;
+  sunlightHours: number;
+};
+
+export type WeatherUsageForecast = {
+  meterId: string;
+  generatedAt: string;
+  days: WeatherUsageForecastDay[];
+  predictedDaysUntilEmpty: number | null;
+  willRunOutOfCredit: boolean;
+  alertDate: string | null;
+};
+
+export type WeatherSolarForecastDay = {
+  date: string;
+  predictedGenerationKwh: number;
+  lowerKwh: number;
+  upperKwh: number;
+  sunlightHours: number;
+};
+
+export type WeatherSolarForecast = {
+  deviceId: string;
+  generatedAt: string;
+  days: WeatherSolarForecastDay[];
+};
+
+const weatherForecastCache = new Map<string, { day: string; value: unknown }>();
+
+function dayKey(now: Date): string {
+  return now.toISOString().slice(0, 10);
+}
+
+function cacheGet<T>(key: string, now: Date): T | undefined {
+  const entry = weatherForecastCache.get(key);
+  if (entry && entry.day === dayKey(now)) return entry.value as T;
+  return undefined;
+}
+
+function cacheSet(key: string, now: Date, value: unknown): void {
+  weatherForecastCache.set(key, { day: dayKey(now), value });
+}
+
+function dailyWeather(report: WeatherReport, now: Date, days: number): Array<{ date: string; avgTemperatureC: number; sunlightHours: number }> {
+  const buckets = new Map<string, { temps: number[]; sunlight: number }>();
+  for (const point of report.hourly) {
+    const date = point.timestamp.slice(0, 10);
+    const bucket = buckets.get(date) ?? { temps: [], sunlight: 0 };
+    if (Number.isFinite(point.temperatureC)) bucket.temps.push(point.temperatureC);
+    if (Number.isFinite(point.cloudCoverPercent)) {
+      const clear = Math.max(0, 1 - point.cloudCoverPercent / 100);
+      bucket.sunlight += clear;
+    }
+    buckets.set(date, bucket);
+  }
+  const out: Array<{ date: string; avgTemperatureC: number; sunlightHours: number }> = [];
+  for (let i = 0; i < days; i++) {
+    const date = new Date(now.getTime() + i * 86_400_000).toISOString().slice(0, 10);
+    const bucket = buckets.get(date);
+    const temps = bucket?.temps ?? [];
+    const avgTemperatureC = temps.length ? temps.reduce((a, b) => a + b, 0) / temps.length : report.current.temperatureC;
+    out.push({ date, avgTemperatureC, sunlightHours: bucket?.sunlight ?? 0 });
+  }
+  return out;
+}
+
+function temperatureFactor(avgTemperatureC: number): number {
+  const deviation = Math.abs(avgTemperatureC - 18);
+  return 1 + Math.min(0.6, deviation * 0.02);
+}
+
+export async function getWeatherUsageForecast(
+  meterId: string,
+  lat: number,
+  lon: number,
+  now = new Date(),
+): Promise<WeatherUsageForecast> {
+  const cacheKey = `usage:${meterId}`;
+  const cached = cacheGet<WeatherUsageForecast>(cacheKey, now);
+  if (cached) return cached;
+
+  const report = await getWeatherReport(lat, lon, now);
+  const model = getMeterEnergyModel(meterId, now);
+  const days = dailyWeather(report, now, 7);
+
+  const forecastDays: WeatherUsageForecastDay[] = days.map((day) => {
+    const base = predictHourly(model, new Date(`${day.date}T12:00:00.000Z`));
+    const predicted = base * temperatureFactor(day.avgTemperatureC);
+    const band = Math.max(0.1, predicted * 0.15);
+    return {
+      date: day.date,
+      predictedUsageKwh: Number(predicted.toFixed(3)),
+      lowerKwh: Number(Math.max(0, predicted - band).toFixed(3)),
+      upperKwh: Number((predicted + band).toFixed(3)),
+      avgTemperatureC: Number(day.avgTemperatureC.toFixed(1)),
+      sunlightHours: Number(day.sunlightHours.toFixed(1)),
+    };
+  });
+
+  const totalPredicted = forecastDays.reduce((sum, day) => sum + day.predictedUsageKwh, 0);
+  const dailyAverage = forecastDays.length ? totalPredicted / forecastDays.length : 0;
+  const meter = getMeter(meterId);
+  const balance = meter?.credit_balance ?? null;
+  let predictedDaysUntilEmpty: number | null = null;
+  let willRunOutOfCredit = false;
+  let alertDate: string | null = null;
+  if (balance !== null && dailyAverage > 0) {
+    predictedDaysUntilEmpty = Number((balance / dailyAverage).toFixed(1));
+    willRunOutOfCredit = predictedDaysUntilEmpty <= 7;
+    if (willRunOutOfCredit) {
+      alertDate = new Date(now.getTime() + predictedDaysUntilEmpty * 86_400_000).toISOString().slice(0, 10);
+    }
+  }
+
+  const result: WeatherUsageForecast = {
+    meterId,
+    generatedAt: now.toISOString(),
+    days: forecastDays,
+    predictedDaysUntilEmpty,
+    willRunOutOfCredit,
+    alertDate,
+  };
+  cacheSet(cacheKey, now, result);
+  return result;
+}
+
+export async function getWeatherSolarForecast(
+  deviceId: string,
+  lat: number,
+  lon: number,
+  now = new Date(),
+): Promise<WeatherSolarForecast> {
+  const cacheKey = `solar:${deviceId}`;
+  const cached = cacheGet<WeatherSolarForecast>(cacheKey, now);
+  if (cached) return cached;
+
+  const report = await getWeatherReport(lat, lon, now);
+  const model = getSolarEnergyModel(deviceId, now);
+  const days = dailyWeather(report, now, 7);
+
+  const forecastDays: WeatherSolarForecastDay[] = days.map((day) => {
+    const base = predictHourly(model, new Date(`${day.date}T12:00:00.000Z`));
+    const sunlightFactor = Math.max(0, Math.min(1.5, day.sunlightHours / 12));
+    const predicted = base * sunlightFactor;
+    const band = Math.max(0.05, predicted * 0.2);
+    return {
+      date: day.date,
+      predictedGenerationKwh: Number(predicted.toFixed(3)),
+      lowerKwh: Number(Math.max(0, predicted - band).toFixed(3)),
+      upperKwh: Number((predicted + band).toFixed(3)),
+      sunlightHours: Number(day.sunlightHours.toFixed(1)),
+    };
+  });
+
+  const result: WeatherSolarForecast = {
+    deviceId,
+    generatedAt: now.toISOString(),
+    days: forecastDays,
+  };
+  cacheSet(cacheKey, now, result);
+  return result;
 }
 
 export { predictHourly };

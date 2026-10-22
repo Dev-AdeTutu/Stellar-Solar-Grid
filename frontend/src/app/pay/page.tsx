@@ -3,16 +3,19 @@
 import { useState, useEffect, useRef } from "react";
 import Navbar from "@/components/Navbar";
 import OfflinePaymentModal from "@/components/OfflinePaymentModal";
+import InstallmentCalculator from "@/components/InstallmentCalculator";
+import InstallmentTracker from "@/components/InstallmentTracker";
 import { useToast } from "@/components/ToastProvider";
 import { useWalletStore } from "@/store/walletStore";
 import { usePaymentStore } from "@/store/paymentStore";
 import { useOffline } from "@/hooks/useOffline";
-import { makePayment } from "@/services/meterService";
+import { makePayment, makeDelegatedPayment, getDelegates } from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { env } from "@/lib/env";
 
 type Plan = "Daily" | "Weekly" | "Monthly" | "Usage";
 type Status = "idle" | "loading";
+type PaymentMode = "one-off" | "installment";
 
 const PLANS: { value: Plan; label: string; desc: string }[] = [
   { value: "Daily", label: "Daily", desc: "Billed every 24 hours" },
@@ -53,6 +56,7 @@ export default function PayPage() {
   const isOffline = useOffline();
 
   const [amount, setAmount] = useState("");
+  const [paymentMode, setPaymentMode] = useState<"standard" | "installment">("standard");
   // Issue #766: optional free-text note attached to the payment on-chain.
   const MEMO_MAX_LEN = 100;
   const [memo, setMemo] = useState("");
@@ -63,6 +67,11 @@ export default function PayPage() {
   const [xlmRate, setXlmRate] = useState<number | null>(null);
   const [currency, setCurrency] = useState("NGN");
   const [txHash, setTxHash] = useState<string | null>(null);
+  // Issue #981: family/household account sharing — track whether the
+  // connected wallet is an authorized delegate for the entered meter.
+  const [isDelegate, setIsDelegate] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
+  const [delegateChecked, setDelegateChecked] = useState(false);
 
   // #902: bill emails link here with ?meter=&amount=&bill= — pre-fill the form.
   useEffect(() => {
@@ -126,6 +135,47 @@ export default function PayPage() {
     localStorage.setItem("preferredCurrency", newCurrency);
   };
 
+  // Issue #981: detect whether the connected wallet is the meter owner or an
+  // authorized delegate. Delegates may pay on the owner's behalf.
+  useEffect(() => {
+    let cancelled = false;
+    const trimmed = meterId.trim();
+    if (!address || !trimmed) {
+      setIsDelegate(false);
+      setIsOwner(false);
+      setDelegateChecked(false);
+      return;
+    }
+    setDelegateChecked(false);
+    (async () => {
+      try {
+        const delegates = await getDelegates(trimmed);
+        const match = delegates.find((d) => {
+          if (d.delegated_address !== address) return false;
+          const perms = Array.isArray(d.permissions) ? d.permissions : [String(d.permissions)];
+          return perms.includes("pay") || perms.includes("admin") || !perms.includes("view-only");
+        });
+        const expired = match?.expiry ? match.expiry <= Math.floor(Date.now() / 1000) : false;
+        setIsOwner(delegates.some((d) => {
+          if (d.delegated_address !== address) return false;
+          const perms = Array.isArray(d.permissions) ? d.permissions : [String(d.permissions)];
+          return perms.includes("admin");
+        }));
+        setIsDelegate(Boolean(match) && !expired);
+      } catch {
+        if (!cancelled) {
+          setIsDelegate(false);
+          setIsOwner(false);
+        }
+      } finally {
+        if (!cancelled) setDelegateChecked(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, meterId]);
+
   const EXPLORER_BASE = env.NEXT_PUBLIC_NETWORK_PASSPHRASE.includes("Test")
     ? "https://stellar.expert/explorer/testnet/tx"
     : "https://stellar.expert/explorer/public/tx";
@@ -177,7 +227,11 @@ export default function PayPage() {
 
     const amountNum = parseFloat(amount);
     try {
-      const hash = await makePayment(address, meterId.trim(), amountNum, plan, memo);
+      // Issue #981: route through the delegated payment entry point when the
+      // connected wallet is an authorized delegate rather than the owner.
+      const hash = isDelegate
+        ? await makeDelegatedPayment(address, meterId.trim(), amountNum, plan, memo)
+        : await makePayment(address, meterId.trim(), amountNum, plan, memo);
       // Remember last 3 payment amounts in localStorage
       if (!isNaN(amountNum) && amountNum > 0) {
         setRecentAmounts((prev) => {
@@ -238,6 +292,35 @@ export default function PayPage() {
             Top up your meter balance on the Stellar blockchain.
           </p>
 
+          {/* Issue #981: delegate notice + owner link to delegation management */}
+          {address && isDelegate && (
+            <div className="mb-6 rounded-xl border border-solar-yellow/40 bg-solar-yellow/10 p-4">
+              <div className="flex items-start gap-3">
+                <span className="text-xl mt-0.5">👨‍👩‍👧</span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-solar-yellow mb-1">
+                    Paying as delegate
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    You&apos;re authorized to pay on behalf of this meter&apos;s owner. The
+                    payment will be routed through the delegation contract.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+          {address && isOwner && (
+            <div className="mb-6 flex items-center justify-between rounded-lg border border-white/10 bg-solar-accent px-4 py-3">
+              <span className="text-xs text-gray-400">Manage who can access this meter.</span>
+              <a
+                href="/delegation"
+                className="text-xs text-solar-yellow underline underline-offset-2 hover:opacity-80 transition"
+              >
+                Manage delegates ↗
+              </a>
+            </div>
+          )}
+
           {/* ── SMS fallback card — shown when offline ── */}
           {isOffline && (
             <div className="mb-6 rounded-xl border border-yellow-500/30 bg-yellow-900/10 p-5">
@@ -275,7 +358,12 @@ export default function PayPage() {
             </div>
           )}
 
-          {!address ? (
+          {paymentMode === "installment" ? (
+            <div className="space-y-6">
+              <InstallmentCalculator walletAddress={address} />
+              {address && <InstallmentTracker address={address} />}
+            </div>
+          ) : !address ? (
             <div className="rounded-xl border border-white/10 bg-solar-accent p-8 text-center">
               <p className="text-gray-400 mb-4">Connect your wallet to make a payment.</p>
               <button
@@ -514,7 +602,9 @@ export default function PayPage() {
                   ? "Unavailable offline"
                   : status === "loading"
                     ? "Waiting for wallet…"
-                    : "Pay Now"}
+                    : isDelegate
+                      ? "Pay as Delegate"
+                      : "Pay Now"}
               </button>
 
               {isOffline && (
@@ -551,6 +641,12 @@ export default function PayPage() {
                   <span className="text-gray-400">Meter ID</span>
                   <strong className="text-white">{meterId}</strong>
                 </div>
+                {isDelegate && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Paying as</span>
+                    <strong className="text-solar-yellow">Delegate</strong>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-gray-400">Plan</span>
                   <strong className="text-white capitalize">{plan}</strong>

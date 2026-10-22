@@ -214,5 +214,72 @@
     "dismiss": "忽略",
     "estimatedSavings": "预计每周节省",
     "actualSavings": "实际每周节省"
+  },
+  "voiceAssistant": {
+    "title": "语音助手",
+    "description": "通过 Alexa 或 Google Assistant 查询电表状态并完成支付。",
+    "linkAccount": "关联账户",
+    "linking": "正在关联…",
+    "linked": "账户已关联",
+    "unlink": "解除关联",
+    "unlinking": "正在解除关联…",
+    "unlinked": "账户已解除关联",
+    "linkFailed": "关联账户失败，请重试。",
+    "linkCode": "关联码",
+    "linkCodeHint": "请在 Alexa 或 Google Home 应用中说出或输入此关联码。",
+    "copyCode": "复制关联码",
+    "codeCopied": "✓ 已复制",
+    "platform": "平台",
+    "platforms": {
+      "alexa": "Amazon Alexa",
+      "google": "Google Assistant"
+    },
+    "status": {
+      "linked": "已关联",
+      "notLinked": "未关联"
+    },
+    "commands": {
+      "title": "支持的语音指令",
+      "checkBalance": "查询余额",
+      "checkBalanceExample": "“Alexa，查询我的电表余额”",
+      "checkUsage": "查询用量",
+      "checkUsageExample": "“Hey Google，我这个月用了多少电？”",
+      "makePayment": "进行支付",
+      "makePaymentExample": "“Alexa，向电表 123 支付 10 XLM”",
+      "meterStatus": "查询电表状态",
+      "meterStatusExample": "“Hey Google，我的电表是否启用？”"
+    },
+    "payment": {
+      "title": "语音支付",
+      "confirmPrompt": "您确定要支付 {amount} XLM 吗？",
+      "confirm": "确认支付",
+      "cancel": "取消",
+      "confirming": "正在确认…",
+      "confirmed": "支付已确认",
+      "cancelled": "支付已取消",
+      "failed": "支付失败，请重试。",
+      "requiresConfirmation": "出于安全考虑，语音支付需要确认。",
+      "pinPrompt": "请输入您的支付 PIN 码以确认。",
+      "pinLabel": "支付 PIN 码",
+      "pinInvalid": "PIN 码无效，请重试。",
+      "amount": "金额",
+      "meterId": "电表 ID",
+      "success": "支付成功！"
+    },
+    "language": {
+      "title": "语音语言",
+      "label": "助手语言",
+      "en": "英语",
+      "zh": "中文",
+      "es": "西班牙语",
+      "fr": "法语"
+    },
+    "errors": {
+      "notLinked": "请先关联您的账户以使用语音助手。",
+      "notUnderstood": "抱歉，我没有听懂。请再说一次。",
+      "meterNotFound": "未找到该电表。",
+      "paymentFailed": "无法完成支付，请重试。",
+      "unauthorized": "您无权访问此电表。"
+    }
   }
 }

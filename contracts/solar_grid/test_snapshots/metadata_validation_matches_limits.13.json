@@ -86,7 +86,7 @@
                         "string": "k0"
                       },
                       "val": {
-                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                       }
                     },
                     {
@@ -94,7 +94,7 @@
                         "string": "k1"
                       },
                       "val": {
-                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                       }
                     },
                     {
@@ -102,15 +102,7 @@
                         "string": "k2"
                       },
                       "val": {
-                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
-                      }
-                    },
-                    {
-                      "key": {
-                        "string": "k3"
-                      },
-                      "val": {
-                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                        "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                       }
                     }
                   ]
@@ -426,9 +418,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -487,7 +495,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 7
+                      "u32": 8
                     }
                   }
                 ]
@@ -523,7 +531,7 @@
                       "string": "k0"
                     },
                     "val": {
-                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                     }
                   },
                   {
@@ -531,7 +539,7 @@
                       "string": "k1"
                     },
                     "val": {
-                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                     }
                   },
                   {
@@ -539,15 +547,7 @@
                       "string": "k2"
                     },
                     "val": {
-                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
-                    }
-                  },
-                  {
-                    "key": {
-                      "string": "k3"
-                    },
-                    "val": {
-                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+                      "string": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
                     }
                   }
                 ]
@@ -577,7 +577,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },

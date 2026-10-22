@@ -26,6 +26,35 @@
           ]
         },
         {
+          "name": "GetStatusIntent",
+          "slots": [{ "name": "meter", "type": "AMAZON.SearchQuery" }],
+          "samples": [
+            "is my meter on",
+            "what's the status of {meter}"
+          ]
+        },
+        {
+          "name": "MakePaymentIntent",
+          "slots": [
+            { "name": "meter", "type": "AMAZON.SearchQuery" },
+            { "name": "amount", "type": "AMAZON.NUMBER" }
+          ],
+          "samples": [
+            "pay {amount} for {meter}",
+            "top up {meter} with {amount}",
+            "add {amount} credit to {meter}"
+          ]
+        },
+        {
+          "name": "ConfirmPaymentIntent",
+          "slots": [{ "name": "pin", "type": "AMAZON.NUMBER" }],
+          "samples": [
+            "confirm payment",
+            "yes confirm",
+            "my pin is {pin}"
+          ]
+        },
+        {
           "name": "RunRoutineIntent",
           "slots": [{ "name": "routine", "type": "AMAZON.SearchQuery" }],
           "samples": ["run {routine}", "start {routine}", "run my {routine} routine", "to run {routine}"]

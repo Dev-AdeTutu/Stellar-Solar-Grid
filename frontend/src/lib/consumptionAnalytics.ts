@@ -185,3 +185,108 @@ export const SEVERITY_BADGE: Record<AnomalySeverity, string> = {
   warning: "bg-yellow-900/40 text-yellow-300",
   critical: "bg-red-900/40 text-red-300",
 };
+
+/**
+ * Client for the appliance-level energy monitoring API (#983).
+ */
+const APPLIANCE_API = `${env.NEXT_PUBLIC_BACKEND_URL}/api/meters`;
+
+export type ApplianceCategory =
+  | "refrigeration"
+  | "hvac"
+  | "lighting"
+  | "water_heating"
+  | "laundry"
+  | "cooking"
+  | "electronics"
+  | "other";
+
+export type ApplianceUsage = {
+  id: string;
+  meterId: string;
+  applianceId: string;
+  name: string;
+  category: ApplianceCategory;
+  /** Share of the meter's total consumption attributed to this appliance. */
+  sharePct: number;
+  energyKwh: number;
+  estimatedAnnualKwh: number;
+  estimatedAnnualXlm: number;
+  /** Mean power draw while the appliance is active, in watts. */
+  averageWatts: number;
+  /** Fraction of the window during which the appliance was detected as active. */
+  dutyCycle: number;
+  /** Detection confidence in the range 0..1. */
+  confidence: number;
+  /** How the appliance was identified. */
+  detectionMethod: "sub_meter" | "ml_disaggregation";
+  trend: "rising" | "falling" | "steady";
+  /** Percentage change versus the previous comparable window. */
+  trendPct: number;
+  lastSeenAt: string;
+};
+
+export type ApplianceRecommendation = {
+  id: string;
+  applianceId: string;
+  title: string;
+  detail: string;
+  estimatedAnnualKwh: number;
+  estimatedAnnualXlm: number;
+  priority: number;
+};
+
+export type ApplianceBreakdown = {
+  meterId: string;
+  generatedAt: string;
+  windowDays: number;
+  totalKwh: number;
+  sufficientData: boolean;
+  appliances: ApplianceUsage[];
+  recommendations: ApplianceRecommendation[];
+};
+
+export function fetchApplianceBreakdown(
+  meterId: string,
+  days = 30,
+): Promise<ApplianceBreakdown> {
+  return getJson<ApplianceBreakdown>(
+    `${APPLIANCE_API}/${encodeURIComponent(meterId)}/appliances?days=${days}`,
+  );
+}
+
+export function formatWatts(watts: number): string {
+  if (watts >= 1000) {
+    return `${(watts / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })} kW`;
+  }
+  return `${Math.round(watts).toLocaleString()} W`;
+}
+
+export function formatShare(sharePct: number): string {
+  return `${sharePct.toFixed(1)}%`;
+}
+
+export function formatDutyCycle(dutyCycle: number): string {
+  return `${(dutyCycle * 100).toFixed(0)}% of the time`;
+}
+
+export function formatConfidence(confidence: number): string {
+  return `${(confidence * 100).toFixed(0)}% confidence`;
+}
+
+export const APPLIANCE_CATEGORY_LABEL: Record<ApplianceCategory, string> = {
+  refrigeration: "Refrigeration",
+  hvac: "Heating & cooling",
+  lighting: "Lighting",
+  water_heating: "Water heating",
+  laundry: "Laundry",
+  cooking: "Cooking",
+  electronics: "Electronics",
+  other: "Other",
+};
+
+export const APPLIANCE_TREND_BADGE: Record<ApplianceUsage["trend"], string> = {
+  rising: "bg-red-900/40 text-red-300",
+  falling: "bg-green-900/40 text-green-300",
+  steady: "bg-slate-700/40 text-slate-300",
+};

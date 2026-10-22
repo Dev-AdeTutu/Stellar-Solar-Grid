@@ -7,10 +7,17 @@ import { logger } from "../lib/logger.js";
 
 export const delegatesRouter = Router();
 
+const PermissionSchema = z.union([
+  z.enum(["view", "pay", "admin"]),
+  z.number().int().nonnegative(),
+]);
+
 const AddDelegateSchema = z.object({
   meterId: z.string().min(1).max(64),
   delegate: z.string().length(56),
   owner: z.string().length(56),
+  permissions: z.array(PermissionSchema).min(1),
+  expiry: z.number().int().positive().optional(),
 });
 
 const RemoveDelegateSchema = z.object({
@@ -43,7 +50,7 @@ delegatesRouter.post(
       });
     }
 
-    const { meterId, delegate, owner } = parsed.data;
+    const { meterId, delegate, owner, permissions, expiry } = parsed.data;
 
     try {
       // Validate addresses
@@ -56,19 +63,49 @@ delegatesRouter.post(
       });
     }
 
+    // Normalize permissions into a numeric bitmask.
+    const permissionBits = permissions.reduce((mask, permission) => {
+      if (typeof permission === "number") {
+        return mask | permission;
+      }
+      switch (permission) {
+        case "view":
+          return mask | 1;
+        case "pay":
+          return mask | 2;
+        case "admin":
+          return mask | 4;
+        default:
+          return mask;
+      }
+    }, 0);
+
     try {
       const hash = await stellarService.invoke("add_delegate", [
         StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
         StellarSdk.nativeToScVal(delegate, { type: "address" }),
+        StellarSdk.nativeToScVal(permissionBits, { type: "u32" }),
+        expiry !== undefined
+          ? StellarSdk.nativeToScVal(BigInt(expiry), { type: "u64" })
+          : StellarSdk.xdr.ScVal.scvVoid(),
       ]);
 
-      logger.info("Delegate added", { meterId, delegate, owner, hash });
+      logger.info("Delegate added", {
+        meterId,
+        delegate,
+        owner,
+        permissions: permissionBits,
+        expiry,
+        hash,
+      });
 
       return res.json({
         success: true,
         hash,
         meterId,
         delegate,
+        permissions: permissionBits,
+        expiry: expiry ?? null,
       });
     } catch (err: any) {
       logger.error("Failed to add delegate", { meterId, delegate, err });
@@ -153,12 +190,22 @@ delegatesRouter.get(
         StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
       ]);
 
-      const delegates = StellarSdk.scValToNative(result) as string[];
+      const raw = StellarSdk.scValToNative(result) as Array<{
+        delegated_address: string;
+        permissions: number;
+        expiry: number | bigint;
+      }>;
+
+      const delegates = (raw || []).map((entry) => ({
+        delegatedAddress: entry.delegated_address,
+        permissions: entry.permissions,
+        expiry: Number(entry.expiry),
+      }));
 
       return res.json({
         meterId,
-        delegates: delegates || [],
-        count: delegates?.length || 0,
+        delegates,
+        count: delegates.length,
       });
     } catch (err: any) {
       logger.error("Failed to get delegates", { meterId, err });

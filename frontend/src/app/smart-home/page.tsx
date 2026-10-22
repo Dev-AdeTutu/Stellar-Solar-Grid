@@ -9,6 +9,8 @@ import Navbar from "@/components/Navbar";
 import { useWalletStore } from "@/store/walletStore";
 import { usePaymentStore } from "@/store/paymentStore";
 import { clearSmartHomeSession, getSmartHomeSession, smartHomeFetch } from "@/lib/smartHomeClient";
+import { confirmVoicePayment, parseVoiceCommand } from "@/lib/voiceAssistantClient";
+import { SUPPORTED_LOCALES } from "@/lib/i18n";
 
 type Link = { id: string; platform: "google" | "alexa"; meters: { meterId: string; nickname: string | null }[]; scopes: string[]; created_at: string; last_used_at: string | null };
 type Trigger =
@@ -17,6 +19,29 @@ type Trigger =
   | { type: "voice" };
 type Routine = { id: string; name: string; enabled: boolean; trigger: Trigger; actions: { meterId: string; command: "on" | "off" }[]; last_run_at: string | null };
 type Activity = { id: number; platform: string; action: string; meter_id: string | null; result: string; created_at: string };
+
+const VOICE_ASSISTANTS = [
+  { id: "alexa", name: "Amazon Alexa", hint: "Alexa, ask SolarGrid for my meter balance" },
+  { id: "google", name: "Google Assistant", hint: "Hey Google, ask SolarGrid to check my usage" },
+] as const;
+
+const VOICE_LANGUAGES = SUPPORTED_LOCALES;
+
+const t = (key: string) => key;
+const voiceAssistant = {
+  title: t("voiceAssistant.title"),
+  description: t("voiceAssistant.description"),
+  language: t("voiceAssistant.language"),
+  payments: t("voiceAssistant.payments"),
+  paymentsHint: t("voiceAssistant.paymentsHint"),
+  link: t("voiceAssistant.link"),
+  tryIt: t("voiceAssistant.tryIt"),
+  commandPlaceholder: t("voiceAssistant.commandPlaceholder"),
+  parse: t("voiceAssistant.parse"),
+  confirm: t("voiceAssistant.confirm"),
+  parsed: t("voiceAssistant.parsed"),
+  confirmed: t("voiceAssistant.confirmed"),
+};
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const STROOPS_PER_XLM = 10_000_000;
@@ -117,6 +142,12 @@ export default function SmartHomePage() {
   const [error, setError] = useState<string | null>(null);
   const [confirmErase, setConfirmErase] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [voiceLanguage, setVoiceLanguage] = useState<string>(VOICE_LANGUAGES[0] ?? "en");
+  const [voicePaymentsEnabled, setVoicePaymentsEnabled] = useState(false);
+  const [voiceCommand, setVoiceCommand] = useState("");
+  const [voiceResult, setVoiceResult] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [pendingPayment, setPendingPayment] = useState<{ intentId: string; summary: string } | null>(null);
 
   const load = useCallback(async (t: string) => {
     try {
@@ -145,6 +176,33 @@ export default function SmartHomePage() {
       setToken(await getSmartHomeSession(address, signTransaction));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleParseVoiceCommand() {
+    setVoiceError(null);
+    setVoiceResult(null);
+    setPendingPayment(null);
+    try {
+      const parsed = await parseVoiceCommand(voiceCommand, voiceLanguage);
+      setVoiceResult(parsed.summary ?? parsed.intent ?? JSON.stringify(parsed));
+      if (parsed.requiresConfirmation && parsed.intentId) {
+        setPendingPayment({ intentId: parsed.intentId, summary: parsed.summary ?? parsed.intent ?? "" });
+      }
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  async function handleConfirmVoicePayment() {
+    if (!pendingPayment) return;
+    setVoiceError(null);
+    try {
+      await confirmVoicePayment(pendingPayment.intentId, voiceLanguage);
+      setVoiceResult(voiceAssistant.confirmed);
+      setPendingPayment(null);
+    } catch (e) {
+      setVoiceError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -208,6 +266,75 @@ export default function SmartHomePage() {
                   ))}
                 </ul>
               )}
+            </section>
+
+            <section className="space-y-3 rounded border border-white/10 p-4">
+              <h2 className="text-lg font-semibold">{voiceAssistant.title}</h2>
+              <p className="text-sm opacity-70">{voiceAssistant.description}</p>
+
+              <ul className="space-y-2">
+                {VOICE_ASSISTANTS.map((a) => (
+                  <li key={a.id} className="rounded border border-white/10 p-3">
+                    <div className="font-medium">{a.name}</div>
+                    <div className="text-xs opacity-70">{a.hint}</div>
+                  </li>
+                ))}
+              </ul>
+
+              <label className="flex flex-wrap items-center gap-2 text-sm">
+                <span>{voiceAssistant.language}</span>
+                <select
+                  className="rounded border bg-transparent px-2 py-1"
+                  aria-label={voiceAssistant.language}
+                  value={voiceLanguage}
+                  onChange={(e) => setVoiceLanguage(e.target.value)}
+                >
+                  {VOICE_LANGUAGES.map((locale) => (
+                    <option key={locale} value={locale}>
+                      {locale}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={voicePaymentsEnabled} onChange={(e) => setVoicePaymentsEnabled(e.target.checked)} />
+                {voiceAssistant.payments}
+              </label>
+              <p className="text-xs opacity-70">{voiceAssistant.paymentsHint}</p>
+
+              <a className="text-sm underline" href="/smart-home/link">
+                {voiceAssistant.link}
+              </a>
+
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold">{voiceAssistant.tryIt}</h3>
+                <input
+                  className="w-full rounded border px-2 py-1 bg-transparent"
+                  placeholder={voiceAssistant.commandPlaceholder}
+                  aria-label={voiceAssistant.commandPlaceholder}
+                  value={voiceCommand}
+                  onChange={(e) => setVoiceCommand(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="rounded bg-sky-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                  disabled={!voiceCommand.trim()}
+                  onClick={handleParseVoiceCommand}
+                >
+                  {voiceAssistant.parse}
+                </button>
+                {voiceResult && <p className="text-sm text-green-500">{voiceResult}</p>}
+                {pendingPayment && (
+                  <div className="space-y-2 rounded border border-amber-500/40 p-3">
+                    <p className="text-sm">{pendingPayment.summary}</p>
+                    <button type="button" className="rounded bg-amber-600 px-3 py-1.5 text-sm text-white" onClick={handleConfirmVoicePayment}>
+                      {voiceAssistant.confirm}
+                    </button>
+                  </div>
+                )}
+                {voiceError && <p className="text-sm text-red-500">{voiceError}</p>}
+              </div>
             </section>
 
             <section className="space-y-3">

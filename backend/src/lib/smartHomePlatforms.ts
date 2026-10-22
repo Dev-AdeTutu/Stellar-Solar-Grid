@@ -21,6 +21,14 @@ import {
   type SmartHomeLink,
 } from "./smartHome.js";
 import { getUsageTotals, STROOPS_PER_XLM } from "./billing.js";
+import { adminInvoke } from "./stellar.js";
+import { saveReceipt } from "./receipts.js";
+import {
+  createPaymentConfirmation,
+  verifyVoicePaymentPin,
+  respond,
+  type VoiceLocale,
+} from "./voiceAssistant.js";
 
 const xlm = (stroops: number) => {
   const v = stroops / STROOPS_PER_XLM;
@@ -286,8 +294,31 @@ export async function handleAlexaDirective(body: AlexaDirective): Promise<unknow
 
 type AlexaCustomRequest = {
   context?: { System?: { user?: { accessToken?: string } } };
-  request: { type: string; intent?: { name: string; slots?: Record<string, { value?: string }> } };
+  request: {
+    type: string;
+    locale?: string;
+    intent?: { name: string; slots?: Record<string, { value?: string }> };
+  };
 };
+
+/** Derive the spoken locale from an Alexa request locale or a Google `locale` slot. */
+function voiceLocale(locale: string | undefined): VoiceLocale {
+  return (locale ?? "").toLowerCase().startsWith("es") ? "es" : "en";
+}
+
+/** Parse a spoken amount ("five", "5.50", "ten xlm") into stroops. */
+function parseAmount(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const words: Record<string, number> = {
+    one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+    twenty: 20, thirty: 30, fifty: 50, hundred: 100,
+  };
+  const cleaned = raw.toLowerCase().replace(/x\s*l\s*m|xlm|lumens?/g, "").trim();
+  const numeric = Number.parseFloat(cleaned.replace(/[^0-9.]/g, ""));
+  const value = Number.isFinite(numeric) && numeric > 0 ? numeric : words[cleaned];
+  if (!value || value <= 0) return undefined;
+  return Math.round(value * STROOPS_PER_XLM);
+}
 
 function speak(text: string, endSession = true, extra: Record<string, unknown> = {}) {
   return { version: "1.0", response: { outputSpeech: { type: "PlainText", text }, shouldEndSession: endSession, ...extra } };
@@ -324,8 +355,76 @@ export async function handleAlexaCustom(body: AlexaCustomRequest): Promise<unkno
   const intent = req.intent?.name;
   const slot = (name: string) => req.intent?.slots?.[name]?.value;
   const meterNames = (m: LinkedMeter) => [m.nickname ?? "", m.meterId];
+  const locale = voiceLocale(req.locale ?? slot("locale"));
 
   switch (intent) {
+    case "GetStatusIntent": {
+      const meter = matchByName(link.meters, slot("meter"), meterNames);
+      if (!meter) {
+        return speak(respond(locale, "whichMeter", { meters: link.meters.map(meterName).join(", ") }), false);
+      }
+      const s = await getMeterState(meter.meterId);
+      logActivity(link.owner_address, "alexa", "get_status", meter.meterId, s.online ? "ok" : "offline");
+      if (!s.online) return speak(respond(locale, "meterOffline", { meter: meterName(meter) }));
+      return speak(
+        respond(locale, "status", {
+          meter: meterName(meter),
+          state: s.on ? respond(locale, "stateOn") : respond(locale, "stateOff"),
+          connectivity: respond(locale, "online"),
+        }),
+      );
+    }
+    case "MakePaymentIntent": {
+      const meter = matchByName(link.meters, slot("meter"), meterNames);
+      if (!meter) {
+        return speak(respond(locale, "whichMeter", { meters: link.meters.map(meterName).join(", ") }), false);
+      }
+      const amount = parseAmount(slot("amount"));
+      if (!amount) return speak(respond(locale, "askAmount", { meter: meterName(meter) }), false);
+      const { token } = createPaymentConfirmation({
+        ownerAddress: link.owner_address,
+        meterId: meter.meterId,
+        amount,
+        locale,
+      });
+      logActivity(link.owner_address, "alexa", "make_payment_prompt", meter.meterId, "ok");
+      return speak(
+        respond(locale, "confirmPayment", { amount: xlm(amount), meter: meterName(meter) }),
+        false,
+        { sessionAttributes: { confirmationToken: token } },
+      );
+    }
+    case "ConfirmPaymentIntent": {
+      const token = slot("confirmationToken") ?? (body as any).session?.attributes?.confirmationToken;
+      const pin = slot("pin");
+      const check = verifyVoicePaymentPin(token, pin);
+      if (!check.ok) {
+        logActivity(link.owner_address, "alexa", "confirm_payment", null, check.error ?? "denied");
+        return speak(respond(locale, "paymentDenied"));
+      }
+      const { meterId, amount } = check.confirmation;
+      const meter = findMeter(link, meterId);
+      if (!meter) return speak(respond(locale, "paymentDenied"));
+      const result = await adminInvoke("make_payment", {
+        meterId,
+        amount,
+        ownerAddress: link.owner_address,
+        source: "alexa",
+      });
+      if (!result?.ok) {
+        logActivity(link.owner_address, "alexa", "confirm_payment", meterId, result?.error ?? "failed");
+        return speak(respond(locale, "paymentFailed", { meter: meterName(meter) }));
+      }
+      saveReceipt({
+        ownerAddress: link.owner_address,
+        meterId,
+        amount,
+        txHash: result.txHash,
+        channel: "alexa",
+      });
+      logActivity(link.owner_address, "alexa", "confirm_payment", meterId, "ok");
+      return speak(respond(locale, "paymentSuccess", { amount: xlm(amount), meter: meterName(meter) }));
+    }
     case "GetBalanceIntent": {
       const meter = matchByName(link.meters, slot("meter"), meterNames);
       if (!meter) return speak(`Which meter? You have ${link.meters.map(meterName).join(", ")}.`, false);
@@ -356,7 +455,7 @@ export async function handleAlexaCustom(body: AlexaCustomRequest): Promise<unkno
       return speak(failed ? `I ran ${routine.name}, but ${failed} meter${failed > 1 ? "s" : ""} couldn't be switched.` : `Done. ${routine.name} is running.`);
     }
     case "AMAZON.HelpIntent":
-      return speak("Try saying: what's my balance, how much energy have I used today, or run Night Saver.", false);
+      return speak(respond(locale, "help"), false);
     case "AMAZON.StopIntent":
     case "AMAZON.CancelIntent":
       return speak("Goodbye.");

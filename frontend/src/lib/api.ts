@@ -59,6 +59,45 @@ export interface PaymentHistoryFilters {
   sortOrder?: "asc" | "desc";
 }
 
+export interface GridExport {
+  id: string;
+  meterId: string;
+  kwh: number;
+  creditAmount: number;
+  rate: number;
+  timestamp: string;
+}
+
+export interface MeterExportHistory {
+  exports: GridExport[];
+  totalImportedKwh: number;
+  totalExportedKwh: number;
+  totalCreditAmount: number;
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+/**
+ * Fetches the grid export history for a meter along with import/export totals.
+ */
+export async function getMeterExports(
+  meterId: string,
+  page = 1,
+  pageSize = 20,
+): Promise<MeterExportHistory> {
+  const params = new URLSearchParams({
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  const res = await fetch(`${API_BASE}/meters/${meterId}/exports?${params.toString()}`);
+  if (!res.ok) {
+    const { error } = (await res.json()) as { error: string };
+    throw new Error(error ?? "Failed to fetch meter exports");
+  }
+  return (await res.json()) as MeterExportHistory;
+}
+
 export async function getPaymentHistory(filters: PaymentHistoryFilters = {}): Promise<PaymentRecord[]> {
   const params = new URLSearchParams();
   if (filters.startDate) params.set("startDate", filters.startDate);
@@ -73,4 +112,303 @@ export async function getPaymentHistory(filters: PaymentHistoryFilters = {}): Pr
   }
   const { payments } = (await res.json()) as { payments: PaymentRecord[] };
   return payments;
+}
+
+async function parseError(res: Response, fallback: string): Promise<never> {
+  let message = fallback;
+  try {
+    const { error } = (await res.json()) as { error?: string };
+    if (error) message = error;
+  } catch {
+    // response body was not JSON; keep the fallback message
+  }
+  throw new Error(message);
+}
+
+// ---------------------------------------------------------------------------
+// Technician portal (work orders)
+// ---------------------------------------------------------------------------
+
+export interface WorkOrder {
+  id: string;
+  title?: string;
+  address?: string;
+  description?: string;
+  techId: string;
+  meterId: string;
+  type: string;
+  status: string;
+  notes?: string;
+  photoUrl?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface CreateWorkOrderPayload {
+  techId: string;
+  meterId: string;
+  type: string;
+  notes?: string;
+}
+
+export async function getWorkOrders(techId: string): Promise<WorkOrder[]> {
+  const res = await fetch(`${API_BASE}/work-orders/assigned/${encodeURIComponent(techId)}`);
+  if (!res.ok) await parseError(res, "Failed to fetch work orders");
+  const { workOrders } = (await res.json()) as { workOrders: WorkOrder[] };
+  return workOrders;
+}
+
+export async function createWorkOrder(payload: CreateWorkOrderPayload): Promise<WorkOrder> {
+  const res = await fetch(`${API_BASE}/work-orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to create work order");
+  const { workOrder } = (await res.json()) as { workOrder: WorkOrder };
+  return workOrder;
+}
+
+export async function completeWorkOrder(id: string, notes?: string): Promise<WorkOrder> {
+  const res = await fetch(`${API_BASE}/work-orders/${encodeURIComponent(id)}/complete`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ notes }),
+  });
+  if (!res.ok) await parseError(res, "Failed to complete work order");
+  const { workOrder } = (await res.json()) as { workOrder: WorkOrder };
+  return workOrder;
+}
+
+export async function uploadWorkOrderPhoto(id: string, file: File): Promise<WorkOrder> {
+  const formData = new FormData();
+  formData.append("photo", file);
+  const res = await fetch(`${API_BASE}/work-orders/${encodeURIComponent(id)}/photo`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) await parseError(res, "Failed to upload work order photo");
+  const { workOrder } = (await res.json()) as { workOrder: WorkOrder };
+  return workOrder;
+}
+
+// ---------------------------------------------------------------------------
+// Customer satisfaction surveys
+// ---------------------------------------------------------------------------
+
+export interface Survey {
+  id: string;
+  title: string;
+  question: string;
+  createdAt: string;
+}
+
+export interface CreateSurveyPayload {
+  title: string;
+  question: string;
+  audience?: string;
+}
+
+export interface SurveyAnalytics {
+  nps: number | null;
+  averageScore?: number;
+  averageSatisfaction?: number | null;
+  responseCount?: number;
+  totalResponses: number;
+  totalSurveys: number;
+  responseRatePct?: number | null;
+  sentCount: number;
+  promoters?: number;
+  passives?: number;
+  detractors?: number;
+  promotersPct?: number;
+  passivesPct?: number;
+  detractorsPct?: number;
+  surveys: Array<{
+    id: string;
+    title: string;
+    sentCount: number;
+    responseCount: number;
+    averageSatisfaction: number | null;
+    nps: number | null;
+  }>;
+}
+
+export async function getSurveys(): Promise<Survey[]> {
+  const res = await fetch(`${API_BASE}/surveys`);
+  if (!res.ok) await parseError(res, "Failed to fetch surveys");
+  const { surveys } = (await res.json()) as { surveys: Survey[] };
+  return surveys;
+}
+
+export async function createSurvey(payload: CreateSurveyPayload): Promise<Survey> {
+  const res = await fetch(`${API_BASE}/surveys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to create survey");
+  const { survey } = (await res.json()) as { survey: Survey };
+  return survey;
+}
+
+export async function submitSurveyResponse(
+  id: string,
+  score: number,
+  comment?: string,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/surveys/${encodeURIComponent(id)}/responses`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ score, comment }),
+  });
+  if (!res.ok) await parseError(res, "Failed to submit survey response");
+}
+
+export async function getSurveyAnalytics(): Promise<SurveyAnalytics> {
+  const res = await fetch(`${API_BASE}/surveys/analytics`);
+  if (!res.ok) await parseError(res, "Failed to fetch survey analytics");
+  const { analytics } = (await res.json()) as { analytics: SurveyAnalytics };
+  return analytics;
+}
+
+// ---------------------------------------------------------------------------
+// Seasonal pricing
+// ---------------------------------------------------------------------------
+
+export interface SeasonalRate {
+  season: string;
+  startDate: string;
+  endDate: string;
+  multiplier: number;
+}
+
+export interface CurrentSeason {
+  season: string;
+  multiplier: number;
+  startDate: string;
+  endDate: string;
+}
+
+export interface SeasonalHistoryEntry {
+  season: string;
+  year: number;
+  multiplier: number;
+  averageRate: number;
+}
+
+export async function getSeasonalRates(): Promise<SeasonalRate[]> {
+  const res = await fetch(`${API_BASE}/seasonal-rates`);
+  if (!res.ok) await parseError(res, "Failed to fetch seasonal rates");
+  const { rates } = (await res.json()) as { rates: SeasonalRate[] };
+  return rates;
+}
+
+export async function getCurrentSeason(): Promise<CurrentSeason> {
+  const res = await fetch(`${API_BASE}/seasonal-rates/current`);
+  if (!res.ok) await parseError(res, "Failed to fetch current season");
+  const { season } = (await res.json()) as { season: CurrentSeason };
+  return season;
+}
+
+export async function getSeasonalHistory(years?: number): Promise<SeasonalHistoryEntry[]> {
+  const params = new URLSearchParams();
+  if (years !== undefined) params.set("years", String(years));
+  const queryString = params.toString();
+  const res = await fetch(
+    `${API_BASE}/seasonal-rates/history${queryString ? `?${queryString}` : ""}`,
+  );
+  if (!res.ok) await parseError(res, "Failed to fetch seasonal history");
+  const { history } = (await res.json()) as { history: SeasonalHistoryEntry[] };
+  return history;
+}
+
+// ---------------------------------------------------------------------------
+// Energy credit derivatives
+// ---------------------------------------------------------------------------
+
+export type DerivativeType = "future" | "call" | "put";
+export type DerivativeStatus = "open" | "settled" | "liquidated" | "expired";
+
+export interface Derivative {
+  id: string;
+  type: DerivativeType;
+  holder: string;
+  underlying: string;
+  quantity: number;
+  strikePrice: number;
+  premium: number;
+  margin: number;
+  expiry: string;
+  status: DerivativeStatus;
+  settlementPrice?: number;
+  settlementAmount?: number;
+  createdAt: string;
+}
+
+export interface CreateDerivativePayload {
+  type: DerivativeType;
+  underlying: string;
+  quantity: number;
+  strikePrice: number;
+  expiry: string;
+}
+
+export interface DerivativeFilters {
+  type?: DerivativeType;
+  status?: DerivativeStatus;
+  holder?: string;
+}
+
+export interface SettlementResult {
+  derivative: Derivative;
+  settlementPrice: number;
+  settlementAmount: number;
+}
+
+export interface MarginStatus {
+  holder: string;
+  requiredMargin: number;
+  postedMargin: number;
+  maintenanceMargin: number;
+  equity: number;
+  liquidatable: boolean;
+}
+
+export async function listDerivatives(filters: DerivativeFilters = {}): Promise<Derivative[]> {
+  const params = new URLSearchParams();
+  if (filters.type) params.set("type", filters.type);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.holder) params.set("holder", filters.holder);
+  const queryString = params.toString();
+  const res = await fetch(`${API_BASE}/derivatives${queryString ? `?${queryString}` : ""}`);
+  if (!res.ok) await parseError(res, "Failed to fetch derivatives");
+  const { derivatives } = (await res.json()) as { derivatives: Derivative[] };
+  return derivatives;
+}
+
+export async function createDerivative(payload: CreateDerivativePayload): Promise<Derivative> {
+  const res = await fetch(`${API_BASE}/derivatives`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) await parseError(res, "Failed to create derivative");
+  const { derivative } = (await res.json()) as { derivative: Derivative };
+  return derivative;
+}
+
+export async function settleDerivative(id: string): Promise<SettlementResult> {
+  const res = await fetch(`${API_BASE}/derivatives/${encodeURIComponent(id)}/settle`, {
+    method: "POST",
+  });
+  if (!res.ok) await parseError(res, "Failed to settle derivative");
+  return (await res.json()) as SettlementResult;
+}
+
+export async function getMarginStatus(holder: string): Promise<MarginStatus> {
+  const res = await fetch(`${API_BASE}/derivatives/margin/${encodeURIComponent(holder)}`);
+  if (!res.ok) await parseError(res, "Failed to fetch margin status");
+  const { margin } = (await res.json()) as { margin: MarginStatus };
+  return margin;
 }

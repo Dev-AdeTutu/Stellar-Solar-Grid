@@ -12,6 +12,8 @@
  *   GET  /api/p2p/matches/:id                   — get a match
  *   POST /api/p2p/matches/:id/settle            — settle a match
  *   POST /api/p2p/matches/:id/dispute           — raise a dispute
+ *   GET  /api/p2p/island/trades                 — list island-restricted trades
+ *   POST /api/p2p/island/trades                 — create an island-restricted trade
  */
 import { Router, Request, Response } from "express";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -28,6 +30,8 @@ import {
   raiseDispute,
   getMatch,
   getTradingStats,
+  createIslandTrade,
+  getIslandTrades,
 } from "../lib/p2pTrading.js";
 
 export const p2pTradingRouter = Router();
@@ -162,6 +166,59 @@ p2pTradingRouter.post(
       res.json(match);
     } catch (err: any) {
       const status = err.code === "NOT_FOUND" ? 404 : 409;
+      res.status(status).json({ error: err.message });
+    }
+  }),
+);
+
+p2pTradingRouter.get(
+  "/island/trades",
+  asyncHandler(async (req: Request, res: Response) => {
+    const islandId = req.query.islandId as string | undefined;
+    const status = req.query.status as string | undefined;
+    res.json({ trades: getIslandTrades({ islandId, status }) });
+  }),
+);
+
+p2pTradingRouter.post(
+  "/island/trades",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { islandId, sellerId, buyerId, energyKwh, pricePerKwh, meterId } = req.body as {
+      islandId?: string;
+      sellerId?: string;
+      buyerId?: string;
+      energyKwh?: number;
+      pricePerKwh?: number;
+      meterId?: string;
+    };
+
+    if (!islandId) return res.status(400).json({ error: "islandId is required" });
+    if (!sellerId) return res.status(400).json({ error: "sellerId is required" });
+    if (!buyerId) return res.status(400).json({ error: "buyerId is required" });
+    if (sellerId === buyerId) {
+      return res.status(400).json({ error: "sellerId and buyerId must differ" });
+    }
+    const kwh = Number(energyKwh);
+    const price = Number(pricePerKwh);
+    if (!Number.isFinite(kwh) || kwh <= 0) {
+      return res.status(400).json({ error: "energyKwh must be a positive number" });
+    }
+    if (!Number.isFinite(price) || price <= 0) {
+      return res.status(400).json({ error: "pricePerKwh must be a positive number" });
+    }
+
+    try {
+      const trade = createIslandTrade({
+        islandId,
+        sellerId,
+        buyerId,
+        energyKwh: kwh,
+        pricePerKwh: price,
+        meterId,
+      });
+      res.status(201).json(trade);
+    } catch (err: any) {
+      const status = err.code === "NOT_FOUND" ? 404 : err.code === "FORBIDDEN" ? 403 : 409;
       res.status(status).json({ error: err.message });
     }
   }),

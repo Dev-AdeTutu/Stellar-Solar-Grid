@@ -244,3 +244,99 @@ export function queryEvents(q: EventQuery): IndexedEvent[] {
     value: r.value ? JSON.parse(String(r.value)) : null,
   }));
 }
+
+/** Query events ordered chronologically (ascending by block/ledger) for state replay (#1007). */
+export function queryEventsAsc(q: EventQuery): IndexedEvent[] {
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (q.action) { where.push("topic1 = ?"); params.push(q.action); }
+  if (q.subject) { where.push("subject = ?"); params.push(q.subject); }
+  if (q.txHash) { where.push("tx_hash = ?"); params.push(q.txHash); }
+  if (q.fromLedger !== undefined) { where.push("ledger >= ?"); params.push(q.fromLedger); }
+  if (q.toLedger !== undefined) { where.push("ledger <= ?"); params.push(q.toLedger); }
+  if (q.before !== undefined) { where.push("ledger < ?"); params.push(q.before); }
+  const limit = Math.min(Math.max(q.limit ?? 1000, 1), 10000);
+  const rows = db()
+    .prepare(
+      `SELECT * FROM contract_events ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY ledger ASC, id ASC LIMIT ?`,
+    )
+    .all(...params, limit) as Array<Record<string, string | number | null>>;
+  return rows.map((r) => ({
+    id: String(r.id),
+    ledger: Number(r.ledger),
+    ledgerClosedAt: String(r.ledger_closed_at),
+    contractId: String(r.contract_id),
+    txHash: String(r.tx_hash),
+    topic0: r.topic0 as string | null,
+    topic1: r.topic1 as string | null,
+    subject: r.subject as string | null,
+    topics: JSON.parse(String(r.topics)),
+    value: r.value ? JSON.parse(String(r.value)) : null,
+  }));
+}
+
+/** Index a contract event with block/ledger number directly (#1007). */
+export function indexManualEvent(evt: {
+  id: string;
+  ledger: number;
+  ledgerClosedAt?: string;
+  contractId?: string;
+  txHash?: string;
+  topic0?: string | null;
+  topic1?: string | null;
+  subject?: string | null;
+  topics?: string[];
+  value?: unknown;
+}): IndexedEvent {
+  const closedAt = evt.ledgerClosedAt ?? new Date().toISOString();
+  const contractId = evt.contractId ?? process.env.CONTRACT_ID ?? "C_SOLAR_GRID";
+  const txHash = evt.txHash ?? `tx_${evt.id}`;
+  const topic0 = evt.topic0 ?? "solar";
+  const topic1 = evt.topic1 ?? null;
+  const subject = evt.subject ?? null;
+  const topics = evt.topics ?? [topic0, ...(topic1 ? [topic1] : []), ...(subject ? [subject] : [])];
+
+  db()
+    .prepare(
+      `INSERT OR REPLACE INTO contract_events
+       (id, ledger, ledger_closed_at, contract_id, tx_hash, topic0, topic1, subject, topics, value)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      evt.id,
+      evt.ledger,
+      closedAt,
+      contractId,
+      txHash,
+      topic0,
+      topic1,
+      subject,
+      JSON.stringify(topics),
+      evt.value !== undefined ? JSON.stringify(evt.value) : null,
+    );
+
+  const currentLast = Number(getState("last_ledger") ?? 0);
+  if (evt.ledger > currentLast) {
+    setState("last_ledger", String(evt.ledger));
+  }
+
+  return {
+    id: evt.id,
+    ledger: evt.ledger,
+    ledgerClosedAt: closedAt,
+    contractId,
+    txHash,
+    topic0,
+    topic1,
+    subject,
+    topics,
+    value: evt.value ?? null,
+  };
+}
+
+/** Clear all indexed events (for testing/reset). */
+export function clearIndexedEvents(): void {
+  db().exec("DELETE FROM contract_events; DELETE FROM indexer_state;");
+}
+

@@ -3,7 +3,9 @@
 mod common;
 
 use common::Fixture;
-use solar_grid::{ContractError, PaymentPlan, PricingSchedule, PricingWindow, RATE_SCALE};
+use solar_grid::{
+    ContractError, InstallmentStatus, PaymentPlan, PricingSchedule, PricingWindow, RATE_SCALE,
+};
 use soroban_sdk::{testutils::Address as _, token, vec, Address, Vec};
 
 // ── Delegated payments ───────────────────────────────────────────────────────
@@ -20,10 +22,10 @@ fn delegate_can_pay_until_removed() {
             .try_make_delegated_payment(&meter, &delegate, &100, &PaymentPlan::Daily, &None),
         Err(Ok(ContractError::Unauthorized))
     );
-    fx.client.add_delegate(&meter, &delegate);
+    fx.client.add_delegate(&meter, &delegate, &2, &0);
     assert_eq!(
-        fx.client.get_delegates(&meter),
-        vec![&fx.env, delegate.clone()]
+        fx.client.get_delegates(&meter).get(0).unwrap().delegated_address,
+        delegate
     );
 
     fx.client
@@ -47,7 +49,7 @@ fn delegated_payment_validates_amount_and_pause() {
     let fx = Fixture::new();
     let (meter, _owner) = fx.register("DLG2");
     let delegate = Address::generate(&fx.env);
-    fx.client.add_delegate(&meter, &delegate);
+    fx.client.add_delegate(&meter, &delegate, &2, &0);
     assert_eq!(
         fx.client
             .try_make_delegated_payment(&meter, &delegate, &0, &PaymentPlan::Daily, &None),
@@ -312,6 +314,53 @@ fn refunds_are_capped_by_what_the_payer_paid() {
     fx.advance(86_401);
     fx.client.refund_payment(&meter, &200, &owner, &reason);
     assert_eq!(fx.client.get_payer_refunded(&meter, &owner), 600);
+}
+
+// ── Installment plans ────────────────────────────────────────────────────────
+
+#[test]
+fn installment_plan_pays_due_installment_and_tracks_balance() {
+    let fx = Fixture::new();
+    let (meter, payer) = fx.register("INST");
+    fx.mint(&payer, 10_000);
+
+    let plan_id = fx
+        .client
+        .create_installment_plan(&meter, &payer, &1_000, &4, &DAY);
+    let plan = fx.client.get_installment_plan(&plan_id);
+    assert_eq!(plan.total, 1_000);
+    assert_eq!(plan.paid, 0);
+    assert_eq!(plan.remaining, 1_000);
+
+    // Advance past the first due date and settle the installment.
+    fx.advance(DAY + 1);
+    let before = fx.token_client().balance(&payer);
+    fx.client.pay_installment(&plan_id);
+
+    let plan = fx.client.get_installment_plan(&plan_id);
+    assert_eq!(plan.paid, 250);
+    assert_eq!(plan.remaining, 750);
+    assert_eq!(fx.token_client().balance(&payer), before - 250);
+    assert_eq!(fx.client.get_meter_balance(&meter), 250);
+}
+
+#[test]
+fn missed_installment_defaults_after_grace_window() {
+    let fx = Fixture::new();
+    let (meter, payer) = fx.register("INSTD");
+    fx.mint(&payer, 10_000);
+
+    let plan_id = fx
+        .client
+        .create_installment_plan(&meter, &payer, &1_000, &4, &DAY);
+
+    // Skip the due date and the grace window without paying.
+    fx.advance(DAY * 2 + 1);
+    fx.client.process_due_installments();
+    assert_eq!(
+        fx.client.get_installment_plan(&plan_id).status,
+        InstallmentStatus::Defaulted
+    );
 }
 
 // ── Multi-asset ──────────────────────────────────────────────────────────────

@@ -214,5 +214,68 @@
     "dismiss": "تجاهل",
     "estimatedSavings": "التوفير الأسبوعي المقدّر",
     "actualSavings": "التوفير الأسبوعي الفعلي"
+  },
+  "voiceAssistant": {
+    "title": "المساعد الصوتي",
+    "description": "تحقّق من رصيد عدّادك واستهلاكك وأجرِ المدفوعات باستخدام الأوامر الصوتية عبر Alexa أو Google Assistant.",
+    "enable": "تفعيل المساعد الصوتي",
+    "disable": "تعطيل المساعد الصوتي",
+    "enabled": "المساعد الصوتي مفعّل",
+    "disabled": "المساعد الصوتي معطّل",
+    "linkAccount": "ربط الحساب",
+    "unlinkAccount": "إلغاء ربط الحساب",
+    "linked": "تم ربط الحساب",
+    "notLinked": "الحساب غير مرتبط",
+    "linking": "جارٍ ربط الحساب…",
+    "linkSuccess": "تم ربط حسابك بنجاح. يمكنك الآن استخدام الأوامر الصوتية.",
+    "linkFailed": "فشل ربط الحساب. يرجى المحاولة مرة أخرى.",
+    "unlinkSuccess": "تم إلغاء ربط حسابك.",
+    "unlinkFailed": "فشل إلغاء ربط الحساب. يرجى المحاولة مرة أخرى.",
+    "providers": {
+      "alexa": "Amazon Alexa",
+      "google": "Google Assistant"
+    },
+    "commands": {
+      "title": "الأوامر الصوتية المدعومة",
+      "checkBalance": "تحقّق من الرصيد",
+      "checkBalanceExample": "«أليكسا، ما هو رصيد عدّادي؟»",
+      "checkUsage": "تحقّق من الاستهلاك",
+      "checkUsageExample": "«يا جوجل، كم استهلكت من الطاقة هذا الأسبوع؟»",
+      "makePayment": "إجراء دفعة",
+      "makePaymentExample": "«أليكسا، ادفع 10 XLM لعدّادي»",
+      "meterStatus": "حالة العدّاد",
+      "meterStatusExample": "«يا جوجل، ما هي حالة عدّادي؟»"
+    },
+    "payment": {
+      "title": "تأكيد الدفع الصوتي",
+      "confirmPrompt": "هل تريد دفع {amount} XLM للعدّاد {meterId}؟",
+      "confirm": "تأكيد الدفع",
+      "cancel": "إلغاء الدفع",
+      "confirmed": "تم تأكيد الدفع بنجاح.",
+      "cancelled": "تم إلغاء الدفع.",
+      "failed": "فشل الدفع. يرجى المحاولة مرة أخرى.",
+      "requiresConfirmation": "تتطلب المدفوعات الصوتية تأكيدًا قبل التنفيذ.",
+      "pinPrompt": "أدخل رمز PIN المكوّن من 4 أرقام لتأكيد الدفع.",
+      "pinLabel": "رمز PIN",
+      "pinInvalid": "رمز PIN غير صالح. يرجى المحاولة مرة أخرى.",
+      "amountLimit": "الحد الأقصى لمبلغ الدفع الصوتي هو {max} XLM."
+    },
+    "language": {
+      "title": "لغة المساعد الصوتي",
+      "label": "اللغة",
+      "auto": "تلقائي (حسب لغة الجهاز)",
+      "updated": "تم تحديث لغة المساعد الصوتي."
+    },
+    "responses": {
+      "balance": "رصيد عدّادك هو {balance} XLM.",
+      "usage": "لقد استهلكت {units} كيلوواط ساعة هذا الأسبوع.",
+      "status": "عدّادك {status} حاليًا.",
+      "paymentSuccess": "تمت معالجة دفعتك بمبلغ {amount} XLM بنجاح.",
+      "notUnderstood": "عذرًا، لم أفهم ذلك. حاول أن تقول: تحقّق من الرصيد، أو الاستهلاك، أو إجراء دفعة.",
+      "error": "حدث خطأ. يرجى المحاولة مرة أخرى لاحقًا."
+    },
+    "ariaVoiceAssistant": "إعدادات المساعد الصوتي",
+    "ariaLinkAccount": "ربط حساب المساعد الصوتي",
+    "ariaConfirmPayment": "تأكيد الدفع الصوتي"
   }
 }

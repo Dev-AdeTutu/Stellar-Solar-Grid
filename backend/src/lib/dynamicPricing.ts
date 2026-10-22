@@ -7,6 +7,15 @@
 
 export type PriceTier = "off-peak" | "standard" | "peak";
 
+export type Season = "spring" | "summer" | "fall" | "winter";
+
+export type SeasonalRate = {
+  season: Season;
+  startDate: string;
+  endDate: string;
+  multiplier: number;
+};
+
 export type PricePoint = {
   timestamp: string;
   pricePerKwh: number;
@@ -14,6 +23,8 @@ export type PricePoint = {
   supplyKwh: number;
   demandKwh: number;
   supplyDemandRatio: number;
+  season: Season | null;
+  seasonMultiplier: number;
 };
 
 export type PricingConfig = {
@@ -40,10 +51,60 @@ const DEFAULT_CONFIG: PricingConfig = {
 
 let config: PricingConfig = { ...DEFAULT_CONFIG };
 
+let seasonalRates: SeasonalRate[] = [];
+
+export function setSeasonalRates(rates: SeasonalRate[]): SeasonalRate[] {
+  seasonalRates = rates.map((rate) => ({ ...rate }));
+  return getSeasonalRates();
+}
+
+export function getSeasonalRates(): SeasonalRate[] {
+  return seasonalRates.map((rate) => ({ ...rate }));
+}
+
+export function getActiveSeason(now = new Date()): SeasonalRate | null {
+  const time = now.getTime();
+  for (const rate of seasonalRates) {
+    const start = new Date(rate.startDate).getTime();
+    const end = new Date(rate.endDate).getTime();
+    if (Number.isNaN(start) || Number.isNaN(end)) continue;
+    if (time >= start && time <= end) return { ...rate };
+  }
+  return null;
+}
+
 const priceHistory: PricePoint[] = [];
 const MAX_HISTORY = 672; // 7 days × 96 intervals/day
 
 let currentPrice: PricePoint | null = null;
+import { EventEmitter } from "node:events";
+
+export const pricingEvents = new EventEmitter();
+
+let currentMultiplier = 1.0;
+let activePricingRule = "balanced_demand";
+
+export function getPricingMultiplier(): number {
+  return currentMultiplier;
+}
+
+export function getCurrentSeason(now = new Date()): { season: string; multiplier?: number } {
+  const active = getActiveSeason(now);
+  if (active) return { season: String(active.season), multiplier: active.multiplier };
+  const month = now.getUTCMonth();
+  const season = month >= 2 && month <= 4 ? "spring" : month >= 5 && month <= 7 ? "summer" : month >= 8 && month <= 10 ? "fall" : "winter";
+  return { season, multiplier: 1.0 };
+}
+
+export function updatePricingMultiplier(multiplier: number, rule = "admin_override"): PricePoint {
+  currentMultiplier = Math.max(0.1, Math.min(10.0, multiplier));
+  activePricingRule = rule;
+  const current = getCurrentPrice() ?? calculatePrice(100, 100);
+  const point = calculatePrice(current.supplyKwh, current.demandKwh);
+  recordPrice(point);
+  return point;
+}
+
 let schedulerTimer: NodeJS.Timeout | null = null;
 
 export function getTier(hour: number): PriceTier {
@@ -67,7 +128,10 @@ export function calculatePrice(supplyKwh: number, demandKwh: number, now = new D
   // Demand pressure: price rises when demand > supply, falls when supply > demand
   const demandMultiplier = Math.max(0.5, Math.min(2.0, ratio));
 
-  const rawPrice = config.basePrice * tierMultiplier * demandMultiplier;
+  const activeSeason = getActiveSeason(now);
+  const seasonMultiplier = activeSeason ? activeSeason.multiplier : 1.0;
+
+  const rawPrice = config.basePrice * tierMultiplier * demandMultiplier * seasonMultiplier * currentMultiplier;
   const pricePerKwh = Math.max(config.minPrice, Math.min(config.maxPrice, rawPrice));
 
   return {
@@ -77,6 +141,8 @@ export function calculatePrice(supplyKwh: number, demandKwh: number, now = new D
     supplyKwh,
     demandKwh,
     supplyDemandRatio: Number(ratio.toFixed(4)),
+    season: activeSeason ? activeSeason.season : null,
+    seasonMultiplier,
   };
 }
 
@@ -84,6 +150,12 @@ export function recordPrice(point: PricePoint): void {
   priceHistory.push(point);
   if (priceHistory.length > MAX_HISTORY) priceHistory.shift();
   currentPrice = point;
+  pricingEvents.emit("PriceUpdated", {
+    pricePerKwh: point.pricePerKwh,
+    multiplier: currentMultiplier,
+    rule: activePricingRule,
+    timestamp: point.timestamp,
+  });
 }
 
 export function getCurrentPrice(): PricePoint | null {

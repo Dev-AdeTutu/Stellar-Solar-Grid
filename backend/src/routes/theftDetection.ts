@@ -5,24 +5,28 @@ import {
   getTheftInvestigationHistory,
   listTheftAlerts,
   updateTheftInvestigation,
+  type TheftAlertSource,
   type TheftAlertStatus,
 } from "../lib/theftDetection.js";
 
 export const theftDetectionRouter = Router();
 const STATUSES: TheftAlertStatus[] = ["open", "investigating", "resolved", "false_positive"];
+const SOURCES: TheftAlertSource[] = ["cloud", "edge"];
 
 theftDetectionRouter.use(requireAdminKey);
 
 theftDetectionRouter.get("/alerts", (req, res) => {
   const status = req.query.status as TheftAlertStatus | undefined;
   if (status && !STATUSES.includes(status)) return res.status(400).json({ error: "invalid status" });
+  const source = req.query.source as TheftAlertSource | undefined;
+  if (source && !SOURCES.includes(source)) return res.status(400).json({ error: `source must be one of ${SOURCES.join(", ")}` });
   const limit = Number(req.query.limit ?? 50);
   const offset = Number(req.query.offset ?? 0);
   if (!Number.isInteger(limit) || limit < 1 || !Number.isInteger(offset) || offset < 0) {
     return res.status(400).json({ error: "limit and offset must be valid non-negative integers" });
   }
   res.setHeader("Cache-Control", "no-store");
-  res.json(listTheftAlerts({ status, limit, offset }));
+  res.json(listTheftAlerts({ status, source, limit, offset }));
 });
 
 theftDetectionRouter.get("/alerts/:id/investigation", (req, res) => {

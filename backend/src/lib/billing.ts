@@ -26,6 +26,7 @@ import { createTextPdf } from "./pdf.js";
 import { sendNotificationEmail } from "./emailNotifications.js";
 import { logger } from "./logger.js";
 import { getMemberDiscountPercent } from "./communities.js";
+import { stellarService, adminInvoke } from "./stellar.js";
 
 const DB_PATH = process.env.BILLING_DB_PATH ?? path.resolve(process.cwd(), "data", "billing.sqlite");
 const PDF_DIR = process.env.BILLING_PDF_DIR ?? path.resolve(process.cwd(), "data", "bills");
@@ -42,6 +43,9 @@ export type BillingAccount = {
   stellar_address: string | null;
   created_at: string;
   updated_at: string;
+  billing_cycle_start?: string | null;
+  next_billing_date?: string | null;
+  last_reminder_sent?: string | null;
 };
 
 export type Bill = {
@@ -99,7 +103,10 @@ function db(): Database.Database {
         name TEXT,
         stellar_address TEXT,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        billing_cycle_start TEXT,
+        next_billing_date TEXT,
+        last_reminder_sent TEXT
       );
       CREATE TABLE IF NOT EXISTS bills (
         id TEXT PRIMARY KEY,
@@ -137,6 +144,18 @@ function db(): Database.Database {
     if (!billColumns.has("discount_amount")) {
       _db.exec("ALTER TABLE bills ADD COLUMN discount_amount INTEGER NOT NULL DEFAULT 0");
     }
+    const accountColumns = new Set(
+      (_db.pragma("table_info(billing_accounts)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!accountColumns.has("billing_cycle_start")) {
+      _db.exec("ALTER TABLE billing_accounts ADD COLUMN billing_cycle_start TEXT");
+    }
+    if (!accountColumns.has("next_billing_date")) {
+      _db.exec("ALTER TABLE billing_accounts ADD COLUMN next_billing_date TEXT");
+    }
+    if (!accountColumns.has("last_reminder_sent")) {
+      _db.exec("ALTER TABLE billing_accounts ADD COLUMN last_reminder_sent TEXT");
+    }
   }
   return _db;
 }
@@ -173,21 +192,29 @@ export function upsertBillingAccount(input: {
   email?: string | null;
   name?: string | null;
   stellarAddress?: string | null;
+  billingCycleStart?: string | null;
+  nextBillingDate?: string | null;
 }): BillingAccount {
   const now = new Date().toISOString();
+  const cycleStart = input.billingCycleStart ?? now;
+  const nextDate = input.nextBillingDate ?? new Date(new Date(cycleStart).getTime() + 30 * 86_400_000).toISOString();
   db()
     .prepare(
-      `INSERT INTO billing_accounts (meter_id, email, name, stellar_address, created_at, updated_at)
-       VALUES (@meterId, @email, @name, @stellarAddress, @now, @now)
+      `INSERT INTO billing_accounts (meter_id, email, name, stellar_address, created_at, updated_at, billing_cycle_start, next_billing_date)
+       VALUES (@meterId, @email, @name, @stellarAddress, @now, @now, @cycleStart, @nextDate)
        ON CONFLICT (meter_id) DO UPDATE SET
          email = excluded.email, name = excluded.name,
-         stellar_address = excluded.stellar_address, updated_at = excluded.updated_at`,
+         stellar_address = excluded.stellar_address, updated_at = excluded.updated_at,
+         billing_cycle_start = COALESCE(excluded.billing_cycle_start, billing_accounts.billing_cycle_start),
+         next_billing_date = COALESCE(excluded.next_billing_date, billing_accounts.next_billing_date)`,
     )
     .run({
       meterId: input.meterId,
       email: input.email ?? null,
       name: input.name ?? null,
       stellarAddress: input.stellarAddress ?? null,
+      cycleStart,
+      nextDate,
       now,
     });
   return getBillingAccount(input.meterId)!;
@@ -197,6 +224,46 @@ export function getBillingAccount(meterId: string): BillingAccount | undefined {
   return db().prepare("SELECT * FROM billing_accounts WHERE meter_id = ?").get(meterId) as
     | BillingAccount
     | undefined;
+}
+
+export function getBillsForMeter(meterId: string): Bill[] {
+  return db()
+    .prepare("SELECT * FROM bills WHERE meter_id = ? ORDER BY period DESC")
+    .all(meterId) as Bill[];
+}
+
+export function getBillingHistory(meterId: string): {
+  meterId: string;
+  account: BillingAccount | null;
+  billing_cycle_start: string;
+  next_billing_date: string;
+  bills: Bill[];
+} {
+  const account = getBillingAccount(meterId) ?? null;
+  const bills = getBillsForMeter(meterId);
+  const now = new Date();
+  const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+  const defaultNext = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString();
+
+  return {
+    meterId,
+    account,
+    billing_cycle_start: account?.billing_cycle_start ?? defaultStart,
+    next_billing_date: account?.next_billing_date ?? defaultNext,
+    bills,
+  };
+}
+
+/**
+ * All billing accounts (i.e. meters) linked to a Stellar address (#1003).
+ * Credit scoring has no per-user meter registry to join against, so the
+ * billing account's `stellar_address` — already the closest thing to a
+ * "which meters does this user pay for" mapping — is reused as that join
+ * key instead of inventing a new ownership table.
+ */
+export function getBillingAccountsByAddress(stellarAddress: string): BillingAccount[] {
+  return db().prepare("SELECT * FROM billing_accounts WHERE stellar_address = ?").all(stellarAddress) as
+    BillingAccount[];
 }
 
 // ── Calculation ──────────────────────────────────────────────────────────────
@@ -535,6 +602,78 @@ export async function runBillingCycle(period = previousPeriod(), now = new Date(
   return result;
 }
 
+/** Check for upcoming billing cycle dates, send reminders (7, 3, 1 days before) and auto-generate invoice on cycle date. */
+export async function checkBillingRemindersAndInvoices(now = new Date()): Promise<{
+  remindersSent: number;
+  invoicesGenerated: number;
+}> {
+  let remindersSent = 0;
+  let invoicesGenerated = 0;
+  const accounts = db().prepare("SELECT * FROM billing_accounts").all() as BillingAccount[];
+
+  for (const acc of accounts) {
+    if (!acc.next_billing_date) {
+      const cycleStart = acc.billing_cycle_start ?? acc.created_at;
+      const nextDate = new Date(new Date(cycleStart).getTime() + 30 * 86_400_000).toISOString();
+      db()
+        .prepare("UPDATE billing_accounts SET billing_cycle_start = ?, next_billing_date = ? WHERE meter_id = ?")
+        .run(cycleStart, nextDate, acc.meter_id);
+      acc.billing_cycle_start = cycleStart;
+      acc.next_billing_date = nextDate;
+    }
+
+    const nextBilling = new Date(acc.next_billing_date);
+    const msUntil = nextBilling.getTime() - now.getTime();
+    const daysUntil = Math.ceil(msUntil / 86_400_000);
+
+    // Send reminders 7, 3, 1 days before
+    if (acc.email && (daysUntil === 7 || daysUntil === 3 || daysUntil === 1)) {
+      const reminderKey = `${acc.next_billing_date}:${daysUntil}`;
+      if (acc.last_reminder_sent !== reminderKey) {
+        try {
+          const reminderSubject = `Upcoming Solar Grid Bill Reminder (${daysUntil} day${daysUntil > 1 ? "s" : ""} left)`;
+          const reminderMsg = `Hello ${acc.name ?? "Valued Customer"},\n\nYour next solar meter billing cycle for meter ${acc.meter_id} ends in ${daysUntil} day${daysUntil > 1 ? "s" : ""} on ${acc.next_billing_date}.\n\nAn invoice will be automatically generated upon cycle close.`;
+          await sendNotificationEmail({
+            to: acc.email,
+            event: "billing",
+            subject: reminderSubject,
+            text: reminderMsg,
+            html: `<p>${reminderMsg.replace(/\n\n/g, "</p><p>")}</p>`,
+          });
+          db()
+            .prepare("UPDATE billing_accounts SET last_reminder_sent = ? WHERE meter_id = ?")
+            .run(reminderKey, acc.meter_id);
+          remindersSent++;
+        } catch (e) {
+          logger.warn("Failed to send billing reminder email", { error: e });
+        }
+      }
+    }
+
+    // Auto-generate invoice when cycle completes
+    if (now.getTime() >= nextBilling.getTime()) {
+      const period = previousPeriod(now);
+      try {
+        const { created } = generateBill(acc.meter_id, period, now);
+        if (created) invoicesGenerated++;
+      } catch (err) {
+        logger.warn("Auto-generating bill on cycle close failed", { error: err });
+      }
+
+      // Advance cycle
+      const newStart = acc.next_billing_date;
+      const newNext = new Date(new Date(newStart).getTime() + 30 * 86_400_000).toISOString();
+      db()
+        .prepare(
+          "UPDATE billing_accounts SET billing_cycle_start = ?, next_billing_date = ?, last_reminder_sent = NULL WHERE meter_id = ?",
+        )
+        .run(newStart, newNext, acc.meter_id);
+    }
+  }
+
+  return { remindersSent, invoicesGenerated };
+}
+
 /** Record payment against a bill. Returns undefined if the bill does not exist. */
 export function markBillPaid(id: string, txHash: string | null, now = new Date()): Bill | undefined {
   const bill = getBill(id);
@@ -556,12 +695,15 @@ let running = false;
 /**
  * Checks hourly; on the 1st of the month (UTC) runs the cycle for the
  * previous month. The unique (meter_id, period) constraint makes repeated
- * checks on the same day — or a restart mid-run — safe.
+ * checks on the same day — or a restart mid-run — safe. Also executes automated
+ * billing reminder checks and cycle completions.
  */
 export async function billingTick(now = new Date()): Promise<BillingRunResult | null> {
-  if (now.getUTCDate() !== 1 || running) return null;
+  if (running) return null;
   running = true;
   try {
+    await checkBillingRemindersAndInvoices(now);
+    if (now.getUTCDate() !== 1) return null;
     return await runBillingCycle(previousPeriod(now), now);
   } catch (err) {
     logger.error("Billing cycle failed", { error: err instanceof Error ? err.message : String(err) });
@@ -581,4 +723,123 @@ export function startBillingScheduler(): void {
 export function stopBillingScheduler(): void {
   if (schedulerTimer) clearInterval(schedulerTimer);
   schedulerTimer = undefined;
+}
+
+// ── Installment plans (#987) ─────────────────────────────────────────────────
+
+export type InstallmentScheduleEntry = {
+  index: number;
+  due_at: string;
+  amount: number;
+  paid_at: string | null;
+  tx_hash: string | null;
+};
+
+export type InstallmentPlan = {
+  id: string;
+  meter_id: string;
+  payer: string;
+  total: number;
+  paid: number;
+  remaining: number;
+  installments: number;
+  grace_secs: number;
+  next_due: string;
+  schedule: InstallmentScheduleEntry[];
+  status: "active" | "completed" | "defaulted";
+  created_at: string;
+  updated_at: string;
+};
+
+export type CreateInstallmentPlanInput = {
+  meterId: string;
+  payer: string;
+  total: number;
+  installments: number;
+  graceSecs?: number;
+};
+
+/** Fetch a single installment plan from the contract. */
+export async function getInstallmentPlan(planId: string): Promise<InstallmentPlan | undefined> {
+  const plan = await stellarService.getInstallmentPlan(planId);
+  return (plan as InstallmentPlan | undefined) ?? undefined;
+}
+
+/** List all installment plans belonging to a payer. */
+export async function listPayerInstallments(payer: string): Promise<InstallmentPlan[]> {
+  const plans = await stellarService.listPayerInstallments(payer);
+  return (plans as InstallmentPlan[]) ?? [];
+}
+
+/** Create a new installment plan on-chain for a meter purchase or upgrade. */
+export async function createInstallmentPlan(input: CreateInstallmentPlanInput): Promise<InstallmentPlan> {
+  const plan = await adminInvoke("create_installment_plan", {
+    meter_id: input.meterId,
+    payer: input.payer,
+    total: input.total,
+    installments: input.installments,
+    grace_secs: input.graceSecs ?? Number(process.env.INSTALLMENT_GRACE_SECS ?? 3 * 86_400),
+  });
+  return plan as InstallmentPlan;
+}
+
+/**
+ * Process the given plans, deducting any installment that is due (and past
+ * its grace period) from the payer's balance. Returns the updated plans.
+ */
+export async function processDueInstallments(planIds: string[]): Promise<InstallmentPlan[]> {
+  if (planIds.length === 0) return [];
+  const result = await adminInvoke("process_due_installments", { plan_ids: planIds });
+  return (result as InstallmentPlan[]) ?? [];
+}
+
+const INSTALLMENT_SCHEDULER_INTERVAL_MS = Number(
+  process.env.INSTALLMENT_SCHEDULER_INTERVAL_MS ?? 60 * 60 * 1000,
+);
+
+let installmentSchedulerTimer: NodeJS.Timeout | undefined;
+let installmentRunning = false;
+
+/**
+ * Checks hourly for active plans whose next installment is due (including the
+ * grace period) and asks the contract to process them. Mirrors the billing
+ * scheduler: safe to run repeatedly, and unref'd so it never blocks shutdown.
+ */
+export async function installmentTick(now = new Date()): Promise<InstallmentPlan[]> {
+  if (installmentRunning) return [];
+  installmentRunning = true;
+  try {
+    const active = (await stellarService.listActiveInstallmentPlans()) as InstallmentPlan[];
+    const due = (active ?? []).filter((plan) => {
+      if (plan.status !== "active") return false;
+      const dueAt = new Date(plan.next_due).getTime() + (plan.grace_secs ?? 0) * 1000;
+      return Number.isFinite(dueAt) && dueAt <= now.getTime();
+    });
+    if (due.length === 0) return [];
+    const processed = await processDueInstallments(due.map((plan) => plan.id));
+    logger.info("Installment processing complete", { processed: processed.length });
+    return processed;
+  } catch (err) {
+    logger.error("Installment processing failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  } finally {
+    installmentRunning = false;
+  }
+}
+
+export function startInstallmentScheduler(): void {
+  if (installmentSchedulerTimer || process.env.INSTALLMENT_ENABLED === "false") return;
+  void installmentTick();
+  installmentSchedulerTimer = setInterval(
+    () => void installmentTick(),
+    INSTALLMENT_SCHEDULER_INTERVAL_MS,
+  );
+  installmentSchedulerTimer.unref?.();
+}
+
+export function stopInstallmentScheduler(): void {
+  if (installmentSchedulerTimer) clearInterval(installmentSchedulerTimer);
+  installmentSchedulerTimer = undefined;
 }

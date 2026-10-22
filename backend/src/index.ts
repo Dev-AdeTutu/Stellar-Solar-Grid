@@ -1,5 +1,4 @@
 import "dotenv/config";
-import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createRequire } from "module";
@@ -22,6 +21,10 @@ import { receiptsRouter } from "./routes/receipts.js";
 import { certificatesRouter } from "./routes/certificates.js";
 import { createMeterQrRouter } from "./routes/meterQr.js";
 import { webhookRouter } from "./routes/webhooks.js";
+import { complianceRouter, complianceMonitor } from "./routes/compliance.js";
+import { benchmarkingRouter } from "./routes/benchmarking.js";
+import { educationRouter } from "./routes/education.js";
+import { startIoTBridge } from "./iot/bridge.js";
 import { auditRouter } from "./routes/audit.js";
 import { socialRouter } from "./routes/social.js";
 import { startLeaderboardScheduler } from "./lib/social.js";
@@ -43,7 +46,6 @@ import { loadBalancingRouter } from "./routes/loadBalancing.js";
 import { twoFactorRouter } from "./routes/twoFactor.js";
 import { tradingRouter, attachTradingWebSocket } from "./routes/trading.js";
 import { orderBookRouter, attachOrderBookWebSocket } from "./routes/orderBook.js";
-import { startIoTBridge } from "./iot/bridge.js";
 import { pushSubscriptionsRouter } from "./routes/pushSubscriptions.js";
 import { solarRouter } from "./routes/solar.js";
 import { weatherRouter } from "./routes/weather.js";
@@ -57,22 +59,34 @@ import { meterMapRouter } from "./routes/meterMap.js";
 import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
+import { emergencyContactsRouter } from "./routes/emergencyContacts.js";
+import { supportTicketsRouter } from "./routes/supportTickets.js";
+import { creditScoreRouter } from "./routes/creditScore.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import forecastRouter from "./routes/forecast.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { challengesRouter, startChallengeScheduler } from "./routes/challenges.js";
+import { createDisasterRecoveryRouter } from "./routes/disasterRecovery.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
+import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
+import { startVoiceTokenPruner, stopVoiceTokenPruner } from "./lib/voiceAssistant.js";
+import { outagesRouter } from "./routes/outages.js";
 import { widgetsRouter } from "./routes/widgets.js";
 import arbitrageBotRouter from "./routes/arbitrageBot.js";
-import { startBillingScheduler } from "./lib/billing.js";
+import { startBillingScheduler, startInstallmentScheduler } from "./lib/billing.js";
 import { startCompetitionScheduler } from "./lib/competitions.js";
 import { startEnergyForecastRetraining } from "./lib/energyForecast.js";
 import { initPriceHeatmap, startPriceSimulation } from "./lib/priceHeatmap.js";
 import { consumptionAnalyticsRouter } from "./routes/consumptionAnalytics.js";
 import { recsRouter } from "./routes/recs.js";
+import { leasesRouter } from "./routes/leases.js";
+import { chatbotRouter } from "./routes/chatbot.js";
+import { complianceReportsRouter } from "./routes/complianceReports.js";
 import { portfolioRouter } from "./routes/portfolio.js";
 import { vppRouter } from "./routes/vpp.js";
+import { gridServicesRouter } from "./routes/gridServices.js";
 import { setRelaySender, startSmartHomeScheduler } from "./lib/smartHome.js";
 import { startHealthMonitor } from "./lib/meterHealth.js";
 import { startResilienceMonitor } from "./lib/gridResilience.js";
@@ -80,11 +94,13 @@ import { gridResilienceRouter } from "./routes/gridResilience.js";
 import { privacyRouter } from "./routes/privacy.js";
 import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
+import { startScheduleExecutor } from "./iot/scheduleExecutor.js";
+import { startSelfHealing, stopSelfHealing } from "./iot/selfHealing.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
 import { register, updateSqlitePoolMetrics } from "./lib/metrics.js";
-import { writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
+import { readLimiter, writeLimiter, paymentsLimiter } from "./middleware/rateLimit.js";
 import { payerRateLimiter } from "./middleware/payerRateLimit.js";
 import { globalRateLimiter } from "./middleware/globalRateLimit.js";
 import { sanitiseBody } from "./middleware/sanitise.js";
@@ -115,6 +131,19 @@ import { _stopEvictionTimer } from "./middleware/idempotency.js";
 import { buildHealthResponse } from "./lib/health.js";
 import { isCorsOriginAllowed, parseCorsOrigins } from "./config/cors.js";
 import { startTheftMonitor } from "./lib/theftDetection.js";
+import { workOrdersRouter } from "./routes/workOrders.js";
+import { surveysRouter } from "./routes/surveys.js";
+import { lifespanRouter } from "./routes/lifespan.js";
+import { capacityPlanningRouter } from "./routes/capacityPlanning.js";
+import { storageOptimizationRouter } from "./routes/storageOptimization.js";
+import { impactRouter } from "./routes/impact.js";
+import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
+import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
+import { shadowsRouter } from "./routes/shadows.js";
+import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
+// #1046: federated learning coordinator
+import { federatedRouter } from "./routes/federated.js";
+import { startFederatedCoordinator, stopFederatedCoordinator } from "./lib/federatedLearning.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -172,9 +201,16 @@ interface MeterFirmware {
   reportedAt: string;
 }
 
+app.use(complianceMonitor);
+app.use("/api/compliance", complianceRouter);
+app.use("/api/benchmarking", benchmarkingRouter);
+app.use("/api/education", educationRouter);
 app.use("/api/meters", createMeterRouter(stellarService));
 app.use("/api/payments", paymentsRouter);
 app.use("/api/webhooks", webhookRouter);
+app.use("/api/lake", lakeRouter);
+app.use("/api/algos", algosRouter);
+app.use("/api/batch", batchRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/social", socialRouter);
 startLeaderboardScheduler();
@@ -193,13 +229,20 @@ app.use("/api/admin", writeLimiter, adminLoginRouter);
 app.use("/api/meters/map", meterMapRouter);
 app.use("/api/keys", writeLimiter, apiKeysRouter);
 app.use("/api/meters", meterHealthRouter);
+app.use("/api/users/emergency-contacts", emergencyContactsRouter);
+app.use("/api/users", writeLimiter, creditScoreRouter);
 app.use("/api/meters", predictionRouter);
+// #982: weather-aware forecast endpoint (GET /api/meters/:meterId/forecast)
+app.use("/api/meters", createWeatherForecastRouter());
+// #983: appliance breakdown endpoint (GET /api/meters/:meterId/appliances)
+app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // #998: meter lifespan & depreciation tracking
 app.use("/api/meters", meterDepreciationRouter);
 startDepreciationMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
+app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/export", exportRouter);
@@ -231,16 +274,49 @@ app.use("/api/widgets", widgetsRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
+// #1059: gamified energy challenges
+app.use("/api/challenges", challengesRouter);
+startChallengeScheduler();
+// #1060: disaster recovery automation
+app.use("/api/dr", createDisasterRecoveryRouter());
 app.use("/api/communities", communitiesRouter);
+// #968: Customer support ticketing
+app.use("/api/tickets", writeLimiter, supportTicketsRouter);
 app.use("/api/smart-home", smartHomeRouter);
+// #989: voice assistant (Alexa / Google Assistant) skill endpoints
+app.use("/api/voice", readLimiter, voiceAssistantRouter);
+app.use("/api/voice/payments", writeLimiter, voiceAssistantRouter);
+startVoiceTokenPruner();
 app.use("/api/forecast", forecastRouter);
+// #1079: meter lifespan extension recommendations
+app.use("/api/lifespan", tieredRateLimiter, lifespanRouter);
+// #1050: predictive grid capacity planning
+app.use("/api/capacity-planning", capacityPlanningRouter);
+// #1053: energy storage optimization AI
+app.use("/api/storage-optimization", storageOptimizationRouter);
+// #1054: social impact measurement
+app.use("/api/impact", impactRouter);
+// #1080: tiered API rate limiting (tier definitions, usage, subscriptions)
+app.use("/api/rate-limits", rateLimitTiersRouter);
+// #1081: meter device shadows (desired vs reported state)
+app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
+// #1082: 7-day energy forecasting dashboard
+app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
+// #1046: federated learning (local training + privacy-preserving aggregation)
+app.use("/api/federated", writeLimiter, federatedRouter);
+startFederatedCoordinator();
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
 startPriceSimulation();
 startBillingScheduler();
+startInstallmentScheduler();
 startCompetitionScheduler();
 startEnergyForecastRetraining();
+// #982: retrain the weather-aware forecasting model alongside the consumption model
+startWeatherForecastRetraining();
+// #983: retrain the appliance disaggregation model
+startApplianceDisaggregationRetraining();
 startSmartHomeScheduler();
 // #877: dynamic pricing
 app.use("/api/pricing", pricingRouter);
@@ -257,9 +333,34 @@ app.use("/api/market/analytics", marketTradeAnalyticsRouter);
 app.use("/api/admin/dashboard", adminDashboardRouter);
 // #941: grid resilience scoring
 app.use("/api/grid", gridResilienceRouter);
+app.use("/api/grid-services", gridServicesRouter);
 startResilienceMonitor();
 // #939: energy data privacy controls
 app.use("/api/privacy", writeLimiter, privacyRouter);
+// #991: contractor/technician portal
+app.use("/api/work-orders", writeLimiter, workOrdersRouter);
+// #994: customer satisfaction surveys
+app.use("/api/surveys", writeLimiter, surveysRouter);
+
+// #1064: Regulatory sandbox mode. The sandbox middleware tags every request
+// with its sandbox context so downstream compliance flows can isolate
+// sandbox traffic from production. Sandbox routes are only mounted when the
+// sandbox environment is explicitly enabled.
+app.use(sandboxMiddleware);
+if (isSandboxEnabled()) {
+  app.use("/api/sandbox", writeLimiter, sandboxRouter);
+  logger.info("Regulatory sandbox mode enabled");
+}
+
+// #979: scheduled maintenance windows
+app.use("/api/maintenance", writeLimiter, maintenanceRouter);
+startMaintenanceScheduler();
+
+// #976: grid outage detection and notifications
+app.use("/api/outages", writeLimiter, outagesRouter);
+
+// #985: automatic meter firmware updates (OTA)
+app.use("/api/firmware", writeLimiter, firmwareRouter);
 
 // â”€â”€ Health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -318,31 +419,45 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
 });
 
+app.listen(PORT, () => {
+  startDataLakeWorker(initUsageEventStore());
 const httpServer = app.listen(PORT, () => {
   logger.info({ port: PORT, network: process.env.STELLAR_NETWORK ?? "testnet" }, "SolarGrid backend started");
   initUsageEventStore();
   startUsageEventRetryWorker();
   logger.info("SolarGrid backend listening", { port: PORT });
   startLimitWatcher(stellarService);
+  startScheduleExecutor(stellarService);
   try {
     startIoTBridge();
   } catch (err) {
     logger.error("Failed to start IoT bridge", { err });
   }
+  // Start IoT self-healing system for automated failure recovery
+  try {
+    startSelfHealing();
+  } catch (err) {
+    logger.error("Failed to start self-healing system", { err });
+  }
+  // #993: listen for diagnostic results reported by meters over MQTT
+  try {
+    startDiagnosticResultListener();
+  } catch (err) {
+    logger.error("Failed to start diagnostic result listener", { err });
+  }
 });
 attachTradingWebSocket(httpServer);
 attachOrderBookWebSocket(httpServer);
-const port = Number(process.env.PORT) || 3000;
-const httpServer = createServer(app);
 attachWidgetLiveUpdates(httpServer);
-httpServer.listen(port, () => {
-  console.log(`Backend listening on port ${port}`);
+
+httpServer.listen(PORT, () => {
+  console.log(`Backend listening on port ${PORT}`);
   startTheftMonitor();
   startEventIndexer();
   startRecommendationWorker();
 });
 
-export { app, pool, recordFirmware, isOutdated, firmwareByMeter };
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator, stopSelfHealing };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);
@@ -352,9 +467,37 @@ app.use("/api/analytics/patterns", consumptionAnalyticsRouter);
 
 // #927: Renewable Energy Credit marketplace
 app.use("/api/recs", recsRouter);
+app.use("/api/leases", leasesRouter);
+app.use("/api/chatbot", chatbotRouter);
+app.use("/api/reports", complianceReportsRouter);
 
 // #926: Energy portfolio management
 app.use("/api/portfolio", portfolioRouter);
 
 // #925: Virtual power plant aggregation
 app.use("/api/vpp", vppRouter);
+
+// #1006: Meter Network Topology Visualization
+import { networkTopologyRouter } from "./routes/networkTopology.js";
+app.use("/api/network", networkTopologyRouter);
+
+// #1005: White-Label Provider Customization
+import { providersBrandingRouter } from "./routes/providersBranding.js";
+app.use("/api/providers", providersBrandingRouter);
+
+// #1004: Blockchain Transaction History Explorer
+import { transactionsRouter } from "./routes/transactions.js";
+app.use("/api/transactions", transactionsRouter);
+
+// #1065: Energy Certificate Authority
+import { energyCertificatesRouter } from "./routes/energyCertificates.js";
+app.use("/api/energy-certificates", writeLimiter, energyCertificatesRouter);
+
+// #1066: Meter Behavioral Economics Nudges
+import { nudgesRouter } from "./routes/nudges.js";
+app.use("/api/nudges", nudgesRouter);
+
+// #1068: Energy Commons Management
+import { commonsRouter } from "./routes/commons.js";
+app.use("/api/commons", writeLimiter, commonsRouter);
+

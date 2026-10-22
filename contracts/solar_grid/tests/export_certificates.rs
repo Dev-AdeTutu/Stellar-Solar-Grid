@@ -1,4 +1,4 @@
-//! Energy export certificates (Issue #871).
+//! Grid export credit system (Issue #990).
 use solar_grid::{ContractError, SolarGridContract, SolarGridContractClient, MAX_CERTIFICATE_PAGE};
 use soroban_sdk::{
     symbol_short,

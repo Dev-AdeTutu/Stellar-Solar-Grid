@@ -7,6 +7,9 @@
  *   POST /api/pricing/tick              — manually trigger a price recalculation (admin)
  *   GET  /api/pricing/config            — current pricing config (admin)
  *   PUT  /api/pricing/config            — update pricing config (admin)
+ *   GET  /api/pricing/season            — current season, multiplier and configured rates
+ *   PUT  /api/pricing/season            — update seasonal rates (admin)
+ *   GET  /api/pricing/season/history    — historical seasonal comparison
  */
 import { Router, Request, Response } from "express";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -19,6 +22,12 @@ import {
   calculatePrice,
   recordPrice,
   predictPrice,
+  getSeasonalRates,
+  setSeasonalRates,
+  getCurrentSeason,
+  updatePricingMultiplier,
+  getPricingMultiplier,
+  SeasonalRate,
 } from "../lib/dynamicPricing.js";
 
 export const pricingRouter = Router();
@@ -30,9 +39,29 @@ pricingRouter.get(
     if (!price) {
       const point = calculatePrice(100, 100);
       recordPrice(point);
-      return res.json(point);
+      return res.json({ ...point, multiplier: getPricingMultiplier() });
     }
-    res.json(price);
+    res.json({ ...price, multiplier: getPricingMultiplier() });
+  }),
+);
+
+pricingRouter.post(
+  "/multiplier",
+  requireAdminKey,
+  asyncHandler(async (req: Request, res: Response) => {
+    const multiplier = Number(req.body?.multiplier);
+    const rule = req.body?.rule ? String(req.body.rule) : "admin_demand_adjustment";
+    if (isNaN(multiplier) || multiplier < 0.1 || multiplier > 10) {
+      return res.status(400).json({ error: "Invalid multiplier (must be between 0.1 and 10)", code: "INVALID_ARGUMENT" });
+    }
+    const updated = updatePricingMultiplier(multiplier, rule);
+    res.json({
+      success: true,
+      multiplier,
+      rule,
+      pricePerKwh: updated.pricePerKwh,
+      timestamp: updated.timestamp,
+    });
   }),
 );
 
@@ -94,5 +123,75 @@ pricingRouter.put(
     }
     const updated = updatePricingConfig(update);
     res.json(updated);
+  }),
+);
+
+pricingRouter.get(
+  "/season",
+  asyncHandler(async (_req: Request, res: Response) => {
+    const rates = getSeasonalRates();
+    const current = getCurrentSeason();
+    res.json({
+      season: current ? current.season : null,
+      multiplier: current ? current.multiplier : 1,
+      rates,
+    });
+  }),
+);
+
+pricingRouter.put(
+  "/season",
+  requireAdminKey,
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = req.body as { rates?: unknown };
+    if (!Array.isArray(body.rates)) {
+      return res.status(400).json({ error: "rates must be an array of seasonal rates" });
+    }
+    const rates: SeasonalRate[] = [];
+    for (const entry of body.rates) {
+      const r = entry as Record<string, unknown>;
+      const season = String(r.season ?? "").trim();
+      const startDate = Number(r.startDate);
+      const endDate = Number(r.endDate);
+      const multiplier = Number(r.multiplier);
+      if (!season) {
+        return res.status(400).json({ error: "each rate requires a season name" });
+      }
+      if (!Number.isFinite(startDate) || !Number.isFinite(endDate)) {
+        return res.status(400).json({ error: `season ${season} requires numeric startDate and endDate` });
+      }
+      if (!Number.isFinite(multiplier) || multiplier <= 0) {
+        return res.status(400).json({ error: `season ${season} multiplier must be a positive number` });
+      }
+      rates.push({ season, startDate, endDate, multiplier });
+    }
+    const updated = setSeasonalRates(rates);
+    res.json({ rates: updated });
+  }),
+);
+
+pricingRouter.get(
+  "/season/history",
+  asyncHandler(async (req: Request, res: Response) => {
+    const years = Math.min(Math.max(Number(req.query.years ?? 1), 1), 10);
+    const history = getPriceHistory(672);
+    const cutoff = Date.now() - years * 365 * 24 * 60 * 60 * 1000;
+    const buckets = new Map<string, { total: number; count: number }>();
+    for (const point of history) {
+      const ts = new Date(point.timestamp).getTime();
+      if (!Number.isFinite(ts) || ts < cutoff) continue;
+      const season = getCurrentSeason(new Date(ts));
+      const key = season ? season.season : "unknown";
+      const bucket = buckets.get(key) ?? { total: 0, count: 0 };
+      bucket.total += point.price;
+      bucket.count += 1;
+      buckets.set(key, bucket);
+    }
+    const comparison = Array.from(buckets.entries()).map(([season, { total, count }]) => ({
+      season,
+      averagePrice: count > 0 ? total / count : 0,
+      samples: count,
+    }));
+    res.json({ years, comparison });
   }),
 );

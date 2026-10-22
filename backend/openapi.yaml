@@ -103,6 +103,108 @@ components:
 
     # ── Meter ─────────────────────────────────────────────────────────────────
 
+    ForecastConfidenceBand:
+      type: object
+      description: Confidence interval for a forecasted value (#982)
+      required: [low, high]
+      properties:
+        low: { type: number, description: Lower bound of the prediction interval }
+        high: { type: number, description: Upper bound of the prediction interval }
+
+    ForecastDay:
+      type: object
+      description: A single day of the 7-day usage and solar generation forecast (#982)
+      required: [date, predictedUsageKwh, predictedSolarKwh, usageConfidence, solarConfidence]
+      properties:
+        date: { type: string, format: date }
+        predictedUsageKwh: { type: number, description: Predicted energy consumption in kWh }
+        predictedSolarKwh: { type: number, description: Predicted solar generation in kWh }
+        usageConfidence:
+          $ref: "#/components/schemas/ForecastConfidenceBand"
+        solarConfidence:
+          $ref: "#/components/schemas/ForecastConfidenceBand"
+        temperatureC: { type: number, description: Forecast mean temperature in Celsius }
+        sunlightHours: { type: number, description: Forecast sunlight hours }
+        cloudCoverPct: { type: number, description: Forecast cloud cover percentage }
+        condition: { type: string, description: Weather condition summary }
+
+    CreditAlert:
+      type: object
+      description: Alert raised when the meter is predicted to run out of credit (#982)
+      required: [willRunOut, daysUntilEmpty]
+      properties:
+        willRunOut: { type: boolean }
+        daysUntilEmpty: { type: [integer, "null"], description: Days until predicted credit exhaustion }
+        predictedEmptyDate: { type: [string, "null"], format: date }
+        message: { type: string }
+
+    MeterForecast:
+      type: object
+      description: 7-day weather-based usage and solar generation forecast (#982)
+      required: [meterId, generatedAt, horizonDays, days, creditAlert]
+      properties:
+        meterId: { type: string }
+        generatedAt: { type: string, format: date-time }
+        horizonDays: { type: integer, default: 7 }
+        location:
+          type: object
+          properties:
+            lat: { type: number }
+            lon: { type: number }
+        days:
+          type: array
+          items:
+            $ref: "#/components/schemas/ForecastDay"
+        creditAlert:
+          $ref: "#/components/schemas/CreditAlert"
+        model:
+          $ref: "#/components/schemas/EnergyForecastModel"
+
+    ApplianceUsage:
+      type: object
+      description: Per-appliance energy usage breakdown entry (#983)
+      required: [appliance, usageKwh, sharePct]
+      properties:
+        appliance: { type: string, description: Identified appliance name }
+        usageKwh: { type: number, description: Energy consumed in kWh }
+        sharePct: { type: number, description: Percentage of total consumption }
+        trend:
+          type: string
+          enum: [increasing, decreasing, stable]
+          description: Usage trend relative to the previous period
+        recommendation: { type: string, description: Energy-saving recommendation }
+
+    ApplianceBreakdown:
+      type: object
+      description: Appliance-level energy monitoring breakdown (#983)
+      required: [meterId, generatedAt, totalUsageKwh, appliances]
+      properties:
+        meterId: { type: string }
+        generatedAt: { type: string, format: date-time }
+        totalUsageKwh: { type: number }
+        appliances:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApplianceUsage"
+
+    DiagnosticLog:
+      type: object
+      description: Result of a remote meter diagnostic command (#993)
+      required: [id, meterId, command, status, startedAt]
+      properties:
+        id: { type: integer }
+        meterId: { type: string }
+        command:
+          type: string
+          enum: [reboot, self_test, check_connectivity]
+        status:
+          type: string
+          enum: [pending, running, success, failed]
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: [string, "null"], format: date-time }
+        result: { type: [object, "null"], description: Raw diagnostic result payload }
+        suggestedFix: { type: [string, "null"], description: Suggested remediation for common issue patterns }
+
     MeterBalance:
       type: object
       required: [meter_id, balance, units_used, active]
@@ -309,6 +411,61 @@ components:
           type: string
           nullable: true
 
+    # ── Maintenance ───────────────────────────────────────────────────────────
+
+    MaintenanceWindow:
+      type: object
+      description: A scheduled maintenance window (#979)
+      required: [id, title, description, scheduledStart, scheduledEnd, status, affectedMeters, createdAt]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        scheduledStart:
+          type: string
+          format: date-time
+        scheduledEnd:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [scheduled, in_progress, completed, cancelled]
+        affectedMeters:
+          type: array
+          description: Meter ids impacted by this maintenance window
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateMaintenanceWindowRequest:
+      type: object
+      required: [title, scheduledStart, scheduledEnd]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        scheduledStart:
+          type: string
+          format: date-time
+        scheduledEnd:
+          type: string
+          format: date-time
+        affectedMeters:
+          type: array
+          description: Meter ids impacted by this maintenance window
+          items:
+            type: string
+
     # ── Collaborator ──────────────────────────────────────────────────────────
 
     CollaboratorShare:
@@ -321,6 +478,269 @@ components:
         basisPoints:
           type: integer
           description: Revenue share in basis points (100 = 1%)
+
+    # ── Technician portal (#991) ──────────────────────────────────────────────
+
+    Technician:
+      type: object
+      description: A field technician who can be assigned work orders.
+      required: [id, name, email, active]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+          nullable: true
+        region:
+          type: string
+          nullable: true
+          description: Service region the technician is responsible for
+        skills:
+          type: array
+          items: { type: string }
+          description: e.g. installation, maintenance, meter_repair
+        active:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    WorkOrder:
+      type: object
+      description: An installation or maintenance job assigned to a technician.
+      required: [id, type, status, createdAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [installation, maintenance, repair, inspection]
+        status:
+          type: string
+          enum: [pending, assigned, in_progress, completed, cancelled]
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          default: normal
+        meterId:
+          type: string
+          nullable: true
+          description: Meter the work order relates to
+        customerName:
+          type: string
+          nullable: true
+        address:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        technicianId:
+          type: string
+          nullable: true
+        scheduledFor:
+          type: string
+          format: date-time
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completionNotes:
+          type: string
+          nullable: true
+        photos:
+          type: array
+          items: { type: string, format: uri }
+          description: URLs of uploaded verification photos
+        createdAt:
+          type: string
+          format: date-time
+
+    WorkOrderPhoto:
+      type: object
+      description: A photo uploaded as installation verification evidence.
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+        caption:
+          type: string
+          nullable: true
+        uploadedAt:
+          type: string
+          format: date-time
+
+    # ── Customer satisfaction surveys (#994) ─────────────────────────────────
+
+    Survey:
+      type: object
+      description: A customer satisfaction survey.
+      required: [id, type, status, createdAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [post_payment, post_support, periodic]
+        status:
+          type: string
+          enum: [draft, sent, closed]
+        meterId:
+          type: string
+          nullable: true
+        customerEmail:
+          type: string
+          format: email
+          nullable: true
+        subject:
+          type: string
+          nullable: true
+        questions:
+          type: array
+          items:
+            type: object
+            required: [id, text]
+            properties:
+              id: { type: string }
+              text: { type: string }
+              kind:
+                type: string
+                enum: [nps, rating, free_text]
+        sentAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    SurveyResponse:
+      type: object
+      description: A single customer's answers to a survey.
+      required: [id, surveyId, submittedAt]
+      properties:
+        id:
+          type: string
+        surveyId:
+          type: string
+        meterId:
+          type: string
+          nullable: true
+        npsScore:
+          type: integer
+          minimum: 0
+          maximum: 10
+          nullable: true
+          description: Net Promoter Score answer (0–10)
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          nullable: true
+        comment:
+          type: string
+          nullable: true
+        answers:
+          type: object
+          additionalProperties: true
+        submittedAt:
+          type: string
+          format: date-time
+
+    NpsAnalytics:
+      type: object
+      description: Aggregated satisfaction and Net Promoter Score insights.
+      required: [totalResponses, npsScore]
+      properties:
+        totalResponses:
+          type: integer
+        npsScore:
+          type: number
+          minimum: -100
+          maximum: 100
+          description: Percentage of promoters minus percentage of detractors
+        promoters:
+          type: integer
+          description: Responses scoring 9–10
+        passives:
+          type: integer
+          description: Responses scoring 7–8
+        detractors:
+          type: integer
+          description: Responses scoring 0–6
+        averageRating:
+          type: number
+          nullable: true
+        responseRate:
+          type: number
+          nullable: true
+          description: Responses divided by surveys sent
+        periodStart:
+          type: string
+          format: date-time
+          nullable: true
+        periodEnd:
+          type: string
+          format: date-time
+          nullable: true
+        trend:
+          type: array
+          items:
+            type: object
+            properties:
+              period: { type: string }
+              npsScore: { type: number }
+              responses: { type: integer }
+
+    # ── Seasonal pricing (#992) ──────────────────────────────────────────────
+
+    SeasonalRate:
+      type: object
+      description: A seasonal rate multiplier applied to the base energy price.
+      required: [season, startDate, endDate, multiplier]
+      properties:
+        season:
+          type: string
+          enum: [spring, summer, autumn, winter]
+        startDate:
+          type: string
+          format: date
+          description: Inclusive start of the season (MM-DD or ISO date)
+        endDate:
+          type: string
+          format: date
+          description: Inclusive end of the season (MM-DD or ISO date)
+        multiplier:
+          type: number
+          exclusiveMinimum: 0
+          description: Rate multiplier applied to the base price (1.0 = no change)
+        label:
+          type: string
+          nullable: true
+
+    SeasonalRateHistoryEntry:
+      type: object
+      required: [season, multiplier, appliedAt]
+      properties:
+        season:
+          type: string
+          enum: [spring, summer, autumn, winter]
+        multiplier:
+          type: number
+        appliedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
 
   # ── Shared response components ──────────────────────────────────────────────
 
@@ -620,6 +1040,159 @@ paths:
         "400":
           $ref: "#/components/responses/ValidationError"
 
+  /api/meters/{meterId}/forecast:
+    get:
+      summary: 7-day weather-based usage and solar generation forecast
+      description: |
+        Returns a 7-day forecast of energy consumption and solar generation
+        based on upcoming weather conditions (temperature and sunlight).
+        Includes confidence bands and an alert if the meter is predicted to
+        run out of credit. (#982)
+      operationId: getMeterForecast
+      tags: [meters]
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: days
+          in: query
+          description: Forecast horizon in days (default 7).
+          schema: { type: integer, minimum: 1, maximum: 7, default: 7 }
+      responses:
+        "200":
+          description: 7-day forecast with confidence bands and credit alert
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeterForecast"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "502":
+          description: Weather provider did not return a usable forecast.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/meters/{meterId}/appliances:
+    get:
+      summary: Appliance-level energy usage breakdown
+      description: |
+        Returns per-appliance energy consumption identified via ML
+        disaggregation or sub-metering, including usage trends and
+        energy-saving recommendations. (#983)
+      operationId: getMeterAppliances
+      tags: [meters]
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: period
+          in: query
+          description: Aggregation period for the breakdown.
+          schema: { type: string, enum: [day, week, month], default: week }
+      responses:
+        "200":
+          description: Appliance usage breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApplianceBreakdown"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/meters/{meterId}/diagnostics:
+    post:
+      summary: Trigger a remote meter diagnostic command
+      description: |
+        Sends a diagnostic command to the meter over the network. The meter
+        reports results via MQTT, which are retrievable from the diagnostic
+        logs endpoint. (#993)
+      operationId: runMeterDiagnostics
+      tags: [meters]
+      security:
+        - AdminKey: []
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command:
+                  type: string
+                  enum: [reboot, self_test, check_connectivity]
+      responses:
+        "202":
+          description: Diagnostic command accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiagnosticLog"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/meters/{meterId}/diagnostic-logs:
+    get:
+      summary: Retrieve diagnostic logs for a meter
+      description: |
+        Returns the history of remote diagnostic commands and their results,
+        including suggested fixes for common issue patterns. (#993)
+      operationId: getMeterDiagnosticLogs
+      tags: [meters]
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated diagnostic logs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [logs, page, pageSize, total, hasMore]
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DiagnosticLog"
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /api/meters/{id}/balance:
     get:
       summary: Live meter balance
@@ -678,6 +1251,66 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/meters/{meterId}/exports:
+    get:
+      summary: Grid export history for a meter (Issue #990)
+      description: |
+        Returns paginated grid export records for a meter, including the kWh
+        exported, the credit earned, the applied export rate, and the on-chain
+        settlement transaction hash.  Also returns import/export totals for the
+        meter so the frontend can render an import/export breakdown.
+      operationId: getMeterExports
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+          description: Page number (1-based)
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          description: Exports per page (default 20, max 100)
+      responses:
+        "200":
+          description: Paginated grid export history with import/export totals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [exports, page, pageSize, total, hasMore, totals]
+                properties:
+                  exports:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, meter_id, kwh, credit, rate, received_at, on_chain_tx_hash]
+                      properties:
+                        id: { type: integer }
+                        meter_id: { type: string }
+                        kwh: { type: number, description: Energy exported to the grid in kWh }
+                        credit: { type: string, description: Credit earned in stroops (decimal string) }
+                        rate: { type: string, description: Export rate applied, in stroops per kWh }
+                        received_at: { type: string, format: date-time }
+                        on_chain_tx_hash: { type: string, nullable: true }
+                  page: { type: integer }
+                  pageSize: { type: integer }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+                  totals:
+                    type: object
+                    required: [importKwh, exportKwh, exportCredit]
+                    properties:
+                      importKwh: { type: number, description: Total energy imported by the meter in kWh }
+                      exportKwh: { type: number, description: Total energy exported by the meter in kWh }
+                      exportCredit: { type: string, description: Total export credit earned in stroops (decimal string) }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/meters/{id}/history:
     get:
       summary: Paginated local usage history for a meter
@@ -714,6 +1347,74 @@ paths:
                   hasMore: { type: boolean }
         "400":
           $ref: "#/components/responses/ValidationError"
+
+  /api/meters/{meterId}/power-quality:
+    get:
+      summary: Get power quality metrics for a meter
+      description: |
+        Returns the latest voltage, frequency, and THD readings for a meter,
+        any detected quality issues (sags, swells, harmonics), a historical
+        trend over the requested window, and the configured thresholds (#988).
+      operationId: getMeterPowerQuality
+      parameters:
+        - name: meterId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: days
+          in: query
+          description: Number of days of history to include (default 7)
+          schema: { type: integer, default: 7, minimum: 1, maximum: 90 }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1, minimum: 1 }
+        - name: pageSize
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
+      responses:
+        "200":
+          description: Power quality state and history
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PowerQualityResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      summary: Ingest a power quality sample for a meter (admin only)
+      description: |
+        Records a voltage/frequency/THD sample reported by an IoT power quality
+        sensor. The backend evaluates the sample against configured thresholds
+        and raises alerts when quality drops below acceptable levels (#988).
+      operationId: ingestMeterPowerQuality
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PowerQualitySample"
+      responses:
+        "200":
+          description: Sample recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PowerQualityResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
   /api/meters/{id}/notes:
     get:
@@ -1295,6 +1996,131 @@ paths:
                   code:
                     type: string
 
+  # ── Installments ─────────────────────────────────────────────────────────────
+
+  /api/payments/installments:
+    post:
+      summary: Create an installment payment plan (admin only)
+      description: |
+        Creates a new installment plan for a meter purchase or upgrade. The
+        total amount is split into the requested number of installments, and
+        deductions are scheduled automatically from the payer's balance.
+      operationId: createInstallmentPlan
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInstallmentPlanRequest"
+      responses:
+        "201":
+          description: Installment plan created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlan"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/payments/installments/{planId}:
+    get:
+      summary: Get an installment plan by id
+      operationId: getInstallmentPlan
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Installment plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlan"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/payments/installments/payer/{address}:
+    get:
+      summary: List installment plans for a payer
+      operationId: getInstallmentPlansByPayer
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema: { type: string }
+          description: Stellar account address of the payer
+      responses:
+        "200":
+          description: Installment plans for the payer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlanList"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/payments/installments/{planId}/pay:
+    post:
+      summary: Make a payment toward an installment plan (admin only)
+      description: |
+        Charges the payer's balance for the next installment. When `amount` is
+        omitted the scheduled installment amount is used. Emits an
+        `InstallmentPaid` event on success.
+      operationId: payInstallment
+      security:
+        - AdminKey: []
+      parameters:
+        - name: planId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PayInstallmentRequest"
+      responses:
+        "200":
+          description: Installment paid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstallmentPlan"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/payments/installments/process-due:
+    post:
+      summary: Process all due installments (admin only)
+      description: |
+        Runs the automatic deduction sweep: charges every plan whose `nextDue`
+        has passed, and marks plans as defaulted when the grace period has
+        elapsed without a successful payment. Emits `InstallmentPaid` and
+        `InstallmentDefaulted` events.
+      operationId: processDueInstallments
+      security:
+        - AdminKey: []
+      responses:
+        "200":
+          description: Sweep result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProcessDueInstallmentsResult"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Usage Events ─────────────────────────────────────────────────────────────
 
   /api/usage-events:
@@ -1453,6 +2279,110 @@ paths:
         "404":
           description: Event not found or not in dead-letter state
 
+  # ── Voice Assistant ───────────────────────────────────────────────────────────
+
+  /api/voice/parse:
+    post:
+      summary: Parse a natural-language voice utterance
+      description: |
+        Interprets an Alexa or Google Assistant utterance and returns the
+        recognised intent, extracted slots, confidence and locale.  Used by the
+        voice skills to resolve commands such as "check my balance",
+        "how much energy have I used" and "pay 5 XLM on meter MTR-001".
+      operationId: parseVoiceUtterance
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoiceParseRequest"
+      responses:
+        "200":
+          description: Parsed intent and slots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoiceParseResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/voice/payment/confirm:
+    post:
+      summary: Confirm a pending voice-initiated payment
+      description: |
+        Executes a payment previously proposed by the voice assistant after the
+        user has verbally confirmed it.  Requires the one-time confirmation code
+        issued during the proposal step.
+      operationId: confirmVoicePayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoicePaymentConfirmRequest"
+      responses:
+        "200":
+          description: Payment submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VoicePaymentConfirmResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/voice/payment/cancel:
+    post:
+      summary: Cancel a pending voice-initiated payment
+      description: |
+        Discards a payment proposal created by the voice assistant so it can no
+        longer be confirmed.  Safe to call when no proposal is pending.
+      operationId: cancelVoicePayment
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [meterId]
+              properties:
+                meterId:
+                  type: string
+                  maxLength: 64
+                sessionId:
+                  type: string
+      responses:
+        "200":
+          description: Proposal cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cancelled]
+                properties:
+                  cancelled: { type: boolean }
+                  meterId: { type: string }
+                  speech: { type: string }
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
   # ── Metrics ───────────────────────────────────────────────────────────────────
 
   /api/metrics/summary:
@@ -1482,6 +2412,129 @@ paths:
         "200":
           description: Prometheus metrics text
 
+  # ── Maintenance ───────────────────────────────────────────────────────────────
+
+  /api/maintenance:
+    post:
+      summary: Create a scheduled maintenance window (admin only)
+      description: |
+        Schedules a maintenance window and records the meters it affects.
+        Notification emails are dispatched automatically 48 hours, 24 hours,
+        and 1 hour before `scheduledStart`.
+      operationId: createMaintenanceWindow
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMaintenanceWindowRequest"
+      responses:
+        "201":
+          description: Maintenance window created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/maintenance/upcoming:
+    get:
+      summary: List scheduled maintenance windows
+      description: >
+        Returns maintenance windows whose `scheduledEnd` is in the future,
+        ordered by `scheduledStart` ascending.
+      operationId: getUpcomingMaintenance
+      responses:
+        "200":
+          description: Upcoming maintenance windows
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [windows, count]
+                properties:
+                  windows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MaintenanceWindow"
+                  count:
+                    type: integer
+
+  /api/maintenance/active:
+    get:
+      summary: Get the currently active maintenance window
+      description: >
+        Returns the maintenance window covering the current time, or `null`
+        when no maintenance is in progress. Used by the frontend to render
+        the maintenance banner.
+      operationId: getActiveMaintenance
+      responses:
+        "200":
+          description: Active maintenance window or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [window]
+                properties:
+                  window:
+                    oneOf:
+                      - $ref: "#/components/schemas/MaintenanceWindow"
+                      - type: "null"
+
+  /api/maintenance/{id}:
+    get:
+      summary: Get a maintenance window by id
+      operationId: getMaintenanceWindow
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Maintenance window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MaintenanceWindow"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      summary: Cancel a maintenance window (admin only)
+      operationId: deleteMaintenanceWindow
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Maintenance window cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, id]
+                properties:
+                  deleted: { type: boolean }
+                  id: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Solar ─────────────────────────────────────────────────────────────────────
+
+  /api/solar/forecast:
+=======
   # ── Solar ─────────────────────────────────────────────────────────────────────
 
   /api/solar/forecast:
@@ -1575,6 +2628,347 @@ paths:
                       properties:
                         name: { type: string }
                         peakSunHours: { type: number }
+
+  # ── Work Orders (technician portal, #991) ────────────────────────────────────
+
+  /api/work-orders:
+    post:
+      summary: Create a work order
+      description: |
+        Creates an installation, maintenance, repair, or inspection work order.
+        Optionally assigns it to a technician immediately.
+      operationId: createWorkOrder
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [installation, maintenance, repair, inspection]
+                priority:
+                  type: string
+                  enum: [low, normal, high, urgent]
+                  default: normal
+                meterId: { type: string }
+                customerName: { type: string }
+                address: { type: string }
+                description: { type: string }
+                technicianId: { type: string }
+                scheduledFor: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Work order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/work-orders/assigned/{techId}:
+    get:
+      summary: List a technician's assigned tasks
+      description: Returns all work orders assigned to the given technician.
+      operationId: getAssignedWorkOrders
+      parameters:
+        - name: techId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: status
+          in: query
+          description: Filter by work order status
+          schema:
+            type: string
+            enum: [pending, assigned, in_progress, completed, cancelled]
+      responses:
+        "200":
+          description: Assigned work orders
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workOrders, count]
+                properties:
+                  workOrders:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkOrder"
+                  count: { type: integer }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/work-orders/{id}/complete:
+    patch:
+      summary: Mark a work order complete
+      description: |
+        Marks the work order as completed, records the completion timestamp and
+        optional notes, and stores any verification photos already uploaded.
+      operationId: completeWorkOrder
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                completionNotes: { type: string }
+                photos:
+                  type: array
+                  items: { type: string, format: uri }
+      responses:
+        "200":
+          description: Work order completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/work-orders/{id}/photos:
+    post:
+      summary: Upload installation verification photos
+      description: |
+        Attaches one or more verification photos to a work order. Photos are
+        submitted as URLs (e.g. after direct upload to object storage).
+      operationId: uploadWorkOrderPhotos
+      security:
+        - AdminKey: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [photos]
+              properties:
+                photos:
+                  type: array
+                  minItems: 1
+                  items:
+                    $ref: "#/components/schemas/WorkOrderPhoto"
+      responses:
+        "201":
+          description: Photos attached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkOrder"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Surveys (#994) ───────────────────────────────────────────────────────────
+
+  /api/surveys:
+    post:
+      summary: Create a customer satisfaction survey
+      description: |
+        Creates a survey and, when `send` is true, queues the survey email to
+        the customer. Surveys can also be created automatically after payments
+        or support interactions.
+      operationId: createSurvey
+      security:
+        - AdminKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [post_payment, post_support, periodic]
+                meterId: { type: string }
+                customerEmail: { type: string, format: email }
+                subject: { type: string }
+                send:
+                  type: boolean
+                  default: false
+                questions:
+                  type: array
+                  items:
+                    type: object
+                    required: [id, text]
+                    properties:
+                      id: { type: string }
+                      text: { type: string }
+                      kind:
+                        type: string
+                        enum: [nps, rating, free_text]
+      responses:
+        "201":
+          description: Survey created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Survey"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/surveys/{id}/responses:
+    post:
+      summary: Record a survey response
+      description: Records a customer's answers, including an optional NPS score.
+      operationId: createSurveyResponse
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                npsScore:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                comment: { type: string }
+                answers:
+                  type: object
+                  additionalProperties: true
+      responses:
+        "201":
+          description: Response recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SurveyResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/surveys/analytics:
+    get:
+      summary: Satisfaction and NPS analytics
+      description: |
+        Returns aggregated satisfaction metrics, including the Net Promoter
+        Score, promoter/passive/detractor counts, and an optional trend series.
+      operationId: getSurveyAnalytics
+      security:
+        - AdminKey: []
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [post_payment, post_support, periodic]
+      responses:
+        "200":
+          description: Survey analytics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NpsAnalytics"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  # ── Seasonal pricing (#992) ──────────────────────────────────────────────────
+
+  /api/pricing/season:
+    get:
+      summary: Current seasonal rate
+      description: |
+        Returns the seasonal rate currently in effect based on the current date,
+        along with the effective price after applying the multiplier.
+      operationId: getCurrentSeason
+      responses:
+        "200":
+          description: Current season and rate
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [current, baseRate, effectiveRate]
+                properties:
+                  current:
+                    $ref: "#/components/schemas/SeasonalRate"
+                  baseRate:
+                    type: number
+                    description: Base energy rate before the seasonal multiplier
+                  effectiveRate:
+                    type: number
+                    description: Base rate multiplied by the current seasonal multiplier
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/pricing/season/history:
+    get:
+      summary: Historical seasonal rate comparison
+      description: |
+        Returns the seasonal rates that have applied over time so customers can
+        compare current pricing against previous seasons.
+      operationId: getSeasonalRateHistory
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Seasonal rate history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [history, count]
+                properties:
+                  history:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SeasonalRateHistoryEntry"
+                  count: { type: integer }
+        "400":
+          $ref: "#/components/responses/ValidationError"
 
   /api/weather/energy-forecast:
     get:

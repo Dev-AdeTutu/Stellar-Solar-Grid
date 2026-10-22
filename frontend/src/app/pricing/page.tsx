@@ -8,6 +8,18 @@ const API = env.NEXT_PUBLIC_BACKEND_URL;
 
 type PriceTier = "off-peak" | "standard" | "peak";
 
+type SeasonalRate = {
+  season: string;
+  startDate: string;
+  endDate: string;
+  multiplier: number;
+};
+
+type SeasonalHistoryEntry = {
+  season: string;
+  averagePricePerKwh: number;
+};
+
 type PricePoint = {
   timestamp: string;
   pricePerKwh: number;
@@ -43,18 +55,27 @@ export default function PricingPage() {
   const [current, setCurrent] = useState<PricePoint | null>(null);
   const [history, setHistory] = useState<PricePoint[]>([]);
   const [predictions, setPredictions] = useState<PricePoint[]>([]);
+  const [currentSeason, setCurrentSeason] = useState<SeasonalRate | null>(null);
+  const [seasonalRates, setSeasonalRates] = useState<SeasonalRate[]>([]);
+  const [seasonalHistory, setSeasonalHistory] = useState<SeasonalHistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [cur, hist, pred] = await Promise.all([
+      const [cur, hist, pred, season, rates, seasonHist] = await Promise.all([
         fetch(`${API}/api/pricing/current`).then((r) => (r.ok ? r.json() : Promise.reject())),
         fetch(`${API}/api/pricing/history?limit=48`).then((r) => (r.ok ? r.json() : Promise.reject())),
         fetch(`${API}/api/pricing/predict?hours=12`).then((r) => (r.ok ? r.json() : Promise.reject())),
+        fetch(`${API}/api/pricing/season/current`).then((r) => (r.ok ? r.json() : Promise.reject())),
+        fetch(`${API}/api/pricing/season/rates`).then((r) => (r.ok ? r.json() : Promise.reject())),
+        fetch(`${API}/api/pricing/season/history`).then((r) => (r.ok ? r.json() : Promise.reject())),
       ]);
       setCurrent(cur);
       setHistory(hist.history ?? []);
       setPredictions(pred.predictions ?? []);
+      setCurrentSeason(season ?? null);
+      setSeasonalRates(rates.rates ?? []);
+      setSeasonalHistory(seasonHist.history ?? []);
       setError(null);
     } catch {
       setError("Failed to load pricing data");
@@ -68,6 +89,10 @@ export default function PricingPage() {
   }, [load]);
 
   const maxPrice = Math.max(...history.map((p) => p.pricePerKwh), 0.01);
+  const maxSeasonalPrice = Math.max(
+    ...seasonalHistory.map((s) => s.averagePricePerKwh),
+    0.01
+  );
 
   return (
     <>
@@ -102,6 +127,85 @@ export default function PricingPage() {
                 value={current.supplyDemandRatio.toFixed(2)}
                 sub={current.supplyDemandRatio >= 1 ? "Supply surplus" : "Demand pressure"}
               />
+            </div>
+          </section>
+        )}
+
+        {currentSeason && (
+          <section
+            aria-label="Current season"
+            className="rounded-xl border border-white/10 bg-white/5 p-6 mb-8"
+          >
+            <div className="flex items-baseline gap-3 mb-2">
+              <span className="text-2xl font-semibold capitalize">{currentSeason.season}</span>
+              <span className="text-sm opacity-70">
+                {currentSeason.multiplier.toFixed(2)}× multiplier
+              </span>
+            </div>
+            <p className="text-xs opacity-60">
+              {new Date(currentSeason.startDate).toLocaleDateString()} –{" "}
+              {new Date(currentSeason.endDate).toLocaleDateString()}
+            </p>
+          </section>
+        )}
+
+        {seasonalRates.length > 0 && (
+          <section aria-label="Seasonal rates" className="mb-8">
+            <h2 className="text-lg font-semibold mb-3">Configured Seasons</h2>
+            <div className="rounded-xl border border-white/10 bg-white/5 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase tracking-wide opacity-60">
+                    <th className="px-4 py-2">Season</th>
+                    <th className="px-4 py-2">Start</th>
+                    <th className="px-4 py-2">End</th>
+                    <th className="px-4 py-2 text-right">Multiplier</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {seasonalRates.map((r) => (
+                    <tr
+                      key={`${r.season}-${r.startDate}`}
+                      className={`border-t border-white/10 ${
+                        currentSeason?.season === r.season ? "bg-white/5" : ""
+                      }`}
+                    >
+                      <td className="px-4 py-2 capitalize">{r.season}</td>
+                      <td className="px-4 py-2">{new Date(r.startDate).toLocaleDateString()}</td>
+                      <td className="px-4 py-2">{new Date(r.endDate).toLocaleDateString()}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">
+                        {r.multiplier.toFixed(2)}×
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {seasonalHistory.length > 0 && (
+          <section aria-label="Historical seasonal comparison" className="mb-8">
+            <h2 className="text-lg font-semibold mb-3">Historical Seasonal Comparison</h2>
+            <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+              <div className="space-y-2">
+                {seasonalHistory.map((s) => (
+                  <div key={s.season} className="flex items-center gap-3 text-sm">
+                    <span className="w-24 capitalize opacity-70">{s.season}</span>
+                    <div className="flex-1 h-4 rounded-sm bg-white/5 overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500"
+                        style={{
+                          width: `${(s.averagePricePerKwh / maxSeasonalPrice) * 100}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="w-24 text-right tabular-nums">
+                      {s.averagePricePerKwh.toFixed(4)} XLM
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </section>
         )}

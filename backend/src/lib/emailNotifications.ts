@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { sendEmail, type EmailAttachment, type EmailResult } from "./mailer.js";
 
-export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing"] as const;
+export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "surveys", "nudges", "security_alerts"] as const;
 export type EmailEvent = (typeof EMAIL_EVENTS)[number];
 
 const DB_PATH = process.env.EMAIL_PREFERENCES_DB_PATH ?? path.resolve(process.cwd(), "data", "email-preferences.sqlite");
@@ -30,17 +30,22 @@ registerDatabase("email-preferences", () => {
   database = undefined;
 });
 
+function getTokenSecret(): string {
+  return process.env.EMAIL_PREFERENCES_SECRET || process.env.ADMIN_SECRET_KEY || "stellar-solar-grid-default-token-secret";
+}
+
 export function createEmailPreferenceToken(email: string): string {
-  if (!TOKEN_SECRET) throw new Error("EMAIL_PREFERENCES_SECRET or ADMIN_SECRET_KEY must be configured");
+  const secret = getTokenSecret();
   const payload = Buffer.from(email.trim().toLowerCase()).toString("base64url");
-  const signature = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest("base64url");
+  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
   return `${payload}.${signature}`;
 }
 
 export function verifyEmailPreferenceToken(token: string): string | undefined {
   const [payload, signature, extra] = token.split(".");
-  if (!payload || !signature || extra || !TOKEN_SECRET) return undefined;
-  const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest();
+  const secret = getTokenSecret();
+  if (!payload || !signature || extra) return undefined;
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest();
   const actual = Buffer.from(signature, "base64url");
   if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return undefined;
   const email = Buffer.from(payload, "base64url").toString("utf8");
@@ -88,5 +93,195 @@ export async function sendNotificationEmail(input: {
     text: `${input.text}\n\nEmail preferences: ${preferencesUrl}\nUnsubscribe: ${unsubscribeUrl}`,
     html: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;padding:24px;font-family:Arial,sans-serif;color:#222"><main style="max-width:600px;margin:0 auto;line-height:1.5">${input.html}<hr><p><a href="${preferencesUrl}">Email preferences</a> | <a href="${unsubscribeUrl}">Unsubscribe</a></p></main></body></html>`,
     attachments: input.attachments,
+  });
+}
+
+export type NudgeEmailKind = "social_comparison" | "loss_aversion" | "default_option" | "commitment";
+
+export interface NudgeEmailItem {
+  kind: NudgeEmailKind;
+  title: string;
+  message: string;
+  actionUrl?: string;
+  actionLabel?: string;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderNudgeItem(item: NudgeEmailItem): { text: string; html: string } {
+  const action = item.actionUrl
+    ? `\n${item.actionLabel ?? "Take action"}: ${item.actionUrl}`
+    : "";
+  const htmlAction = item.actionUrl
+    ? `<p><a href="${escapeHtml(item.actionUrl)}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">${escapeHtml(item.actionLabel ?? "Take action")}</a></p>`
+    : "";
+  return {
+    text: `${item.title}\n${item.message}${action}`,
+    html: `<section style="margin-bottom:20px"><h3 style="margin:0 0 6px">${escapeHtml(item.title)}</h3><p style="margin:0 0 10px">${escapeHtml(item.message)}</p>${htmlAction}</section>`,
+  };
+}
+
+export async function sendNudgeDigestEmail(input: {
+  to: string;
+  nudges: NudgeEmailItem[];
+  periodLabel?: string;
+}): Promise<EmailResult> {
+  if (input.nudges.length === 0) return { delivered: false, provider: "no-nudges" };
+  const period = input.periodLabel?.trim() || "this week";
+  const rendered = input.nudges.map(renderNudgeItem);
+  return sendNotificationEmail({
+    to: input.to,
+    event: "nudges",
+    subject: `Your energy-saving nudges for ${period}`,
+    text: `Hi,\n\nHere are your personalized energy-saving nudges for ${period}:\n\n${rendered.map((item) => item.text).join("\n\n")}\n\nSmall changes add up.`,
+    html: `<h2>Your energy-saving nudges for ${escapeHtml(period)}</h2>${rendered.map((item) => item.html).join("")}<p>Small changes add up.</p>`,
+  });
+}
+
+export async function sendCommitmentReminderEmail(input: {
+  to: string;
+  pledgeDescription: string;
+  targetReductionPercent: number;
+  progressPercent: number;
+  deadline?: string;
+  actionUrl?: string;
+}): Promise<EmailResult> {
+  const progress = Math.max(0, Math.min(100, Math.round(input.progressPercent)));
+  const deadline = input.deadline ? ` Deadline: ${input.deadline}.` : "";
+  const action = input.actionUrl ? `\nReview your pledge: ${input.actionUrl}` : "";
+  const htmlAction = input.actionUrl
+    ? `<p><a href="${escapeHtml(input.actionUrl)}" style="display:inline-block;padding:10px 16px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Review your pledge</a></p>`
+    : "";
+  return sendNotificationEmail({
+    to: input.to,
+    event: "nudges",
+    subject: `Keep your commitment: ${input.targetReductionPercent}% reduction pledge`,
+    text: `Hi,\n\nYou pledged to ${input.pledgeDescription} (target: ${input.targetReductionPercent}% reduction).${deadline}\n\nYou're ${progress}% of the way to your goal. Staying on track protects the credits you've already earned.${action}`,
+    html: `<h2>Keep your commitment</h2><p>You pledged to ${escapeHtml(input.pledgeDescription)} (target: ${input.targetReductionPercent}% reduction).${escapeHtml(deadline)}</p><p>You're <strong>${progress}%</strong> of the way to your goal. Staying on track protects the credits you've already earned.</p>${htmlAction}`,
+  });
+}
+
+export type SecurityThreatSeverity = "low" | "medium" | "high" | "critical";
+
+export interface SecurityThreatAlert {
+  threatId: string;
+  threatType: string;
+  severity: SecurityThreatSeverity;
+  meterId: string;
+  detectedAt: string;
+  description: string;
+  sourceIp?: string;
+  actionTaken?: string;
+  details?: Record<string, unknown>;
+}
+
+const SEVERITY_COLORS: Record<SecurityThreatSeverity, string> = {
+  low: "#0ea5e9",
+  medium: "#f59e0b",
+  high: "#f97316",
+  critical: "#dc2626",
+};
+
+function renderSecurityThreatAlert(alert: SecurityThreatAlert): { text: string; html: string } {
+  const color = SEVERITY_COLORS[alert.severity] ?? SEVERITY_COLORS.medium;
+  const detailLines = Object.entries(alert.details ?? {})
+    .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
+    .join("\n");
+  const detailHtml = Object.entries(alert.details ?? {})
+    .map(([key, value]) => `<li><strong>${escapeHtml(key)}:</strong> ${escapeHtml(typeof value === "string" ? value : JSON.stringify(value))}</li>`)
+    .join("");
+  const text = [
+    `Security threat detected: ${alert.threatType}`,
+    `Severity: ${alert.severity.toUpperCase()}`,
+    `Threat ID: ${alert.threatId}`,
+    `Meter: ${alert.meterId}`,
+    `Detected at: ${alert.detectedAt}`,
+    alert.sourceIp ? `Source IP: ${alert.sourceIp}` : "",
+    alert.actionTaken ? `Action taken: ${alert.actionTaken}` : "",
+    "",
+    alert.description,
+    detailLines ? `\nDetails:\n${detailLines}` : "",
+  ].filter(Boolean).join("\n");
+  const html = `<h2 style="color:${color}">Security threat detected: ${escapeHtml(alert.threatType)}</h2>
+    <p><strong>Severity:</strong> <span style="color:${color};font-weight:bold">${escapeHtml(alert.severity.toUpperCase())}</span></p>
+    <ul>
+      <li><strong>Threat ID:</strong> ${escapeHtml(alert.threatId)}</li>
+      <li><strong>Meter:</strong> ${escapeHtml(alert.meterId)}</li>
+      <li><strong>Detected at:</strong> ${escapeHtml(alert.detectedAt)}</li>
+      ${alert.sourceIp ? `<li><strong>Source IP:</strong> ${escapeHtml(alert.sourceIp)}</li>` : ""}
+      ${alert.actionTaken ? `<li><strong>Action taken:</strong> ${escapeHtml(alert.actionTaken)}</li>` : ""}
+    </ul>
+    <p>${escapeHtml(alert.description)}</p>
+    ${detailHtml ? `<ul>${detailHtml}</ul>` : ""}`;
+  return { text, html };
+}
+
+export async function sendSecurityThreatAlertEmail(input: {
+  to: string | string[];
+  alert: SecurityThreatAlert;
+}): Promise<EmailResult> {
+  const recipients = (Array.isArray(input.to) ? input.to : [input.to]).map((email) => email.trim()).filter(Boolean);
+  if (recipients.length === 0) return { delivered: false, provider: "no-recipients" };
+  const rendered = renderSecurityThreatAlert(input.alert);
+  const results = await Promise.all(
+    recipients.map((to) =>
+      sendNotificationEmail({
+        to,
+        event: "security_alerts",
+        subject: `[${input.alert.severity.toUpperCase()}] Security threat: ${input.alert.threatType} (meter ${input.alert.meterId})`,
+        text: rendered.text,
+        html: rendered.html,
+      }),
+    ),
+  );
+  return results.find((result) => result.delivered) ?? results[0] ?? { delivered: false, provider: "no-recipients" };
+}
+
+export async function sendSecurityThreatDigestEmail(input: {
+  to: string | string[];
+  alerts: SecurityThreatAlert[];
+  periodLabel?: string;
+}): Promise<EmailResult> {
+  if (input.alerts.length === 0) return { delivered: false, provider: "no-alerts" };
+  const recipients = (Array.isArray(input.to) ? input.to : [input.to]).map((email) => email.trim()).filter(Boolean);
+  if (recipients.length === 0) return { delivered: false, provider: "no-recipients" };
+  const period = input.periodLabel?.trim() || "the last 24 hours";
+  const rendered = input.alerts.map(renderSecurityThreatAlert);
+  const results = await Promise.all(
+    recipients.map((to) =>
+      sendNotificationEmail({
+        to,
+        event: "security_alerts",
+        subject: `Security threat digest: ${input.alerts.length} alert(s) in ${period}`,
+        text: `Security threat digest for ${period}:\n\n${rendered.map((item) => item.text).join("\n\n---\n\n")}`,
+        html: `<h2>Security threat digest for ${escapeHtml(period)}</h2>${rendered.map((item) => `<section style="margin-bottom:24px">${item.html}</section>`).join("")}`,
+      }),
+    ),
+  );
+  return results.find((result) => result.delivered) ?? results[0] ?? { delivered: false, provider: "no-recipients" };
+}
+
+export async function sendSurveyEmail(input: {
+  to: string;
+  surveyId: string;
+  surveyTitle: string;
+  question: string;
+  responseUrl: string;
+}): Promise<EmailResult> {
+  const title = input.surveyTitle.trim() || "Customer Satisfaction Survey";
+  const question = input.question.trim();
+  return sendNotificationEmail({
+    to: input.to,
+    event: "surveys",
+    subject: `We'd love your feedback: ${title}`,
+    text: `Hi,\n\nWe'd love to hear about your experience.\n\n${title}\n${question}\n\nShare your feedback: ${input.responseUrl}\n\nThank you for helping us improve.`,
+    html: `<h2>${title}</h2><p>We'd love to hear about your experience.</p><p>${question}</p><p><a href="${input.responseUrl}" style="display:inline-block;padding:12px 20px;background:#2563eb;color:#fff;text-decoration:none;border-radius:6px">Share your feedback</a></p><p>Thank you for helping us improve.</p>`,
   });
 }

@@ -214,5 +214,61 @@
     "dismiss": "Verwerfen",
     "estimatedSavings": "Geschätzte wöchentliche Ersparnis",
     "actualSavings": "Tatsächliche wöchentliche Ersparnis"
+  },
+  "voiceAssistant": {
+    "title": "Sprachassistent",
+    "description": "Verwalten Sie Ihren Zähler per Sprachbefehl mit Alexa oder Google Assistant.",
+    "enable": "Sprachassistent aktivieren",
+    "disable": "Sprachassistent deaktivieren",
+    "enabled": "Sprachassistent aktiviert",
+    "disabled": "Sprachassistent deaktiviert",
+    "linkAccount": "Konto verknüpfen",
+    "unlinkAccount": "Konto trennen",
+    "linked": "Konto verknüpft",
+    "notLinked": "Konto nicht verknüpft",
+    "linkInstructions": "Verknüpfen Sie Ihr Konto in der Alexa- oder Google-Home-App, um Sprachbefehle zu nutzen.",
+    "language": "Sprache",
+    "selectLanguage": "Sprache auswählen",
+    "supportedLanguages": "Unterstützte Sprachen",
+    "commands": {
+      "title": "Sprachbefehle",
+      "checkBalance": "Guthaben prüfen",
+      "checkBalanceExample": "„Alexa, frage SolarGrid nach meinem Guthaben“",
+      "checkUsage": "Verbrauch prüfen",
+      "checkUsageExample": "„Hey Google, frage SolarGrid nach meinem Verbrauch“",
+      "makePayment": "Zahlung durchführen",
+      "makePaymentExample": "„Alexa, bitte SolarGrid, 10 XLM zu bezahlen“",
+      "meterStatus": "Zählerstatus prüfen",
+      "meterStatusExample": "„Hey Google, frage SolarGrid nach dem Status meines Zählers“"
+    },
+    "payment": {
+      "title": "Sprachzahlung",
+      "confirmPrompt": "Sie sind dabei, {amount} XLM für Zähler {meterId} zu bezahlen. Sagen Sie „bestätigen“, um fortzufahren.",
+      "confirm": "Bestätigen",
+      "cancel": "Abbrechen",
+      "confirmed": "Zahlung bestätigt",
+      "cancelled": "Zahlung abgebrochen",
+      "processing": "Zahlung wird verarbeitet…",
+      "success": "Zahlung erfolgreich abgeschlossen",
+      "failed": "Zahlung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "requiresConfirmation": "Aus Sicherheitsgründen muss jede Sprachzahlung bestätigt werden.",
+      "pinPrompt": "Geben Sie Ihre PIN ein, um die Zahlung zu bestätigen.",
+      "pinLabel": "PIN",
+      "pinInvalid": "Ungültige PIN. Bitte versuchen Sie es erneut."
+    },
+    "responses": {
+      "balance": "Ihr Zählerguthaben beträgt {balance} XLM.",
+      "usage": "Sie haben {units} kWh verbraucht.",
+      "status": "Ihr Zähler ist {status}.",
+      "paymentSuccess": "Ihre Zahlung über {amount} XLM war erfolgreich.",
+      "notUnderstood": "Das habe ich nicht verstanden. Bitte versuchen Sie es erneut.",
+      "error": "Beim Verarbeiten Ihrer Anfrage ist ein Fehler aufgetreten."
+    },
+    "status": {
+      "active": "aktiv",
+      "inactive": "inaktiv",
+      "expired": "abgelaufen"
+    },
+    "ariaLabel": "Sprachassistent-Einstellungen"
   }
 }

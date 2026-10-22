@@ -1,7 +1,7 @@
-name: Quarterly DR Drill
+name: Weekly DR Drill
 on:
   schedule:
-    - cron: "0 3 1 1,4,7,10 *"
+    - cron: "0 3 * * 1"
   workflow_dispatch:
 jobs:
   drill:

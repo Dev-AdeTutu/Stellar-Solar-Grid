@@ -441,6 +441,165 @@ export function deriveAlerts(report: WeatherReport): WeatherAlert[] {
   return alerts;
 }
 
+// ── Weather-driven usage & solar forecasting (#982) ─────────────────────────
+
+/** Reference temperature (°C) above/below which cooling/heating demand starts. */
+const BALANCE_POINT_C = Number(process.env.FORECAST_BALANCE_POINT_C ?? 18);
+/** kWh of extra consumption per degree-day of heating/cooling demand. */
+const DEGREE_DAY_KWH = Number(process.env.FORECAST_DEGREE_DAY_KWH ?? 0.6);
+/** Fraction of baseline consumption added per full unit of UV index (lighting/appliances). */
+const UV_USAGE_COEFFICIENT = Number(process.env.FORECAST_UV_USAGE_COEFFICIENT ?? 0.01);
+/** Fraction of baseline consumption added per 10 % of cloud cover (dimmer days → more lighting). */
+const CLOUD_USAGE_COEFFICIENT = Number(process.env.FORECAST_CLOUD_USAGE_COEFFICIENT ?? 0.02);
+/** z-score for a 95 % two-sided confidence interval. */
+const Z_95 = 1.96;
+/** Clear-sky daily yield (kWh per kWp) used as the solar baseline. */
+const CLEAR_SKY_KWH_PER_KWP = Number(process.env.FORECAST_CLEAR_SKY_KWH_PER_KWP ?? 4.5);
+/** Reference daylight hours for the clear-sky baseline. */
+const REFERENCE_DAYLIGHT_HOURS = Number(process.env.FORECAST_REFERENCE_DAYLIGHT_HOURS ?? 12);
+
+/**
+ * Historical hourly usage model for a meter, used as the forecasting baseline.
+ * `hourlyKwh` is the mean consumption per hour-of-day (index 0–23) and
+ * `residualStdDevKwh` the standard deviation of the model's residuals, which
+ * drives the confidence band.
+ */
+export type UsageModel = {
+  hourlyKwh: number[];
+  residualStdDevKwh: number;
+};
+
+export type DailyUsageForecastPoint = {
+  date: string;
+  predictedKwh: number;
+  lowerKwh: number;
+  upperKwh: number;
+  /** Weather inputs used for this day. */
+  tempMinC: number;
+  tempMaxC: number;
+  meanTempC: number;
+  cloudCoverPct: number;
+  uvIndex: number | null;
+  /** Heating/cooling degree-days relative to the balance point. */
+  degreeDays: number;
+};
+
+export type DailySolarForecastPoint = {
+  date: string;
+  predictedKwh: number;
+  lowerKwh: number;
+  upperKwh: number;
+  /** Weather inputs used for this day. */
+  cloudCoverPct: number;
+  daylightHours: number | null;
+  uvIndex: number | null;
+  /** Fraction (0–1) of clear-sky yield expected. */
+  weatherFactor: number;
+};
+
+const round3 = (v: number) => Number(v.toFixed(3));
+
+/** Mean of the 24 hourly values, or 0 when the model is empty. */
+function dailyBaselineKwh(model: UsageModel): number {
+  const hours = model.hourlyKwh.slice(0, 24);
+  if (hours.length === 0) return 0;
+  return hours.reduce((a, b) => a + b, 0);
+}
+
+/**
+ * 7-day daily consumption forecast from a weather report and a meter's
+ * historical hourly usage model.
+ *
+ * Features:
+ *  - temperature: heating/cooling degree-days relative to BALANCE_POINT_C
+ *  - sunlight: cloud cover (dimmer days → more lighting) and UV index
+ *
+ * The 95 % confidence band is derived from the model's residual spread,
+ * scaled by √days so uncertainty grows with the forecast horizon.
+ */
+export function forecastUsage(
+  report: WeatherReport,
+  model: UsageModel,
+  days = 7,
+): DailyUsageForecastPoint[] {
+  const baseline = dailyBaselineKwh(model);
+  const residual = Math.max(0, model.residualStdDevKwh);
+  return report.daily.slice(0, days).map((d, i) => {
+    const meanTempC = (d.tempMinC + d.tempMaxC) / 2;
+    const degreeDays = Math.abs(meanTempC - BALANCE_POINT_C);
+    const uv = d.uvIndex ?? 0;
+    const cloud = Math.min(100, Math.max(0, d.cloudCoverPct));
+
+    const degreeAdjustment = degreeDays * DEGREE_DAY_KWH;
+    const uvAdjustment = baseline * uv * UV_USAGE_COEFFICIENT;
+    const cloudAdjustment = baseline * (cloud / 10) * CLOUD_USAGE_COEFFICIENT;
+
+    const predicted = Math.max(0, baseline + degreeAdjustment + uvAdjustment + cloudAdjustment);
+    // Uncertainty grows with the forecast horizon (random-walk assumption).
+    const band = Z_95 * residual * Math.sqrt(i + 1);
+
+    return {
+      date: d.date,
+      predictedKwh: round3(predicted),
+      lowerKwh: round3(Math.max(0, predicted - band)),
+      upperKwh: round3(predicted + band),
+      tempMinC: d.tempMinC,
+      tempMaxC: d.tempMaxC,
+      meanTempC: round3(meanTempC),
+      cloudCoverPct: cloud,
+      uvIndex: d.uvIndex,
+      degreeDays: round3(degreeDays),
+    };
+  });
+}
+
+/**
+ * 7-day daily solar generation forecast from the daily sunlight forecast.
+ *
+ * A clear-sky baseline (kWh per kWp) is scaled by:
+ *  - cloud cover: Kasten–Czeplak attenuation
+ *  - daylight hours: linear scaling against a reference day length
+ *  - UV index: a mild proxy for atmospheric clarity / irradiance
+ *
+ * The confidence band widens with the forecast horizon.
+ */
+export function forecastSolar(
+  report: WeatherReport,
+  systemKwp: number,
+  days = 7,
+): DailySolarForecastPoint[] {
+  const kwp = Math.max(0, systemKwp);
+  return report.daily.slice(0, days).map((d, i) => {
+    const cloud = Math.min(100, Math.max(0, d.cloudCoverPct));
+    const cloudFactor = 1 - 0.75 * Math.pow(cloud / 100, 3.4);
+
+    const daylight = d.daylightHours ?? REFERENCE_DAYLIGHT_HOURS;
+    const daylightFactor = Math.min(1.2, Math.max(0, daylight / REFERENCE_DAYLIGHT_HOURS));
+
+    const uv = d.uvIndex ?? 0;
+    const uvFactor = 1 + Math.min(0.2, uv * 0.02);
+
+    const weatherFactor = Math.max(0, Math.min(1, cloudFactor * daylightFactor * uvFactor));
+    const clearSkyKwh = kwp * CLEAR_SKY_KWH_PER_KWP;
+    const predicted = clearSkyKwh * weatherFactor;
+
+    // Relative uncertainty grows with the horizon; 8 % at day 1 up to ~20 %.
+    const relBand = 0.08 + 0.02 * i;
+    const band = predicted * relBand;
+
+    return {
+      date: d.date,
+      predictedKwh: round3(predicted),
+      lowerKwh: round3(Math.max(0, predicted - band)),
+      upperKwh: round3(predicted + band),
+      cloudCoverPct: cloud,
+      daylightHours: d.daylightHours,
+      uvIndex: d.uvIndex,
+      weatherFactor: round3(weatherFactor),
+    };
+  });
+}
+
 export function _resetWeatherCache(): void {
   cache.clear();
   inFlight.clear();

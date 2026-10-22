@@ -14,6 +14,7 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { initUsageEventStore } from "../lib/usageEvents.js";
+import { detectMeterArbitrage } from "../lib/arbitrageDetector.js";
 
 export const insightsRouter = Router();
 
@@ -275,3 +276,37 @@ insightsRouter.get(
         return res.json(result);
     })
 );
+
+/**
+ * GET /api/meters/:meterId/arbitrage (#1009)
+ * Returns profitable battery charge/discharge windows, optimal 24h schedule,
+ * profit estimates, and alerts for the specified meter.
+ */
+insightsRouter.get(
+    "/:meterId/arbitrage",
+    asyncHandler(async (req, res) => {
+        const meterId = req.params.meterId;
+        if (!meterId || meterId.trim() === "") {
+            return res.status(400).json({ error: "Invalid meter ID", code: "VALIDATION_ERROR" });
+        }
+
+        const batteryCapacityKwh = req.query.batteryCapacityKwh
+            ? Number(req.query.batteryCapacityKwh)
+            : undefined;
+        const roundTripEfficiency = req.query.roundTripEfficiency
+            ? Number(req.query.roundTripEfficiency)
+            : undefined;
+        const minSpreadPercent = req.query.minSpreadPercent
+            ? Number(req.query.minSpreadPercent)
+            : undefined;
+
+        const report = detectMeterArbitrage(meterId, {
+            batteryCapacityKwh: Number.isFinite(batteryCapacityKwh) ? batteryCapacityKwh : undefined,
+            roundTripEfficiency: Number.isFinite(roundTripEfficiency) ? roundTripEfficiency : undefined,
+            minSpreadPercent: Number.isFinite(minSpreadPercent) ? minSpreadPercent : undefined,
+        });
+
+        return res.json(report);
+    })
+);
+

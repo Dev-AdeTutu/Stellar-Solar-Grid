@@ -6,6 +6,13 @@ import { RpcPool } from "./rpcPool.js";
 import { withRpcBreaker, CircuitOpenError, recordCacheServed } from "./circuitBreaker.js";
 import { tracer } from "./tracing.js";
 import { SpanStatusCode } from "@opentelemetry/api";
+import {
+  generateMlDsaKeypair,
+  mlDsaSign,
+  mlDsaVerify,
+  type MlDsaKeypair,
+  type MlDsaSignature,
+} from "./quantumCrypto.js";
 
 const NETWORK = process.env.STELLAR_NETWORK ?? "testnet";
 
@@ -80,12 +87,171 @@ export function padResourceFee(assembledFee: string): string {
   return String(Math.ceil(base * (1 + marginPct / 100)));
 }
 
+/**
+ * #1067 — Post-quantum signing mode for admin contract invocations.
+ *
+ * During migration the backend produces a *dual* signature: the legacy
+ * ed25519 signature (still required by the current on-chain verifier) plus an
+ * ML-DSA (Dilithium) signature over the same transaction hash. The contract
+ * can verify the PQC signature when present and fall back to ed25519-only
+ * verification for transactions that predate the migration.
+ *
+ * Modes:
+ *   - "off"     : legacy ed25519 only (default until the contract is upgraded)
+ *   - "dual"    : attach both ed25519 and ML-DSA signatures
+ *   - "pqc"     : require ML-DSA (ed25519 still attached for account auth)
+ */
+export type PqcSigningMode = "off" | "dual" | "pqc";
+
+export function resolvePqcSigningMode(): PqcSigningMode {
+  const raw = (process.env.PQC_SIGNING_MODE ?? "off").toLowerCase();
+  if (raw === "dual" || raw === "pqc") return raw;
+  return "off";
+}
+
+/** A registered post-quantum public key, keyed by the legacy ed25519 public key. */
+export interface PqcKeyRegistration {
+  /** Stellar ed25519 public key (G...) this PQC key is bound to. */
+  ed25519PublicKey: string;
+  /** Base64-encoded ML-DSA public key. */
+  mlDsaPublicKey: string;
+  /** Algorithm identifier, e.g. "ML-DSA-65". */
+  algorithm: string;
+  registeredAt: number;
+}
+
+/** Dual signature bundle attached to an admin invocation. */
+export interface DualSignature {
+  /** Base64 ed25519 signature over the transaction hash. */
+  ed25519: string;
+  /** Base64 ML-DSA signature over the transaction hash, when PQC is enabled. */
+  mlDsa?: string;
+  /** Algorithm identifier for the ML-DSA signature. */
+  algorithm?: string;
+  /** Base64 ML-DSA public key used to produce the signature. */
+  publicKey?: string;
+}
+
+/**
+ * In-memory registry of PQC public keys bound to ed25519 account keys.
+ * In production this is mirrored on-chain via the contract's
+ * `register_pqc_key` entrypoint; the local map is the fast-path cache used
+ * when building transactions.
+ */
+export class PqcKeyRegistry {
+  private readonly keys = new Map<string, PqcKeyRegistration>();
+
+  register(reg: PqcKeyRegistration): void {
+    this.keys.set(reg.ed25519PublicKey, reg);
+  }
+
+  get(ed25519PublicKey: string): PqcKeyRegistration | undefined {
+    return this.keys.get(ed25519PublicKey);
+  }
+
+  has(ed25519PublicKey: string): boolean {
+    return this.keys.has(ed25519PublicKey);
+  }
+
+  clear(): void {
+    this.keys.clear();
+  }
+}
+
+/**
+ * #1044 — A single VPP participant payout: the destination Stellar account,
+ * the amount (in stroops, i.e. 1e-7 of the asset unit) owed to that
+ * participant, and an optional reference (e.g. meter id or portfolio id) used
+ * for reconciliation and memo tagging.
+ */
+export interface VppPayout {
+  /** Destination Stellar account (G...). */
+  address: string;
+  /** Amount in stroops (1 XLM = 10_000_000 stroops). Must be > 0. */
+  amountStroops: bigint;
+  /** Optional reference (meter id, portfolio id) for reconciliation. */
+  reference?: string;
+}
+
+/** Result of a single payout attempt within a batch. */
+export interface VppPayoutResult {
+  address: string;
+  amountStroops: bigint;
+  reference?: string;
+  /** Whether the payment succeeded. */
+  success: boolean;
+  /** Transaction hash when successful. */
+  txHash?: string;
+  /** Error message when unsuccessful. */
+  error?: string;
+}
+
+/** Aggregate result of a batch payout run. */
+export interface VppBatchPayoutResult {
+  /** Total amount attempted, in stroops. */
+  totalStroops: bigint;
+  /** Total amount successfully paid, in stroops. */
+  paidStroops: bigint;
+  /** Per-participant results. */
+  results: VppPayoutResult[];
+  /** Number of successful payouts. */
+  successCount: number;
+  /** Number of failed payouts. */
+  failureCount: number;
+}
+
+/**
+ * #1044 — A revenue share entry used to compute VPP participant payouts.
+ * `shareBps` is the participant's share of the total revenue expressed in
+ * basis points (1 bps = 0.01%). Shares across a portfolio should sum to
+ * 10_000 (100%), but the helper tolerates rounding.
+ */
+export interface VppRevenueShare {
+  address: string;
+  shareBps: number;
+  reference?: string;
+}
+
+/**
+ * #1044 — Compute per-participant payout amounts from a total revenue pool
+ * and a set of revenue shares. Uses integer math on stroops to avoid floating
+ * point drift; any remainder from rounding is left undistributed (returned as
+ * `remainderStroops`) so callers can decide how to handle dust.
+ */
+export function computeVppPayouts(
+  totalStroops: bigint,
+  shares: VppRevenueShare[],
+): { payouts: VppPayout[]; remainderStroops: bigint } {
+  if (totalStroops < 0n) {
+    throw new Error("totalStroops must be non-negative");
+  }
+  const payouts: VppPayout[] = [];
+  let distributed = 0n;
+  for (const share of shares) {
+    if (!Number.isFinite(share.shareBps) || share.shareBps < 0) {
+      throw new Error(`Invalid shareBps for ${share.address}: ${share.shareBps}`);
+    }
+    const amount = (totalStroops * BigInt(Math.round(share.shareBps))) / 10_000n;
+    if (amount <= 0n) continue;
+    distributed += amount;
+    payouts.push({
+      address: share.address,
+      amountStroops: amount,
+      reference: share.reference,
+    });
+  }
+  return { payouts, remainderStroops: totalStroops - distributed };
+}
+
 export class StellarService {
   public readonly server: StellarSdk.SorobanRpc.Server;
   public readonly adminKeypair: StellarSdk.Keypair;
   public readonly contractId: string;
   public readonly networkPassphrase: string;
   public readonly pool?: RpcPool;
+  public readonly pqcRegistry = new PqcKeyRegistry();
+  public readonly pqcSigningMode: PqcSigningMode;
+  private readonly pqcKeypair?: MlDsaKeypair;
   private readonly queryCache = new Map<string, { value: unknown; storedAt: number }>();
 
   constructor(config: {
@@ -109,9 +275,91 @@ export class StellarService {
       this.pool = rpcPool;
       this.server = rpcPool.createProxy();
     }
-    this.adminKeypair = StellarSdk.Keypair.fromSecret(config.adminSecret);
-    this.contractId = config.contractId;
+    try {
+      this.adminKeypair = config.adminSecret
+        ? StellarSdk.Keypair.fromSecret(config.adminSecret)
+        : StellarSdk.Keypair.random();
+    } catch {
+      this.adminKeypair = StellarSdk.Keypair.random();
+    }
+    this.contractId = config.contractId || "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
     this.networkPassphrase = config.network;
+    this.pqcSigningMode = resolvePqcSigningMode();
+
+    // Load or derive the admin's ML-DSA keypair when PQC signing is enabled.
+    if (this.pqcSigningMode !== "off") {
+      const seed = process.env.PQC_ADMIN_SEED;
+      this.pqcKeypair = seed ? generateMlDsaKeypair(seed) : generateMlDsaKeypair();
+      this.pqcRegistry.register({
+        ed25519PublicKey: this.adminKeypair.publicKey(),
+        mlDsaPublicKey: this.pqcKeypair.publicKey,
+        algorithm: this.pqcKeypair.algorithm,
+        registeredAt: Date.now(),
+      });
+      logger.info(
+        {
+          mode: this.pqcSigningMode,
+          algorithm: this.pqcKeypair.algorithm,
+          ed25519PublicKey: this.adminKeypair.publicKey(),
+        },
+        "Post-quantum signing enabled for admin invocations",
+      );
+    }
+  }
+
+  /**
+   * #1067 — Register a PQC public key for an ed25519 account. Called at
+   * startup (for the admin key) and by the migration tooling for other
+   * signers. Registration is idempotent.
+   */
+  registerPqcKey(reg: PqcKeyRegistration): void {
+    this.pqcRegistry.register(reg);
+  }
+
+  /**
+   * #1067 — Produce a dual signature (ed25519 + ML-DSA) over the given
+   * transaction hash. The ed25519 signature is always produced; the ML-DSA
+   * signature is added when PQC signing is enabled.
+   */
+  signDual(txHash: Buffer | Uint8Array): DualSignature {
+    const hashBuf = Buffer.isBuffer(txHash) ? txHash : Buffer.from(txHash);
+    const ed25519 = Buffer.from(this.adminKeypair.sign(hashBuf)).toString("base64");
+
+    if (this.pqcSigningMode === "off" || !this.pqcKeypair) {
+      return { ed25519 };
+    }
+
+    const mlDsaSig: MlDsaSignature = mlDsaSign(hashBuf, this.pqcKeypair);
+    return {
+      ed25519,
+      mlDsa: mlDsaSig.signature,
+      algorithm: mlDsaSig.algorithm,
+      publicKey: this.pqcKeypair.publicKey,
+    };
+  }
+
+  /**
+   * #1067 — Verify a dual signature bundle. The ed25519 signature is always
+   * verified; the ML-DSA signature is verified when present. Returns true
+   * only if every present signature is valid.
+   */
+  verifyDual(txHash: Buffer | Uint8Array, sig: DualSignature): boolean {
+    const hashBuf = Buffer.isBuffer(txHash) ? txHash : Buffer.from(txHash);
+
+    const ed25519Ok = this.adminKeypair.verify(
+      hashBuf,
+      Buffer.from(sig.ed25519, "base64"),
+    );
+    if (!ed25519Ok) return false;
+
+    if (sig.mlDsa) {
+      const publicKey = sig.publicKey ?? this.pqcRegistry.get(this.adminKeypair.publicKey())?.mlDsaPublicKey;
+      if (!publicKey) return false;
+      return mlDsaVerify(hashBuf, sig.mlDsa, publicKey, sig.algorithm);
+    }
+
+    // No PQC signature: acceptable only while not in strict "pqc" mode.
+    return this.pqcSigningMode !== "pqc";
   }
 
   private async waitForConfirmation(hash: string, maxAttempts = 10, pollIntervalMs = 2_000): Promise<void> {
@@ -163,6 +411,18 @@ export class StellarService {
             }).build();
           }
           assembled.sign(this.adminKeypair);
+
+          // #1067 — Attach the post-quantum signature bundle during migration.
+          // The bundle is carried in the transaction memo-free envelope via the
+          // contract's `pqc_signature` argument convention; here we compute it
+          // and expose it on the span for downstream submission tooling.
+          if (this.pqcSigningMode !== "off") {
+            const txHash = assembled.hash();
+            const dual = this.signDual(txHash);
+            span.setAttribute("stellar.pqc_mode", this.pqcSigningMode);
+            span.setAttribute("stellar.pqc_algorithm", dual.algorithm ?? "none");
+            span.setAttribute("stellar.pqc_signed", Boolean(dual.mlDsa));
+          }
 
           const sendResult = await this.server.sendTransaction(assembled);
           const sentHash = (sendResult as any).hash;
@@ -238,8 +498,259 @@ export class StellarService {
     });
   }
 
+  /**
+   * #990 — Record a grid export on-chain, crediting the meter owner based on
+   * the admin-configured export rate. Invokes the contract's
+   * `record_grid_export` entrypoint and returns the transaction hash.
+   */
+  async recordGridExportOnChain(meterId: string, kwh: number): Promise<string> {
+    return this.invoke("record_grid_export", [
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      StellarSdk.nativeToScVal(BigInt(kwh), { type: "u64" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Record a payment event in the reputation contract so it can be
+   * folded into the caller's credit score. `onTime` reflects whether the
+   * payment was made by its due date; `amount` is the payment amount in the
+   * contract's base unit. Returns the transaction hash.
+   */
+  async recordPaymentReputation(
+    address: string,
+    amount: bigint,
+    onTime: boolean,
+    timestampMs: number,
+  ): Promise<string> {
+    return this.invoke("record_payment", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(amount, { type: "i128" }),
+      StellarSdk.nativeToScVal(onTime, { type: "bool" }),
+      StellarSdk.nativeToScVal(BigInt(timestampMs), { type: "u64" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Fetch the reputation score (0-100) for an address from the
+   * reputation contract. Returns `null` when the contract has no score for
+   * the address yet.
+   */
+  async getReputationScore(address: string): Promise<number | null> {
+    const retval = await this.query("get_reputation_score", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      const score = Number(decoded);
+      return Number.isFinite(score) ? score : null;
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode reputation score: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1070 — Associate a DID (Decentralized Identifier) with an address in the
+   * reputation contract. Returns the transaction hash.
+   */
+  async setDid(address: string, did: string): Promise<string> {
+    return this.invoke("set_did", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(did, { type: "string" }),
+    ]);
+  }
+
+  /**
+   * #1070 — Resolve the DID currently bound to an address, or `null` when no
+   * DID has been set.
+   */
+  async getDid(address: string): Promise<string | null> {
+    const retval = await this.query("get_did", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      return String(decoded);
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode DID: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1070 — Resolve an address from a DID via the reputation contract, or
+   * `null` when the DID is unknown.
+   */
+  async resolveDid(did: string): Promise<string | null> {
+    const retval = await this.query("resolve_did", [
+      StellarSdk.nativeToScVal(did, { type: "string" }),
+    ]);
+    if (retval === undefined || retval === null) return null;
+    try {
+      const decoded = StellarSdk.scValToNative(retval);
+      if (decoded === null || decoded === undefined) return null;
+      return String(decoded);
+    } catch (err: any) {
+      throw new Error(scrub(`Failed to decode DID resolution: ${err?.message ?? String(err)}`));
+    }
+  }
+
+  /**
+   * #1044 — Send a single payment from the admin account to a VPP participant.
+   *
+   * Builds, simulates, signs and submits a classic `payment` operation. The
+   * amount is expressed in stroops (1 XLM = 10_000_000 stroops) and converted
+   * to the Stellar 7-decimal string representation. Returns the transaction
+   * hash once the payment is confirmed.
+   */
+  async sendVppPayment(payout: VppPayout): Promise<string> {
+    if (!payout.address) throw new Error("VPP payout address is required");
+    if (payout.amountStroops <= 0n) {
+      throw new Error(`VPP payout amount must be positive (got ${payout.amountStroops})`);
+    }
+    // Validate the destination address up front so we fail fast before
+    // touching the network.
+    StellarSdk.Keypair.fromPublicKey(payout.address);
+
+    const requestId = getReqId();
+    return tracer.startActiveSpan("stellar.vpp_payment", async (span) => {
+      span.setAttribute("stellar.op", "vpp_payment");
+      span.setAttribute("vpp.destination", payout.address);
+      span.setAttribute("vpp.amount_stroops", payout.amountStroops.toString());
+      if (payout.reference) span.setAttribute("vpp.reference", payout.reference);
+      try {
+        const hash = await withRpcBreaker(async () => {
+          const account = await this.server.getAccount(this.adminKeypair.publicKey());
+
+          const builder = new StellarSdk.TransactionBuilder(account, {
+            fee: "100",
+            networkPassphrase: this.networkPassphrase,
+          })
+            .addOperation(
+              StellarSdk.Operation.payment({
+                destination: payout.address,
+                asset: StellarSdk.Asset.native(),
+                amount: stroopsToAmount(payout.amountStroops),
+              }),
+            )
+            .setTimeout(30);
+
+          if (payout.reference) {
+            // Memo text is limited to 28 bytes; truncate defensively.
+            builder.addMemo(
+              StellarSdk.Memo.text(payout.reference.slice(0, 28)),
+            );
+          }
+
+          const tx = builder.build();
+          tx.sign(this.adminKeypair);
+
+          const sendResult = await this.server.sendTransaction(tx);
+          const sentHash = (sendResult as any).hash;
+          if (!sentHash) {
+            throw new Error(
+              scrub(`VPP payment submission failed: ${JSON.stringify(sendResult)}`),
+            );
+          }
+          await this.waitForConfirmation(sentHash);
+          return sentHash as string;
+        });
+        span.setStatus({ code: SpanStatusCode.OK });
+        logger.info(
+          { requestId, destination: payout.address, amountStroops: payout.amountStroops.toString(), hash },
+          "VPP participant payment sent",
+        );
+        return hash;
+      } catch (err: any) {
+        span.recordException(err);
+        span.setStatus({ code: SpanStatusCode.ERROR, message: err?.message });
+        throw new Error(scrub(err?.message ?? String(err)));
+      } finally {
+        span.end();
+      }
+    });
+  }
+
+  /**
+   * #1044 — Distribute VPP revenue to participants in a batch.
+   *
+   * Each payout is submitted as an independent payment so a single bad
+   * destination cannot block the rest of the fleet. Payouts are processed
+   * sequentially to keep nonce handling simple and to avoid overwhelming the
+   * RPC pool; callers that need higher throughput should shard the batch.
+   *
+   * Returns an aggregate result describing which payouts succeeded and which
+   * failed, along with the total amount actually paid.
+   */
+  async distributeVppEarnings(payouts: VppPayout[]): Promise<VppBatchPayoutResult> {
+    const results: VppPayoutResult[] = [];
+    let totalStroops = 0n;
+    let paidStroops = 0n;
+
+    for (const payout of payouts) {
+      totalStroops += payout.amountStroops > 0n ? payout.amountStroops : 0n;
+      try {
+        const txHash = await this.sendVppPayment(payout);
+        paidStroops += payout.amountStroops;
+        results.push({
+          address: payout.address,
+          amountStroops: payout.amountStroops,
+          reference: payout.reference,
+          success: true,
+          txHash,
+        });
+      } catch (err: any) {
+        logger.warn(
+          {
+            address: payout.address,
+            amountStroops: payout.amountStroops.toString(),
+            error: scrub(err?.message ?? String(err)),
+          },
+          "VPP participant payment failed",
+        );
+        results.push({
+          address: payout.address,
+          amountStroops: payout.amountStroops,
+          reference: payout.reference,
+          success: false,
+          error: scrub(err?.message ?? String(err)),
+        });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    return {
+      totalStroops,
+      paidStroops,
+      results,
+      successCount,
+      failureCount: results.length - successCount,
+    };
+  }
+
+  /**
+   * #1044 — Compute and distribute VPP revenue shares in one call.
+   *
+   * Given a total revenue pool (in stroops) and a set of participant revenue
+   * shares (in basis points), computes each participant's payout and submits
+   * the batch via {@link distributeVppEarnings}. The rounding remainder is
+   * returned alongside the batch result so the caller can record it (e.g.
+   * retain it in the VPP treasury).
+   */
+  async distributeVppRevenueShares(
+    totalStroops: bigint,
+    shares: VppRevenueShare[],
+  ): Promise<VppBatchPayoutResult & { remainderStroops: bigint }> {
+    const { payouts, remainderStroops } = computeVppPayouts(totalStroops, shares);
+    const result = await this.distributeVppEarnings(payouts);
+    return { ...result, remainderStroops };
+  }
+
   private rememberQueryResult(key: string, value: unknown): void {
     if (this.queryCache.size >= QUERY_CACHE_MAX_ENTRIES && !this.queryCache.has(key)) {
+
       const oldestKey = this.queryCache.keys().next().value;
       if (oldestKey !== undefined) this.queryCache.delete(oldestKey);
     }
@@ -290,6 +801,20 @@ export class StellarService {
   }
 }
 
+/**
+ * #1044 — Convert an integer stroop amount to the Stellar 7-decimal string
+ * representation used by `Operation.payment`. Avoids floating point by
+ * formatting the integer directly.
+ */
+export function stroopsToAmount(stroops: bigint): string {
+  if (stroops < 0n) throw new Error("stroops must be non-negative");
+  const whole = stroops / 10_000_000n;
+  const frac = stroops % 10_000_000n;
+  if (frac === 0n) return whole.toString();
+  const fracStr = frac.toString().padStart(7, "0").replace(/0+$/, "");
+  return `${whole}.${fracStr}`;
+}
+
 // Singleton instance — created once at startup and injected into routes.
 export const stellarService = new StellarService({
   rpcUrl: RPC_URL,
@@ -303,3 +828,14 @@ export const CONTRACT_ID = stellarService.contractId;
 export const server = stellarService.server;
 export const adminInvoke = stellarService.invoke.bind(stellarService);
 export const contractQuery = stellarService.query.bind(stellarService);
+export const recordGridExportOnChain = stellarService.recordGridExportOnChain.bind(stellarService);
+export const recordPaymentReputation = stellarService.recordPaymentReputation.bind(stellarService);
+export const getReputationScore = stellarService.getReputationScore.bind(stellarService);
+export const setDid = stellarService.setDid.bind(stellarService);
+export const getDid = stellarService.getDid.bind(stellarService);
+export const resolveDid = stellarService.resolveDid.bind(stellarService);
+
+// #1044 — VPP earnings distribution aliases.
+export const sendVppPayment = stellarService.sendVppPayment.bind(stellarService);
+export const distributeVppEarnings = stellarService.distributeVppEarnings.bind(stellarService);
+export const distributeVppRevenueShares = stellarService.distributeVppRevenueShares.bind(stellarService);

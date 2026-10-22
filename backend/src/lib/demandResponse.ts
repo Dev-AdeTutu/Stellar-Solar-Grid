@@ -37,6 +37,53 @@ export interface ProgramStats {
   roi: number;
 }
 
+export interface LoadPreference {
+  meterId: string;
+  maxCurtailmentKw: number;
+  priorityLoads: string[]; // device IDs that must not be curtailed
+  autoCurtail: boolean;
+  optInAt: Date;
+}
+
+export interface DREvent {
+  id: string;
+  contractEventId: string;
+  startTime: Date;
+  endTime: Date;
+  curtailmentTargetKw: number;
+  incentiveRatePerKwh: number;
+  status: 'scheduled' | 'active' | 'completed' | 'cancelled';
+  createdAt: Date;
+}
+
+export interface CurtailmentResult {
+  meterId: string;
+  drEventId: string;
+  requestedKw: number;
+  achievedKw: number;
+  devicesCurtailed: string[];
+  success: boolean;
+  timestamp: Date;
+}
+
+export interface DRPerformanceRecord {
+  meterId: string;
+  drEventId: string;
+  baselineKw: number;
+  actualKw: number;
+  reductionKw: number;
+  verified: boolean;
+  incentiveAmount: number;
+  recordedAt: Date;
+}
+
+export interface IncentiveDistribution {
+  drEventId: string;
+  totalDistributed: number;
+  recipientCount: number;
+  records: DRPerformanceRecord[];
+}
+
 const PEAK_DEMAND_THRESHOLD = 0.85; // 85% of grid capacity
 const NOTIFICATION_ADVANCE_HOURS = 1;
 const REWARD_RATE_PER_KWH = 0.5; // $0.50 per kWh reduced
@@ -94,6 +141,46 @@ export function initDemandResponse(database: Database.Database): void {
       ON demand_response_participants(meter_id);
     CREATE INDEX IF NOT EXISTS idx_participants_event 
       ON demand_response_participants(peak_event_id);
+
+    CREATE TABLE IF NOT EXISTS dr_events (
+      id TEXT PRIMARY KEY,
+      contract_event_id TEXT NOT NULL,
+      start_time INTEGER NOT NULL,
+      end_time INTEGER NOT NULL,
+      curtailment_target_kw REAL NOT NULL,
+      incentive_rate_per_kwh REAL NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dr_opt_ins (
+      meter_id TEXT PRIMARY KEY,
+      max_curtailment_kw REAL NOT NULL,
+      priority_loads TEXT NOT NULL,
+      auto_curtail INTEGER NOT NULL DEFAULT 1,
+      opt_in_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS dr_performance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meter_id TEXT NOT NULL,
+      dr_event_id TEXT NOT NULL,
+      baseline_kw REAL NOT NULL,
+      actual_kw REAL NOT NULL,
+      reduction_kw REAL NOT NULL,
+      verified INTEGER NOT NULL DEFAULT 0,
+      incentive_amount REAL NOT NULL,
+      recorded_at INTEGER NOT NULL,
+      FOREIGN KEY (dr_event_id) REFERENCES dr_events(id),
+      UNIQUE(meter_id, dr_event_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_dr_events_status 
+      ON dr_events(status);
+    CREATE INDEX IF NOT EXISTS idx_dr_performance_event 
+      ON dr_performance(dr_event_id);
+    CREATE INDEX IF NOT EXISTS idx_dr_performance_meter 
+      ON dr_performance(meter_id);
   `);
 
   logger.info('Demand response system initialized');
@@ -562,6 +649,199 @@ export function updateEventStatus(peakEventId: string, status: PeakEvent['status
 }
 
 /**
+ * Determine flexible capacity available from each active meter.
+ * Uses current power readings and metadata when available, falling
+ * back to a conservative default per meter.
+ */
+function getMeterCapabilities(): MeterCapability[] {
+  try {
+    const rows = db.prepare(`
+      SELECT meter_id, owner, current_power
+      FROM meter_metadata
+      WHERE last_seen > ?
+    `).all(Date.now() - 24 * 60 * 60 * 1000) as Array<{
+      meter_id: string;
+      owner: string;
+      current_power: number | null;
+    }>;
+
+    return rows.map(row => {
+      const current = Math.abs(row.current_power || 0);
+      // Flexible headroom: meters already drawing power can shed it,
+      // otherwise assume the default flexible capacity.
+      const availableKw = current > 0
+        ? Math.min(current, DEFAULT_METER_FLEX_KW * 2)
+        : DEFAULT_METER_FLEX_KW;
+
+      return {
+        meterId: row.meter_id,
+        owner: row.owner,
+        availableKw
+      };
+    });
+  } catch (error) {
+    logger.error('Error getting meter capabilities', { error });
+    return [];
+  }
+}
+
+/**
+ * Translate a grid operator dispatch signal into meter-level commands.
+ * Allocates the requested power across the fleet proportionally to each
+ * meter's available flexible capacity.
+ */
+export function translateDispatchSignal(signal: DispatchSignal): DispatchAggregate {
+  const startTime = signal.startTime;
+  const endTime = new Date(startTime.getTime() + signal.durationMinutes * 60 * 1000);
+
+  const emptyAggregate: DispatchAggregate = {
+    signalId: signal.id,
+    direction: signal.direction,
+    requestedPowerKw: signal.requestedPowerKw,
+    allocatedPowerKw: 0,
+    fulfillmentRatio: 0,
+    commandCount: 0,
+    meterCount: 0,
+    startTime,
+    endTime,
+    commands: []
+  };
+
+  try {
+    const capabilities = getMeterCapabilities();
+    if (capabilities.length === 0 || signal.requestedPowerKw <= 0) {
+      logger.warn('No meters available for dispatch signal', { signalId: signal.id });
+      return emptyAggregate;
+    }
+
+    const totalAvailable = capabilities.reduce((sum, c) => sum + c.availableKw, 0);
+    if (totalAvailable <= 0) {
+      return emptyAggregate;
+    }
+
+    const commands: MeterDispatchCommand[] = [];
+    let allocated = 0;
+
+    for (const cap of capabilities) {
+      const share = (cap.availableKw / totalAvailable) * signal.requestedPowerKw;
+      const powerKw = Math.min(share, cap.availableKw);
+
+      if (powerKw < MIN_ALLOCATION_KW) {
+        continue;
+      }
+
+      const roundedPower = Math.round(powerKw * 100) / 100;
+      allocated += roundedPower;
+
+      commands.push({
+        signalId: signal.id,
+        meterId: cap.meterId,
+        owner: cap.owner,
+        action: signal.direction,
+        powerKw: roundedPower,
+        startTime,
+        endTime,
+        createdAt: new Date()
+      });
+    }
+
+    const allocatedPowerKw = Math.round(allocated * 100) / 100;
+    const fulfillmentRatio = signal.requestedPowerKw > 0
+      ? Math.min(1, allocatedPowerKw / signal.requestedPowerKw)
+      : 0;
+
+    const aggregate: DispatchAggregate = {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw,
+      fulfillmentRatio,
+      commandCount: commands.length,
+      meterCount: new Set(commands.map(c => c.meterId)).size,
+      startTime,
+      endTime,
+      commands
+    };
+
+    logger.info('Dispatch signal translated to meter commands', {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw,
+      fulfillmentRatio,
+      commandCount: commands.length
+    });
+
+    return aggregate;
+  } catch (error) {
+    logger.error('Error translating dispatch signal', { signalId: signal.id, error });
+    return emptyAggregate;
+  }
+}
+
+/**
+ * Aggregate meter-level responses back into a fleet-level response.
+ * `responses` maps meterId to the actual power delivered (kW, positive magnitude).
+ */
+export function aggregateDispatchResponses(
+  signal: DispatchSignal,
+  responses: Record<string, number>
+): DispatchAggregate {
+  const startTime = signal.startTime;
+  const endTime = new Date(startTime.getTime() + signal.durationMinutes * 60 * 1000);
+
+  try {
+    const commands: MeterDispatchCommand[] = Object.entries(responses)
+      .filter(([, power]) => power >= MIN_ALLOCATION_KW)
+      .map(([meterId, power]) => ({
+        signalId: signal.id,
+        meterId,
+        owner: '',
+        action: signal.direction,
+        powerKw: Math.round(power * 100) / 100,
+        startTime,
+        endTime,
+        createdAt: new Date()
+      }));
+
+    const allocatedPowerKw = Math.round(
+      commands.reduce((sum, c) => sum + c.powerKw, 0) * 100
+    ) / 100;
+
+    const fulfillmentRatio = signal.requestedPowerKw > 0
+      ? Math.min(1, allocatedPowerKw / signal.requestedPowerKw)
+      : 0;
+
+    return {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw,
+      fulfillmentRatio,
+      commandCount: commands.length,
+      meterCount: commands.length,
+      startTime,
+      endTime,
+      commands
+    };
+  } catch (error) {
+    logger.error('Error aggregating dispatch responses', { signalId: signal.id, error });
+    return {
+      signalId: signal.id,
+      direction: signal.direction,
+      requestedPowerKw: signal.requestedPowerKw,
+      allocatedPowerKw: 0,
+      fulfillmentRatio: 0,
+      commandCount: 0,
+      meterCount: 0,
+      startTime,
+      endTime,
+      commands: []
+    };
+  }
+}
+
+/**
  * Start peak detection monitoring
  */
 export function startPeakDetection(intervalMinutes: number = 15): void {
@@ -605,5 +885,429 @@ export function stopPeakDetection(): void {
     clearInterval(peakDetectionInterval);
     peakDetectionInterval = null;
     logger.info('Peak detection monitoring stopped');
+  }
+}
+
+/**
+ * Create a DR event with a curtailment target, driven by the smart contract.
+ */
+export function createDREvent(params: {
+  contractEventId: string;
+  startTime: Date;
+  endTime: Date;
+  curtailmentTargetKw: number;
+  incentiveRatePerKwh: number;
+}): DREvent | null {
+  try {
+    if (params.endTime.getTime() <= params.startTime.getTime()) {
+      logger.error('Invalid DR event time range', { params });
+      return null;
+    }
+    if (params.curtailmentTargetKw <= 0) {
+      logger.error('Invalid curtailment target', { params });
+      return null;
+    }
+
+    const now = Date.now();
+    const event: DREvent = {
+      id: `dr_${params.contractEventId}_${now}`,
+      contractEventId: params.contractEventId,
+      startTime: params.startTime,
+      endTime: params.endTime,
+      curtailmentTargetKw: params.curtailmentTargetKw,
+      incentiveRatePerKwh: params.incentiveRatePerKwh,
+      status: 'scheduled',
+      createdAt: new Date(now)
+    };
+
+    db.prepare(`
+      INSERT INTO dr_events (
+        id, contract_event_id, start_time, end_time,
+        curtailment_target_kw, incentive_rate_per_kwh, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.id,
+      event.contractEventId,
+      event.startTime.getTime(),
+      event.endTime.getTime(),
+      event.curtailmentTargetKw,
+      event.incentiveRatePerKwh,
+      event.status,
+      event.createdAt.getTime()
+    );
+
+    logger.info('DR event created', { event });
+    return event;
+  } catch (error) {
+    logger.error('Error creating DR event', { params, error });
+    return null;
+  }
+}
+
+/**
+ * Register a user opt-in with load preferences for DR automation.
+ */
+export function registerDROptIn(preference: {
+  meterId: string;
+  maxCurtailmentKw: number;
+  priorityLoads?: string[];
+  autoCurtail?: boolean;
+}): LoadPreference | null {
+  try {
+    if (!preference.meterId || preference.maxCurtailmentKw <= 0) {
+      logger.error('Invalid DR opt-in', { preference });
+      return null;
+    }
+
+    const optInAt = Date.now();
+    const priorityLoads = preference.priorityLoads ?? [];
+    const autoCurtail = preference.autoCurtail ?? true;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO dr_opt_ins (
+        meter_id, max_curtailment_kw, priority_loads, auto_curtail, opt_in_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      preference.meterId,
+      preference.maxCurtailmentKw,
+      JSON.stringify(priorityLoads),
+      autoCurtail ? 1 : 0,
+      optInAt
+    );
+
+    logger.info('DR opt-in registered', { meterId: preference.meterId });
+    return {
+      meterId: preference.meterId,
+      maxCurtailmentKw: preference.maxCurtailmentKw,
+      priorityLoads,
+      autoCurtail,
+      optInAt: new Date(optInAt)
+    };
+  } catch (error) {
+    logger.error('Error registering DR opt-in', { preference, error });
+    return null;
+  }
+}
+
+/**
+ * Remove a user's DR opt-in.
+ */
+export function removeDROptIn(meterId: string): boolean {
+  try {
+    const result = db.prepare(`
+      DELETE FROM dr_opt_ins WHERE meter_id = ?
+    `).run(meterId);
+    return result.changes > 0;
+  } catch (error) {
+    logger.error('Error removing DR opt-in', { meterId, error });
+    return false;
+  }
+}
+
+/**
+ * Get a user's DR opt-in preferences.
+ */
+export function getDROptIn(meterId: string): LoadPreference | null {
+  try {
+    const row = db.prepare(`
+      SELECT * FROM dr_opt_ins WHERE meter_id = ?
+    `).get(meterId) as any;
+    if (!row) return null;
+    return {
+      meterId: row.meter_id,
+      maxCurtailmentKw: row.max_curtailment_kw,
+      priorityLoads: JSON.parse(row.priority_loads || '[]'),
+      autoCurtail: row.auto_curtail === 1,
+      optInAt: new Date(row.opt_in_at)
+    };
+  } catch (error) {
+    logger.error('Error getting DR opt-in', { meterId, error });
+    return null;
+  }
+}
+
+/**
+ * Get a DR event by ID.
+ */
+export function getDREvent(drEventId: string): DREvent | null {
+  try {
+    const row = db.prepare(`
+      SELECT * FROM dr_events WHERE id = ?
+    `).get(drEventId) as any;
+    if (!row) return null;
+    return {
+      id: row.id,
+      contractEventId: row.contract_event_id,
+      startTime: new Date(row.start_time),
+      endTime: new Date(row.end_time),
+      curtailmentTargetKw: row.curtailment_target_kw,
+      incentiveRatePerKwh: row.incentive_rate_per_kwh,
+      status: row.status,
+      createdAt: new Date(row.created_at)
+    };
+  } catch (error) {
+    logger.error('Error getting DR event', { drEventId, error });
+    return null;
+  }
+}
+
+/**
+ * Update DR event status.
+ */
+export function updateDREventStatus(
+  drEventId: string,
+  status: DREvent['status']
+): void {
+  try {
+    db.prepare(`
+      UPDATE dr_events SET status = ? WHERE id = ?
+    `).run(status, drEventId);
+    logger.info('DR event status updated', { drEventId, status });
+  } catch (error) {
+    logger.error('Error updating DR event status', { drEventId, status, error });
+  }
+}
+
+/**
+ * Trigger automated load curtailment for a DR event via the IoT bridge.
+ * The IoT bridge is injected to avoid a hard dependency and to allow testing.
+ */
+export async function triggerAutomatedCurtailment(
+  drEventId: string,
+  iotBridge: {
+    curtailLoad: (
+      meterId: string,
+      targetKw: number,
+      priorityLoads: string[]
+    ) => Promise<{ achievedKw: number; devicesCurtailed: string[] }>;
+  }
+): Promise<CurtailmentResult[]> {
+  const results: CurtailmentResult[] = [];
+  try {
+    const event = getDREvent(drEventId);
+    if (!event) {
+      logger.error('DR event not found for curtailment', { drEventId });
+      return results;
+    }
+
+    const optIns = db.prepare(`
+      SELECT * FROM dr_opt_ins WHERE auto_curtail = 1
+    `).all() as any[];
+
+    if (optIns.length === 0) {
+      logger.warn('No opted-in meters for curtailment', { drEventId });
+      return results;
+    }
+
+    // Distribute the curtailment target evenly across opted-in meters,
+    // capped by each meter's max curtailment preference.
+    const perMeterTarget = event.curtailmentTargetKw / optIns.length;
+
+    for (const row of optIns) {
+      const meterId = row.meter_id as string;
+      const maxCurtailmentKw = row.max_curtailment_kw as number;
+      const priorityLoads: string[] = JSON.parse(row.priority_loads || '[]');
+      const requestedKw = Math.min(perMeterTarget, maxCurtailmentKw);
+
+      try {
+        const outcome = await iotBridge.curtailLoad(
+          meterId,
+          requestedKw,
+          priorityLoads
+        );
+        results.push({
+          meterId,
+          drEventId,
+          requestedKw,
+          achievedKw: outcome.achievedKw,
+          devicesCurtailed: outcome.devicesCurtailed,
+          success: outcome.achievedKw > 0,
+          timestamp: new Date()
+        });
+      } catch (error) {
+        logger.error('Failed to curtail load for meter', {
+          meterId,
+          drEventId,
+          error
+        });
+        results.push({
+          meterId,
+          drEventId,
+          requestedKw,
+          achievedKw: 0,
+          devicesCurtailed: [],
+          success: false,
+          timestamp: new Date()
+        });
+      }
+    }
+
+    logger.info('Automated curtailment triggered', {
+      drEventId,
+      meterCount: results.length,
+      totalAchievedKw: results.reduce((sum, r) => sum + r.achievedKw, 0)
+    });
+
+    return results;
+  } catch (error) {
+    logger.error('Error triggering automated curtailment', { drEventId, error });
+    return results;
+  }
+}
+
+/**
+ * Record and verify performance for a DR event participant.
+ */
+export function recordDRPerformance(params: {
+  meterId: string;
+  drEventId: string;
+  baselineKw: number;
+  actualKw: number;
+}): DRPerformanceRecord | null {
+  try {
+    const event = getDREvent(params.drEventId);
+    if (!event) {
+      logger.error('DR event not found for performance record', {
+        drEventId: params.drEventId
+      });
+      return null;
+    }
+
+    const reductionKw = Math.max(0, params.baselineKw - params.actualKw);
+    const verified = reductionKw > 0;
+    const incentiveAmount = verified
+      ? Math.round(reductionKw * event.incentiveRatePerKwh * 100) / 100
+      : 0;
+    const recordedAt = Date.now();
+
+    db.prepare(`
+      INSERT OR REPLACE INTO dr_performance (
+        meter_id, dr_event_id, baseline_kw, actual_kw,
+        reduction_kw, verified, incentive_amount, recorded_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      params.meterId,
+      params.drEventId,
+      params.baselineKw,
+      params.actualKw,
+      reductionKw,
+      verified ? 1 : 0,
+      incentiveAmount,
+      recordedAt
+    );
+
+    const record: DRPerformanceRecord = {
+      meterId: params.meterId,
+      drEventId: params.drEventId,
+      baselineKw: params.baselineKw,
+      actualKw: params.actualKw,
+      reductionKw,
+      verified,
+      incentiveAmount,
+      recordedAt: new Date(recordedAt)
+    };
+
+    logger.info('DR performance recorded', { record });
+    return record;
+  } catch (error) {
+    logger.error('Error recording DR performance', { params, error });
+    return null;
+  }
+}
+
+/**
+ * Calculate and distribute incentive payments for a DR event.
+ * Distribution is delegated to the provided payout handler (smart contract).
+ */
+export async function distributeIncentives(
+  drEventId: string,
+  payoutHandler: {
+    pay: (meterId: string, amount: number) => Promise<boolean>;
+  }
+): Promise<IncentiveDistribution> {
+  const distribution: IncentiveDistribution = {
+    drEventId,
+    totalDistributed: 0,
+    recipientCount: 0,
+    records: []
+  };
+
+  try {
+    const rows = db.prepare(`
+      SELECT * FROM dr_performance
+      WHERE dr_event_id = ? AND verified = 1 AND incentive_amount > 0
+    `).all(drEventId) as any[];
+
+    for (const row of rows) {
+      const record: DRPerformanceRecord = {
+        meterId: row.meter_id,
+        drEventId: row.dr_event_id,
+        baselineKw: row.baseline_kw,
+        actualKw: row.actual_kw,
+        reductionKw: row.reduction_kw,
+        verified: row.verified === 1,
+        incentiveAmount: row.incentive_amount,
+        recordedAt: new Date(row.recorded_at)
+      };
+
+      try {
+        const paid = await payoutHandler.pay(
+          record.meterId,
+          record.incentiveAmount
+        );
+        if (paid) {
+          distribution.totalDistributed += record.incentiveAmount;
+          distribution.recipientCount += 1;
+          distribution.records.push(record);
+        }
+      } catch (error) {
+        logger.error('Failed to distribute incentive', {
+          meterId: record.meterId,
+          drEventId,
+          error
+        });
+      }
+    }
+
+    distribution.totalDistributed =
+      Math.round(distribution.totalDistributed * 100) / 100;
+
+    logger.info('Incentives distributed', {
+      drEventId,
+      totalDistributed: distribution.totalDistributed,
+      recipientCount: distribution.recipientCount
+    });
+
+    return distribution;
+  } catch (error) {
+    logger.error('Error distributing incentives', { drEventId, error });
+    return distribution;
+  }
+}
+
+/**
+ * Get performance records for a DR event.
+ */
+export function getDRPerformance(drEventId: string): DRPerformanceRecord[] {
+  try {
+    const rows = db.prepare(`
+      SELECT * FROM dr_performance
+      WHERE dr_event_id = ?
+      ORDER BY recorded_at DESC
+    `).all(drEventId) as any[];
+
+    return rows.map(row => ({
+      meterId: row.meter_id,
+      drEventId: row.dr_event_id,
+      baselineKw: row.baseline_kw,
+      actualKw: row.actual_kw,
+      reductionKw: row.reduction_kw,
+      verified: row.verified === 1,
+      incentiveAmount: row.incentive_amount,
+      recordedAt: new Date(row.recorded_at)
+    }));
+  } catch (error) {
+    logger.error('Error getting DR performance', { drEventId, error });
+    return [];
   }
 }

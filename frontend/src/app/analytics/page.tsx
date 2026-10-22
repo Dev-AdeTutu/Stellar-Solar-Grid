@@ -11,9 +11,12 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   ComposedChart,
   Legend,
   Line,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -32,6 +35,10 @@ import {
   type MarketAnalytics,
   type Range,
 } from "@/lib/marketAnalytics";
+import {
+  getSurveyAnalytics,
+  type SurveyAnalytics,
+} from "@/lib/api";
 
 // Chart tokens: validated categorical slots 1-2 with their own dark steps.
 const TOKENS = `
@@ -55,6 +62,45 @@ const AXIS = { stroke: "var(--axis)", fontSize: 11, tickLine: false } as const;
 const shortDate = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
 const xlmTick = (v: number) => (v / 10_000_000).toLocaleString(undefined, { maximumSignificantDigits: 3 });
 
+// Appliance breakdown (#983): categorical slots for the pie chart.
+const APPLIANCE_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#8b5cf6", "#e34948", "#0e9aa7", "#b45309"];
+
+type ApplianceTrendPoint = { date: string; energyKwh: number };
+
+type ApplianceBreakdown = {
+  applianceId: string;
+  name: string;
+  category?: string;
+  energyKwh: number;
+  costStroops: number;
+  sharePct: number;
+  trendPct: number | null;
+  trend: ApplianceTrendPoint[];
+  recommendation?: string | null;
+};
+
+type AppliancesResponse = {
+  meterId: string;
+  rangeDays: number;
+  totalEnergyKwh: number;
+  appliances: ApplianceBreakdown[];
+  recommendations: string[];
+  insufficientData?: boolean;
+  reason?: string | null;
+};
+
+async function fetchAppliances(meterId: string, range: Range): Promise<AppliancesResponse> {
+  const res = await fetch(`/api/meters/${encodeURIComponent(meterId)}/appliances?range=${range}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error(`Failed to load appliance breakdown (${res.status})`);
+  return (await res.json()) as AppliancesResponse;
+}
+
+
+const formatTrend = (pct: number | null) =>
+  pct == null ? "—" : `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
+
 function StatTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
   return (
     <div className="rounded-lg border border-white/10 p-4">
@@ -75,6 +121,95 @@ function ChartCard({ title, subtitle, children }: { title: string; subtitle?: st
   );
 }
 
+function SurveyAnalyticsSection() {
+  const [data, setData] = useState<SurveyAnalytics | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getSurveyAnalytics()
+      .then((d) => !cancelled && setData(d))
+      .catch((e: Error) => !cancelled && setError(e.message))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return (
+    <section aria-labelledby="customer-satisfaction" className="rounded-lg border border-white/10 p-4">
+      <h2 id="customer-satisfaction" className="mb-1 font-semibold">Customer satisfaction</h2>
+      <p className="mb-3 text-xs opacity-60">
+        Net Promoter Score and satisfaction metrics from delivered surveys.
+      </p>
+
+      {loading && !data && <p>Loading…</p>}
+      {error && <p className="text-red-500">Failed to load survey analytics: {error}</p>}
+
+      {data && (
+        <div className={`space-y-4 ${loading ? "opacity-60" : ""}`}>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatTile
+              label="Net Promoter Score"
+              value={data.nps == null ? "—" : String(data.nps)}
+              detail={
+                data.nps == null
+                  ? "Not enough responses"
+                  : `${data.promotersPct}% promoters · ${data.passivesPct}% passives · ${data.detractorsPct}% detractors`
+              }
+            />
+            <StatTile
+              label="Average satisfaction"
+              value={data.averageSatisfaction == null ? "—" : `${data.averageSatisfaction} / 5`}
+              detail={data.averageSatisfaction == null ? undefined : "Mean rating across responses"}
+            />
+            <StatTile
+              label="Responses"
+              value={data.totalResponses.toLocaleString()}
+              detail={`${data.totalSurveys.toLocaleString()} surveys`}
+            />
+            <StatTile
+              label="Response rate"
+              value={data.responseRatePct == null ? "—" : `${data.responseRatePct}%`}
+              detail={`${data.sentCount.toLocaleString()} sent`}
+            />
+          </div>
+
+          {data.surveys.length > 0 && (
+            <div className="max-h-96 overflow-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-solar-accent text-left text-xs opacity-80">
+                  <tr>
+                    <th className="py-1">Survey</th>
+                    <th className="py-1 text-right">Sent</th>
+                    <th className="py-1 text-right">Responses</th>
+                    <th className="py-1 text-right">Avg score</th>
+                    <th className="py-1 text-right">NPS</th>
+                  </tr>
+                </thead>
+                <tbody className="tabular-nums">
+                  {data.surveys.map((s) => (
+                    <tr key={s.id} className="border-t border-white/5">
+                      <td className="py-1">{s.title}</td>
+                      <td className="py-1 text-right">{s.sentCount.toLocaleString()}</td>
+                      <td className="py-1 text-right">{s.responseCount.toLocaleString()}</td>
+                      <td className="py-1 text-right">{s.averageSatisfaction == null ? "—" : `${s.averageSatisfaction} / 5`}</td>
+                      <td className="py-1 text-right">{s.nps == null ? "—" : s.nps}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export default function AnalyticsPage() {
   const [range, setRange] = useState<Range>("30d");
   const [meterInput, setMeterInput] = useState("");
@@ -83,6 +218,9 @@ export default function AnalyticsPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showTable, setShowTable] = useState(false);
+  const [appliances, setAppliances] = useState<AppliancesResponse | null>(null);
+  const [applianceError, setApplianceError] = useState<string | null>(null);
+  const [applianceLoading, setApplianceLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,7 +235,43 @@ export default function AnalyticsPage() {
     };
   }, [range, meterId]);
 
+  useEffect(() => {
+    if (!meterId) {
+      setAppliances(null);
+      setApplianceError(null);
+      return;
+    }
+    let cancelled = false;
+    setApplianceLoading(true);
+    setApplianceError(null);
+    fetchAppliances(meterId, range)
+      .then((d) => !cancelled && setAppliances(d))
+      .catch((e: Error) => !cancelled && setApplianceError(e.message))
+      .finally(() => !cancelled && setApplianceLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [meterId, range]);
+
   const s = data?.summary;
+  const applianceList = appliances?.appliances ?? [];
+  const hasApplianceData = applianceList.length > 0 && !appliances?.insufficientData;
+  const pieData = applianceList.map((a) => ({ name: a.name, value: a.energyKwh, sharePct: a.sharePct }));
+  const trendDates = Array.from(
+    new Set(applianceList.flatMap((a) => a.trend.map((t) => t.date))),
+  ).sort();
+  const trendData = trendDates.map((date) => {
+    const row: Record<string, string | number> = { date };
+    for (const a of applianceList) {
+      const point = a.trend.find((t) => t.date === date);
+      if (point) row[a.name] = point.energyKwh;
+    }
+    return row;
+  });
+  const applianceRecommendations =
+    appliances?.recommendations?.length
+      ? appliances.recommendations
+      : applianceList.map((a) => a.recommendation).filter((r): r is string => Boolean(r));
 
   return (
     <>
@@ -243,6 +417,133 @@ export default function AnalyticsPage() {
               </ChartCard>
             </div>
 
+            <section aria-labelledby="appliance-breakdown" className="rounded-lg border border-white/10 p-4">
+              <h2 id="appliance-breakdown" className="mb-1 font-semibold">Appliance breakdown</h2>
+              <p className="mb-2 text-xs opacity-60">
+                {meterId
+                  ? `Per-appliance consumption for meter ${meterId} over the last ${range.replace("d", " days")}.`
+                  : "Enter a meter ID above to see which appliances consume the most energy."}
+              </p>
+
+              {!meterId && <p className="text-sm opacity-70">No meter selected.</p>}
+              {meterId && applianceLoading && !appliances && <p className="text-sm opacity-70">Loading appliances…</p>}
+              {meterId && applianceError && (
+                <p className="text-sm text-red-500">Failed to load appliance breakdown: {applianceError}</p>
+              )}
+
+              {meterId && !applianceLoading && !applianceError && appliances && !hasApplianceData && (
+                <p className="text-sm opacity-70">
+                  {appliances.reason ?? "Not enough data to identify appliances for this meter yet."}
+                </p>
+              )}
+
+              {meterId && hasApplianceData && (
+                <div className={`space-y-6 ${applianceLoading ? "opacity-60" : ""}`}>
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <div>
+                      <h3 className="mb-2 text-sm font-medium">Consumption share</h3>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie
+                              data={pieData}
+                              dataKey="value"
+                              nameKey="name"
+                              cx="50%"
+                              cy="50%"
+                              outerRadius="80%"
+                              isAnimationActive={false}
+                              label={(entry: { name?: string; sharePct?: number }) =>
+                                `${entry.name ?? ""} ${entry.sharePct != null ? `${entry.sharePct}%` : ""}`.trim()
+                              }
+                            >
+                              {pieData.map((entry, i) => (
+                                <Cell key={entry.name} fill={APPLIANCE_COLORS[i % APPLIANCE_COLORS.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip
+                              contentStyle={TOOLTIP_STYLE}
+                              formatter={(v: number, name: string) => [formatKwh(v), name]}
+                            />
+                          </PieChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div>
+                      <h3 className="mb-2 text-sm font-medium">Usage trend by appliance</h3>
+                      <div className="h-64">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <ComposedChart data={trendData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                            <CartesianGrid stroke="var(--grid)" vertical={false} />
+                            <XAxis dataKey="date" tickFormatter={shortDate} {...AXIS} minTickGap={24} />
+                            <YAxis {...AXIS} width={48} />
+                            <Tooltip
+                              contentStyle={TOOLTIP_STYLE}
+                              labelFormatter={(d) => shortDate(String(d))}
+                              formatter={(v: number, name: string) => [formatKwh(v), name]}
+                            />
+                            <Legend wrapperStyle={{ fontSize: 12 }} />
+                            {applianceList.map((a, i) => (
+                              <Line
+                                key={a.applianceId}
+                                dataKey={a.name}
+                                name={a.name}
+                                stroke={APPLIANCE_COLORS[i % APPLIANCE_COLORS.length]}
+                                strokeWidth={2}
+                                dot={false}
+                                connectNulls
+                                isAnimationActive={false}
+                              />
+                            ))}
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="overflow-auto">
+                    <table className="w-full text-sm">
+                      <thead className="text-left text-xs opacity-60">
+                        <tr>
+                          <th className="py-1">Appliance</th>
+                          <th className="py-1 text-right">Energy</th>
+                          <th className="py-1 text-right">Cost</th>
+                          <th className="py-1 text-right">Share</th>
+                          <th className="py-1 text-right">Trend</th>
+                        </tr>
+                      </thead>
+                      <tbody className="tabular-nums">
+                        {applianceList.map((a) => (
+                          <tr key={a.applianceId} className="border-t border-white/5">
+                            <td className="py-1">
+                              {a.name}
+                              {a.category && <span className="ml-2 text-xs opacity-60">{a.category}</span>}
+                            </td>
+                            <td className="py-1 text-right">{formatKwh(a.energyKwh)}</td>
+                            <td className="py-1 text-right">{formatXlm(a.costStroops)}</td>
+                            <td className="py-1 text-right">{a.sharePct}%</td>
+                            <td className="py-1 text-right">{formatTrend(a.trendPct)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {applianceRecommendations.length > 0 && (
+                    <div>
+                      <h3 className="mb-2 text-sm font-medium">Energy-saving recommendations</h3>
+                      <ul className="list-disc space-y-1 pl-5 text-sm">
+                        {applianceRecommendations.map((r) => (
+                          <li key={r}>{r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+
             {data.topMeters.length > 0 && (
               <section aria-labelledby="top-meters" className="rounded-lg border border-white/10 p-4">
                 <h2 id="top-meters" className="mb-2 font-semibold">Top meters by volume</h2>
@@ -268,6 +569,10 @@ export default function AnalyticsPage() {
                 </table>
               </section>
             )}
+
+            <SwarmSection meterId={meterId} range={range} />
+
+            <SurveyAnalyticsSection />
 
             <section aria-labelledby="daily-data" className="rounded-lg border border-white/10 p-4">
               <div className="flex items-center justify-between">

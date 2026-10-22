@@ -29,6 +29,25 @@ interface UsageHistory {
   hasMore: boolean;
 }
 
+interface GridExportRecord {
+  id: number;
+  meter_id: string;
+  kwh: number;
+  credit: string;
+  rate: string;
+  recorded_at: string;
+}
+
+interface GridExportHistory {
+  exports: GridExportRecord[];
+  total_kwh: number;
+  total_credit: string;
+  page: number;
+  pageSize: number;
+  total: number;
+  hasMore: boolean;
+}
+
 // ── Server Data Fetching ──────────────────────────────────────────────────
 
 const BACKEND_URL = env.NEXT_PUBLIC_BACKEND_URL;
@@ -57,14 +76,27 @@ async function fetchMeterHistory(meterId: string): Promise<UsageHistory | null> 
   }
 }
 
+async function fetchGridExports(meterId: string): Promise<GridExportHistory | null> {
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/meters/${meterId}/exports?pageSize=5`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
 // ── Component ─────────────────────────────────────────────────────────────
 
 export default async function MeterReportPage({ params }: { params: { id: string } }) {
   const { id: meterId } = params;
 
-  const [balance, history] = await Promise.all([
+  const [balance, history, exports] = await Promise.all([
     fetchMeterBalance(meterId),
     fetchMeterHistory(meterId),
+    fetchGridExports(meterId),
   ]);
 
   if (!balance) {
@@ -83,6 +115,10 @@ export default async function MeterReportPage({ params }: { params: { id: string
       })
     : reportUrl;
   const generatedAt = new Date().toLocaleString();
+
+  const totalImportedKwh = balance.units_used;
+  const totalExportedKwh = exports?.total_kwh ?? 0;
+  const totalExportCreditXlm = exports ? (Number(exports.total_credit) / 1e7).toFixed(4) : "0.0000";
 
   return (
     <main className="min-h-screen bg-solar-dark text-white p-4 sm:p-8 print-report">
@@ -161,6 +197,77 @@ export default async function MeterReportPage({ params }: { params: { id: string
                 {paymentDestination ? "Scan to pay this meter" : "Scan to view this meter"}
               </p>
             </div>
+          </div>
+
+          {/* Import / Export Breakdown */}
+          <div className="border border-white/10 bg-solar-accent rounded-xl p-6 mb-6">
+            <h2 className="text-lg font-bold text-white mb-4">Import / Export Breakdown</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                  Total Imported
+                </p>
+                <p className="text-lg font-bold text-white">
+                  {totalImportedKwh} <span className="text-sm text-gray-400">kWh</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                  Total Exported
+                </p>
+                <p className="text-lg font-bold text-white">
+                  {totalExportedKwh} <span className="text-sm text-gray-400">kWh</span>
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                  Export Credit
+                </p>
+                <p className="text-lg font-bold text-solar-yellow">
+                  {totalExportCreditXlm} <span className="text-sm text-gray-400">XLM</span>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Recent Grid Exports */}
+          <div className="border border-white/10 bg-solar-accent rounded-xl p-6 mb-6">
+            <h2 className="text-lg font-bold text-white mb-4">Recent Grid Exports (Last 5)</h2>
+
+            {exports && exports.exports.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-white/10">
+                      <th className="py-2 px-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                        Date
+                      </th>
+                      <th className="py-2 px-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                        kWh
+                      </th>
+                      <th className="py-2 px-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">
+                        Credit (XLM)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exports.exports.map((gridExport) => (
+                      <tr key={gridExport.id} className="border-b border-white/5">
+                        <td className="py-2 px-3 text-gray-300">
+                          {new Date(gridExport.recorded_at).toLocaleString()}
+                        </td>
+                        <td className="py-2 px-3 text-gray-300">{gridExport.kwh}</td>
+                        <td className="py-2 px-3 text-gray-300 font-mono">
+                          {(Number(gridExport.credit) / 1e7).toFixed(4)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-400">No grid exports available.</p>
+            )}
           </div>
 
           {/* Recent Readings */}

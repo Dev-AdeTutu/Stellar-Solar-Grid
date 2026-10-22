@@ -12,7 +12,16 @@ import Recommendations from "@/components/Recommendations";
 import { MeterSearchBar, type StatusFilter } from "@/components/MeterSearchBar";
 import { fuzzyMatch } from "@/lib/fuzzySearch";
 import { useWalletStore } from "@/store/walletStore";
-import { getMeter, getMetersByOwner, type MeterData } from "@/services/meterService";
+import {
+  getMeter,
+  getMetersByOwner,
+  getDelegates,
+  addDelegate,
+  removeDelegate,
+  type MeterData,
+  type Delegate,
+  type DelegatePermission,
+} from "@/services/meterService";
 import { parseWalletError } from "@/lib/errors";
 import { useToast } from "@/components/ToastProvider";
 import { useInterval } from "@/hooks/useInterval";
@@ -24,6 +33,7 @@ import { env } from "@/lib/env";
 import { formatXLM } from "@/lib/format";
 import PaymentSchedule from "@/components/PaymentSchedule";
 import EnergyDashboardWidget from "@/components/EnergyDashboardWidget";
+import BatteryDashboard from "@/components/BatteryDashboard";
 
 const API = env.NEXT_PUBLIC_BACKEND_URL;
 const BALANCE_POLL_INTERVAL_MS = env.NEXT_PUBLIC_POLL_INTERVAL_MS;
@@ -285,6 +295,293 @@ function CountdownTimer({ expiresAt, plan }: { expiresAt: bigint; plan: string }
 
 const COMMON_EMOJIS = ["☀️", "🏠", "🏬", "⚡", "🔋", "🏭"];
 
+const DELEGATE_PERMISSIONS: { value: DelegatePermission; label: string; hint: string }[] = [
+  { value: "view", label: "View", hint: "See balance, usage and history" },
+  { value: "pay", label: "Pay", hint: "Top up the meter balance" },
+  { value: "admin", label: "Admin", hint: "Manage plan, limits and delegates" },
+];
+
+function PermissionBadge({ permission }: { permission: DelegatePermission }) {
+  const styles: Record<DelegatePermission, string> = {
+    view: "bg-blue-900/40 text-blue-300 border-blue-700/40",
+    pay: "bg-green-900/40 text-green-300 border-green-700/40",
+    admin: "bg-purple-900/40 text-purple-300 border-purple-700/40",
+  };
+  return (
+    <span
+      className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${styles[permission]}`}
+    >
+      {permission}
+    </span>
+  );
+}
+
+function formatDelegateExpiry(expiry: number | bigint): string {
+  const expNum = Number(expiry);
+  if (!expNum || expNum === Number.MAX_SAFE_INTEGER) return "Never";
+  const date = new Date(expNum * 1000);
+  if (isNaN(date.getTime())) return "—";
+  return date.toLocaleDateString();
+}
+
+function isDelegateExpired(expiry: number | bigint): boolean {
+  const expNum = Number(expiry);
+  if (!expNum || expNum === Number.MAX_SAFE_INTEGER) return false;
+  return Date.now() / 1000 >= expNum;
+}
+
+/**
+ * Access & Sharing panel (Issue #981): lists the delegates for a meter and
+ * lets the owner grant or revoke access with view/pay/admin permissions.
+ */
+function AccessSharingSection({ meterId }: { meterId: string }) {
+  const { showToast } = useToast();
+  const [delegates, setDelegates] = useState<Delegate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  const [newAddress, setNewAddress] = useState("");
+  const [newPermissions, setNewPermissions] = useState<DelegatePermission[]>(["view"]);
+  const [newExpiry, setNewExpiry] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [removing, setRemoving] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const list = await getDelegates(meterId);
+      setDelegates(list);
+    } catch (err: unknown) {
+      setLoadError(parseWalletError(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [meterId]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const togglePermission = (permission: DelegatePermission) => {
+    setNewPermissions((prev) =>
+      prev.includes(permission)
+        ? prev.filter((p) => p !== permission)
+        : [...prev, permission],
+    );
+  };
+
+  const handleAdd = async () => {
+    const address = newAddress.trim();
+    if (!address) {
+      showToast({ variant: "error", title: "Enter a wallet address to delegate to" });
+      return;
+    }
+    if (newPermissions.length === 0) {
+      showToast({ variant: "error", title: "Select at least one permission" });
+      return;
+    }
+    let expiry = 0;
+    if (newExpiry) {
+      const parsed = Math.floor(new Date(`${newExpiry}T23:59:59Z`).getTime() / 1000);
+      if (!Number.isFinite(parsed)) {
+        showToast({ variant: "error", title: "Invalid expiry date" });
+        return;
+      }
+      expiry = parsed;
+    }
+
+    setSubmitting(true);
+    try {
+      await addDelegate(meterId, address, newPermissions, expiry);
+      showToast({
+        variant: "success",
+        title: "Delegate added",
+        description: `${address.slice(0, 6)}…${address.slice(-4)} can now access ${meterId}.`,
+      });
+      setNewAddress("");
+      setNewPermissions(["view"]);
+      setNewExpiry("");
+      await refresh();
+    } catch (err: unknown) {
+      showToast({
+        variant: "error",
+        title: "Failed to add delegate",
+        description: parseWalletError(err),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRemove = async (delegateAddress: string) => {
+    setRemoving(delegateAddress);
+    try {
+      await removeDelegate(meterId, delegateAddress);
+      showToast({
+        variant: "success",
+        title: "Delegate removed",
+        description: `${delegateAddress.slice(0, 6)}…${delegateAddress.slice(-4)} no longer has access.`,
+      });
+      await refresh();
+    } catch (err: unknown) {
+      showToast({
+        variant: "error",
+        title: "Failed to remove delegate",
+        description: parseWalletError(err),
+      });
+    } finally {
+      setRemoving(null);
+    }
+  };
+
+  return (
+    <div className="pt-4 border-t border-white/10 space-y-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="w-full flex items-center justify-between gap-2 text-left"
+      >
+        <span className="text-xs uppercase tracking-wider text-gray-500">
+          Access &amp; Sharing
+          {delegates.length > 0 && (
+            <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-[10px] text-gray-300">
+              {delegates.length}
+            </span>
+          )}
+        </span>
+        <span
+          className="text-gray-400 text-xs transition-transform"
+          style={{ transform: expanded ? "none" : "rotate(-90deg)" }}
+        >
+          ▾
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="space-y-3">
+          {loading ? (
+            <div className="space-y-2">
+              <Skeleton height={32} />
+              <Skeleton height={32} />
+            </div>
+          ) : loadError ? (
+            <div className="rounded-lg border border-red-600/40 bg-red-900/20 p-3 text-xs text-red-300 flex items-start justify-between gap-2">
+              <span>Failed to load delegates: {loadError}</span>
+              <button
+                type="button"
+                onClick={refresh}
+                className="underline underline-offset-2 hover:text-red-200 transition"
+              >
+                Retry
+              </button>
+            </div>
+          ) : delegates.length === 0 ? (
+            <p className="text-xs text-gray-500">
+              No delegates yet. Family members you add here can access this meter from their own
+              wallet.
+            </p>
+          ) : (
+            <ul className="space-y-2">
+              {delegates.map((delegate) => {
+                const expired = isDelegateExpired(delegate.expiry);
+                return (
+                  <li
+                    key={delegate.delegated_address}
+                    className="rounded-lg border border-white/10 bg-solar-dark/50 p-3 space-y-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-xs text-white break-all">
+                        {delegate.delegated_address}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemove(delegate.delegated_address)}
+                        disabled={removing === delegate.delegated_address}
+                        className="rounded border border-white/15 px-2 py-0.5 text-[10px] text-gray-300 hover:border-red-500/40 hover:text-red-400 disabled:opacity-40 transition"
+                      >
+                        {removing === delegate.delegated_address ? "Removing…" : "Remove"}
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {delegate.permissions.map((permission) => (
+                        <PermissionBadge key={permission} permission={permission} />
+                      ))}
+                      <span
+                        className={`text-[10px] ${expired ? "text-red-400" : "text-gray-500"}`}
+                      >
+                        {expired ? "Expired " : "Expires "}
+                        {formatDelegateExpiry(delegate.expiry)}
+                      </span>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {/* Add delegate form */}
+          <div className="rounded-lg border border-white/10 bg-solar-dark/50 p-3 space-y-2">
+            <label className="text-xs text-gray-400 block" htmlFor={`delegate-address-${meterId}`}>
+              Add a delegate
+            </label>
+            <input
+              id={`delegate-address-${meterId}`}
+              type="text"
+              value={newAddress}
+              onChange={(e) => setNewAddress(e.target.value)}
+              placeholder="G… wallet address"
+              className="w-full rounded border border-white/20 bg-solar-dark px-2.5 py-1.5 text-xs text-white placeholder-gray-500 focus:border-solar-yellow focus:outline-none"
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              {DELEGATE_PERMISSIONS.map(({ value, label, hint }) => (
+                <label
+                  key={value}
+                  title={hint}
+                  className="flex items-center gap-1.5 text-xs text-gray-300"
+                >
+                  <input
+                    type="checkbox"
+                    checked={newPermissions.includes(value)}
+                    onChange={() => togglePermission(value)}
+                    className="accent-solar-yellow"
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label
+                className="text-xs text-gray-400"
+                htmlFor={`delegate-expiry-${meterId}`}
+              >
+                Expiry (optional)
+              </label>
+              <input
+                id={`delegate-expiry-${meterId}`}
+                type="date"
+                value={newExpiry}
+                onChange={(e) => setNewExpiry(e.target.value)}
+                className="rounded border border-white/20 bg-solar-dark px-2 py-1 text-xs text-white focus:border-solar-yellow focus:outline-none"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleAdd}
+              disabled={submitting}
+              className="rounded bg-solar-yellow px-3 py-1.5 text-xs font-semibold text-solar-dark hover:opacity-90 disabled:opacity-40 transition"
+            >
+              {submitting ? "Adding…" : "Add delegate"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---- Meter grouping & tagging (Issue #732) ----
 const GROUPS_STORAGE_KEY = "meter_groups_v1";
 const TAGS_STORAGE_KEY = "meter_tags_v1";
@@ -366,9 +663,21 @@ function MeterCard({
   onRemoveTag?: (meterId: string, tag: string) => void;
 }) {
   const [nickname, setNickname] = useState<string>("");
+  const [tamperDetected, setTamperDetected] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [tempNickname, setTempNickname] = useState("");
   const [tempTag, setTempTag] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/api/meters/${encodeURIComponent(meterId)}/tamper-history?limit=1`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (!cancelled) setTamperDetected(Array.isArray(data?.events) && data.events.length > 0);
+      })
+      .catch(() => { if (!cancelled) setTamperDetected(false); });
+    return () => { cancelled = true; };
+  }, [meterId]);
 
   useEffect(() => {
     try {
@@ -492,6 +801,11 @@ function MeterCard({
         <div className="flex items-center gap-2">
           <StatusBadge active={hasAccess} />
           <PlanBadge plan={meter.plan} />
+          {tamperDetected && (
+            <span role="status" aria-label="Tamper alert" className="rounded-full border border-red-500/50 bg-red-500/15 px-2 py-1 text-[10px] font-bold text-red-300">
+              Tamper alert
+            </span>
+          )}
         </div>
       </div>
 
@@ -623,6 +937,9 @@ function MeterCard({
 
       <EnergyDashboardWidget meterId={meterId} />
 
+      {/* Battery monitoring (Issue #980) */}
+      <BatteryDashboard meterId={meterId} />
+
       {/* Personalised Recommendations */}
       <Recommendations meterId={meterId} ownerAddress={meter.owner} />
 
@@ -635,6 +952,9 @@ function MeterCard({
       <div className="pt-4 border-t border-white/10">
         <PaymentSchedule meterId={meterId} />
       </div>
+
+      {/* Access & Sharing — closes #981 */}
+      <AccessSharingSection meterId={meterId} />
 
       {/* Actions */}
       <div className="flex gap-2 pt-1">

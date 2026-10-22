@@ -19,7 +19,11 @@ function parsePayload(raw: string): MeterQrPayload {
   return value;
 }
 
-export default function MeterQrScanner() {
+export default function MeterQrScanner({
+  onRegistered,
+}: {
+  onRegistered?: (meterId: string) => void;
+} = {}) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [payload, setPayload] = useState<MeterQrPayload | null>(null);
   const [manual, setManual] = useState("");

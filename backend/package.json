@@ -13,9 +13,12 @@
     "test:coverage": "vitest run --coverage",
     "test:e2e": "tsx ../tests/e2e/payment-flow.ts",
     "test:scrub": "tsx tests/scrub.test.ts",
+    "test:lake": "tsx tests/dataLake.test.ts",
+    "test:algo": "tsx tests/algoEngine.test.ts",
     "test:cors": "tsx tests/cors.test.ts",
     "test:rate-limit-spoof": "tsx tests/rate-limit-spoof.test.ts",
     "test:integration": "vitest run --config vitest.config.ts",
+    "test:voice": "vitest run tests/voice-assistant.integration.test.ts",
     "docs:graphql": "tsx scripts/generate-graphql-docs.ts"
   },
   "dependencies": {
@@ -36,6 +39,7 @@
     "connect-timeout": "^1.9.0",
     "cors": "^2.8.6",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "express-openapi-validator": "^5.6.2",
     "express-rate-limit": "^7.5.0",
@@ -52,7 +56,6 @@
     "swagger-ui-express": "^5.0.1",
     "web-push": "^3.6.7",
     "winston": "^3.19.0",
-    "ws": "^8.22.0",
     "ws": "^8.21.3",
     "yamljs": "^0.3.0",
     "zod": "^4.3.6"

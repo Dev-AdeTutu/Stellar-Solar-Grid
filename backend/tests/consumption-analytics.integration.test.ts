@@ -39,10 +39,14 @@ const {
   trainConsumptionModel,
 } = await import("../src/lib/consumptionPatternsModel.js");
 const analytics = await import("../src/lib/consumptionAnalytics.js");
+const appliances = await import("../src/lib/applianceDisaggregation.js");
 const { db } = await import("../src/lib/usageEvents.js");
 const { consumptionAnalyticsRouter } = await import("../src/routes/consumptionAnalytics.js");
+const { applianceRouter } = await import("../src/routes/appliances.js");
 
 const METER_ID = "METER-PATTERN-1";
+const APPLIANCE_METER_ID = "METER-APPLIANCE-1";
+const SPARSE_METER_ID = "METER-APPLIANCE-SPARSE";
 /** A weekday household: quiet base, small morning bump, large evening peak. */
 const START = Date.UTC(2026, 0, 5);
 
@@ -62,6 +66,27 @@ function cleanSamples(endMs: number, days = 42) {
     return {
       timestamp: at.toISOString(),
       energyKwh: weekday === 0 || weekday === 6 ? weekendKwh(at.getUTCHours()) : weekdayKwh(at.getUTCHours()),
+    };
+  });
+}
+
+/**
+ * A synthetic multi-appliance household: a fridge cycling all day, a heat pump
+ * that dominates the morning and evening, a washing machine on a short midday
+ * burst and a base load that never switches off. Each appliance has a distinct
+ * signature so disaggregation has something real to separate.
+ */
+function multiApplianceSamples(endMs: number, days = 30) {
+  return Array.from({ length: days * 24 }, (_, index) => {
+    const at = new Date(endMs - (days * 24 - index) * 3_600_000);
+    const hour = at.getUTCHours();
+    const fridge = 0.09 + 0.03 * Math.sin((2 * Math.PI * hour) / 6);
+    const heatPump = 0.4 + 1.6 * bump(hour, 7, 2) + 1.8 * bump(hour, 19, 3);
+    const washer = hour >= 12 && hour <= 13 ? 1.4 : 0;
+    const base = 0.12;
+    return {
+      timestamp: at.toISOString(),
+      energyKwh: fridge + heatPump + washer + base,
     };
   });
 }
@@ -270,6 +295,120 @@ describe("consumption analytics persistence", () => {
     expect(empty.accuracyPct).toBeNull();
     expect(empty.patterns).toEqual([]);
     expect(empty.forecast.every((point) => point.predictedKwh === 0)).toBe(true);
+  });
+});
+
+describe("appliance disaggregation", () => {
+  const end = Date.now();
+
+  beforeAll(() => {
+    seedUsage(APPLIANCE_METER_ID, multiApplianceSamples(end));
+    // A meter with only a handful of hours cannot be disaggregated.
+    seedUsage(SPARSE_METER_ID, [
+      { timestamp: new Date(end - 3_600_000).toISOString(), energyKwh: 1.2 },
+      { timestamp: new Date(end - 7_200_000).toISOString(), energyKwh: 0.9 },
+    ]);
+    appliances.clearApplianceModelsForTests();
+  });
+
+  it("identifies distinct appliance categories from a multi-appliance series", () => {
+    const result = appliances.disaggregateAppliances(APPLIANCE_METER_ID, { days: 90 });
+    expect(result.meterId).toBe(APPLIANCE_METER_ID);
+    expect(result.sufficientData).toBe(true);
+    expect(result.appliances.length).toBeGreaterThanOrEqual(3);
+
+    const categories = result.appliances.map((appliance) => appliance.category);
+    expect(new Set(categories).size).toBe(categories.length);
+    // The heat pump's morning/evening peaks must be recognised as such.
+    expect(categories).toContain("heating");
+    expect(categories).toContain("refrigeration");
+  });
+
+  it("persists per-appliance usage and reports shares summing to ~100%", () => {
+    const result = appliances.disaggregateAppliances(APPLIANCE_METER_ID, { days: 90 });
+    const shareSum = result.appliances.reduce((sum, appliance) => sum + appliance.sharePct, 0);
+    expect(shareSum).toBeCloseTo(100, 0);
+
+    const totalKwh = result.appliances.reduce((sum, appliance) => sum + appliance.energyKwh, 0);
+    expect(totalKwh).toBeGreaterThan(0);
+    expect(result.totalKwh).toBeGreaterThan(0);
+
+    // Persisted: a fresh read returns the same appliances without re-running.
+    const stored = appliances.listApplianceUsage(APPLIANCE_METER_ID);
+    expect(stored.length).toBe(result.appliances.length);
+    for (const appliance of stored) {
+      expect(appliance.energyKwh).toBeGreaterThan(0);
+      expect(appliance.sharePct).toBeGreaterThan(0);
+    }
+  });
+
+  it("tracks usage trends per appliance", () => {
+    const result = appliances.disaggregateAppliances(APPLIANCE_METER_ID, { days: 90 });
+    for (const appliance of result.appliances) {
+      expect(appliance.trend).toBeDefined();
+      expect(["rising", "falling", "stable"]).toContain(appliance.trend.direction);
+      expect(appliance.trend.changePct).toBeTypeOf("number");
+    }
+  });
+
+  it("generates energy-saving recommendations for dominant appliances", () => {
+    const result = appliances.disaggregateAppliances(APPLIANCE_METER_ID, { days: 90 });
+    const dominant = [...result.appliances].sort((a, b) => b.energyKwh - a.energyKwh)[0];
+    expect(dominant.recommendations.length).toBeGreaterThan(0);
+    for (const recommendation of dominant.recommendations) {
+      expect(recommendation.title.length).toBeGreaterThan(0);
+      expect(recommendation.estimatedAnnualKwh).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("reports insufficient data for a meter with too little history", () => {
+    const result = appliances.disaggregateAppliances(SPARSE_METER_ID, { days: 90 });
+    expect(result.sufficientData).toBe(false);
+    expect(result.appliances).toEqual([]);
+  });
+});
+
+describe("appliance breakdown API", () => {
+  let server: Server;
+  let baseUrl = "";
+
+  beforeAll(async () => {
+    const app = express();
+    app.use(express.json());
+    app.use("/api/meters", applianceRouter);
+    server = createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  it("returns the appliance breakdown sorted by energyKwh", async () => {
+    const res = await fetch(`${baseUrl}/api/meters/${APPLIANCE_METER_ID}/appliances`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.meterId).toBe(APPLIANCE_METER_ID);
+    expect(body.sufficientData).toBe(true);
+    expect(body.appliances.length).toBeGreaterThanOrEqual(3);
+
+    const energies = body.appliances.map((appliance: { energyKwh: number }) => appliance.energyKwh);
+    expect([...energies].sort((a: number, b: number) => b - a)).toEqual(energies);
+
+    for (const appliance of body.appliances) {
+      expect(appliance.trend).toBeDefined();
+      expect(Array.isArray(appliance.recommendations)).toBe(true);
+    }
+  });
+
+  it("returns sufficientData:false for a meter with insufficient history", async () => {
+    const res = await fetch(`${baseUrl}/api/meters/${SPARSE_METER_ID}/appliances`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.sufficientData).toBe(false);
+    expect(body.appliances).toEqual([]);
   });
 });
 

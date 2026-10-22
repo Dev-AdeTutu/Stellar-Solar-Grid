@@ -116,7 +116,124 @@ export const SmsPaymentWebhookSchema = z
   })
   .strict();
 
+/** Locales supported by the voice assistant integration (issue #989). */
+export const VOICE_SUPPORTED_LOCALES = [
+  "en-US",
+  "en-GB",
+  "es-ES",
+  "fr-FR",
+  "pt-BR",
+  "sw-KE",
+] as const;
+
+export const VoiceLocaleSchema = z.enum(VOICE_SUPPORTED_LOCALES);
+
+export const VoiceParseSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1, "text is required")
+      .max(500, "text must be at most 500 characters"),
+    locale: VoiceLocaleSchema,
+  })
+  .strict();
+
+export const VoicePaymentConfirmSchema = z
+  .object({
+    token: z
+      .string()
+      .trim()
+      .regex(/^[0-9a-fA-F]+$/, "token must be a hexadecimal string")
+      .min(32, "token must be at least 32 characters")
+      .max(128, "token must be at most 128 characters"),
+    pin: z
+      .string()
+      .trim()
+      .min(4, "pin must be at least 4 characters")
+      .max(10, "pin must be at most 10 characters"),
+  })
+  .strict();
+
+export const VoicePaymentCancelSchema = z
+  .object({
+    token: z.string().trim().min(1, "token is required"),
+  })
+  .strict();
+
+/**
+ * Issue #1064: Regulatory sandbox mode.
+ *
+ * Sandbox inputs are validated with their own schema set so that experimental
+ * payloads can never be coerced into production request shapes. Feature flag
+ * keys are restricted to a conservative identifier alphabet to prevent
+ * prototype-pollution style keys (`__proto__`, `constructor`, ...).
+ */
+const SANDBOX_FLAG_KEY_REGEX = /^[a-z][a-z0-9_]{0,63}$/;
+
+export const SandboxFlagKeySchema = z
+  .string()
+  .trim()
+  .regex(SANDBOX_FLAG_KEY_REGEX, "invalid feature flag key");
+
+export const SandboxFeatureFlagToggleSchema = z
+  .object({
+    flag: SandboxFlagKeySchema,
+    enabled: z.boolean(),
+    // Optional free-form reason recorded in the sandbox audit trail.
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
+export const SandboxFeatureFlagBulkToggleSchema = z
+  .object({
+    flags: z
+      .array(SandboxFeatureFlagToggleSchema)
+      .min(1, "flags must contain at least one entry")
+      .max(50, "cannot toggle more than 50 flags per request"),
+  })
+  .strict();
+
+export const SandboxSyntheticDataRequestSchema = z
+  .object({
+    // Number of synthetic meters to generate.
+    meters: z
+      .number()
+      .int("meters must be an integer")
+      .min(1, "meters must be at least 1")
+      .max(500, "meters cannot exceed 500 per request"),
+    // Number of synthetic usage events per meter.
+    usage_events_per_meter: z
+      .number()
+      .int("usage_events_per_meter must be an integer")
+      .min(0, "usage_events_per_meter cannot be negative")
+      .max(1000, "usage_events_per_meter cannot exceed 1000"),
+    // Deterministic seed so generated fixtures are reproducible in tests.
+    seed: z.number().int().nonnegative().optional(),
+    // Optional locale hint for generated human-readable labels.
+    locale: VoiceLocaleSchema.optional(),
+  })
+  .strict();
+
+export const SandboxPromotionRequestSchema = z
+  .object({
+    // Feature flags to promote from sandbox to production.
+    flags: z
+      .array(SandboxFlagKeySchema)
+      .min(1, "flags must contain at least one entry")
+      .max(50, "cannot promote more than 50 flags per request"),
+    // Explicit acknowledgement that promotion affects production compliance.
+    acknowledge_production_impact: z.literal(true, {
+      errorMap: () => ({
+        message: "acknowledge_production_impact must be true to promote",
+      }),
+    }),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .strict();
+
 type RequestSchemaSet = {
+======
   body?: ZodTypeAny;
   params?: ZodTypeAny;
   query?: ZodTypeAny;
@@ -171,3 +288,18 @@ export type RegisterMeterInput = z.infer<typeof RegisterMeterSchema>;
 export type UsageUpdateInput = z.infer<typeof UsageUpdateSchema>;
 export type MakePaymentInput = z.infer<typeof MakePaymentSchema>;
 export type MeterNoteInput = z.infer<typeof MeterNoteSchema>;
+export type VoiceParseInput = z.infer<typeof VoiceParseSchema>;
+export type VoicePaymentConfirmInput = z.infer<typeof VoicePaymentConfirmSchema>;
+export type VoicePaymentCancelInput = z.infer<typeof VoicePaymentCancelSchema>;
+export type SandboxFeatureFlagToggleInput = z.infer<
+  typeof SandboxFeatureFlagToggleSchema
+>;
+export type SandboxFeatureFlagBulkToggleInput = z.infer<
+  typeof SandboxFeatureFlagBulkToggleSchema
+>;
+export type SandboxSyntheticDataRequestInput = z.infer<
+  typeof SandboxSyntheticDataRequestSchema
+>;
+export type SandboxPromotionRequestInput = z.infer<
+  typeof SandboxPromotionRequestSchema
+>;

@@ -11,12 +11,14 @@ import Navbar from "@/components/Navbar";
 import { useWalletStore } from "@/store/walletStore";
 import { usePaymentStore } from "@/store/paymentStore";
 import { getSmartHomeSession, smartHomeFetch } from "@/lib/smartHomeClient";
+import { useTranslation } from "@/lib/i18n";
 
 type MeterRow = { meterId: string; nickname: string };
 
 const PLATFORM_NAME: Record<string, string> = { google: "Google Home", alexa: "Amazon Alexa" };
 
 export default function SmartHomeLinkPage() {
+  const { t } = useTranslation("voiceAssistant");
   const { address, connect, signTransaction } = useWalletStore();
   const storedMeter = usePaymentStore((s) => s.meterId);
   const [params, setParams] = useState<URLSearchParams | null>(null);
@@ -128,7 +130,10 @@ export default function SmartHomeLinkPage() {
               <input type="checkbox" className="mt-1" checked={allowControl} onChange={(e) => setAllowControl(e.target.checked)} />
               <span>
                 Allow {platform} to turn these meters on and off and run my energy routines.
-                <span className="block text-xs opacity-70">Leave unchecked to only allow checking status and balance.</span>
+                <span className="block text-xs opacity-70">
+                  Leave unchecked to only allow checking status and balance. Voice payments require the control scope and a
+                  2FA/PIN configured on your account.
+                </span>
               </span>
             </label>
 
@@ -142,6 +147,22 @@ export default function SmartHomeLinkPage() {
                 Your wallet address and usage history are not shared. Voice commands are logged for 30 days so you can review
                 them, and you can unlink or delete everything at any time from the Smart Home page.
               </p>
+            </div>
+
+            <div className="rounded border border-white/10 p-3 text-sm mb-6">
+              <p className="font-semibold mb-1">{t("link.voiceCapabilitiesTitle", { platform })}</p>
+              <p className="opacity-80 mb-2">{t("link.voiceCapabilitiesBody", { platform })}</p>
+              <ul className="list-disc ml-5 opacity-80 space-y-1">
+                <li>{t("link.voiceCommandBalance")}</li>
+                <li>{t("link.voiceCommandUsage")}</li>
+                <li>{t("link.voiceCommandStatus")}</li>
+                <li>
+                  {allowControl
+                    ? t("link.voiceCommandPaymentEnabled")
+                    : t("link.voiceCommandPaymentDisabled")}
+                </li>
+              </ul>
+              <p className="mt-2 opacity-80">{t("link.voicePayment2faNote")}</p>
             </div>
 
             {error && <p className="text-red-500 mb-4">{error}</p>}

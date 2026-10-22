@@ -80,7 +80,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "255607"
+                  "i128": "510158"
                 }
               ]
             }
@@ -105,7 +105,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
                 },
                 {
-                  "i128": "255607"
+                  "i128": "510158"
                 },
                 {
                   "vec": [
@@ -132,7 +132,7 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "255607"
+                      "i128": "510158"
                     }
                   ]
                 }
@@ -143,9 +143,6 @@
         }
       ]
     ],
-    [],
-    [],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -159,7 +156,7 @@
                   "string": "RFND"
                 },
                 {
-                  "i128": "13623"
+                  "i128": "298323"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
@@ -174,6 +171,7 @@
         }
       ]
     ],
+    [],
     [],
     [],
     []
@@ -258,7 +256,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "5541220902715666415"
+                  "nonce": "4270020994084947596"
                 }
               },
               "durability": "temporary",
@@ -278,7 +276,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "5806905060045992000"
+                  "nonce": "5541220902715666415"
                 }
               },
               "durability": "temporary",
@@ -589,9 +587,25 @@
                   },
                   {
                     "key": {
+                      "symbol": "export_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "grace_expires_at"
                     },
                     "val": "void"
+                  },
+                  {
+                    "key": {
+                      "symbol": "import_kwh"
+                    },
+                    "val": {
+                      "u64": "0"
+                    }
                   },
                   {
                     "key": {
@@ -650,7 +664,7 @@
                       "symbol": "version"
                     },
                     "val": {
-                      "u32": 6
+                      "u32": 8
                     }
                   }
                 ]
@@ -680,7 +694,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "241984"
+                "i128": "211835"
               }
             }
           },
@@ -707,7 +721,7 @@
               },
               "durability": "persistent",
               "val": {
-                "u32": 7
+                "u32": 8
               }
             }
           },
@@ -768,7 +782,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "255607"
+                "i128": "510158"
               }
             }
           },
@@ -798,7 +812,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "13623"
+                "i128": "298323"
               }
             }
           },
@@ -825,7 +839,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "241984"
+                "i128": "211835"
               }
             }
           },
@@ -925,7 +939,7 @@
                         "symbol": "TOT_REV"
                       },
                       "val": {
-                        "i128": "255607"
+                        "i128": "510158"
                       }
                     }
                   ]
@@ -982,7 +996,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "241984"
+                      "i128": "211835"
                     }
                   },
                   {
@@ -1034,7 +1048,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "13623"
+                      "i128": "298323"
                     }
                   },
                   {

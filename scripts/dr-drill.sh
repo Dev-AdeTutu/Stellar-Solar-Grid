@@ -11,5 +11,5 @@ for db in "$WORK"/restore/*.db "$WORK"/restore/*.sqlite; do
   [ "$(sqlite3 "$db" 'PRAGMA integrity_check;')" = "ok" ] || { echo "FAIL: $db corrupt"; exit 1; }
 done
 ELAPSED=$(( $(date +%s) - START ))
-[ "$ELAPSED" -lt 14400 ] || { echo "FAIL: RTO exceeded (${ELAPSED}s)"; exit 1; }
+[ "$ELAPSED" -lt 3600 ] || { echo "FAIL: RTO exceeded (${ELAPSED}s)"; exit 1; }
 echo "DR drill PASSED in ${ELAPSED}s — record result in docs/DISASTER_RECOVERY.md"
