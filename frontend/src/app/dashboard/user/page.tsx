@@ -663,9 +663,21 @@ function MeterCard({
   onRemoveTag?: (meterId: string, tag: string) => void;
 }) {
   const [nickname, setNickname] = useState<string>("");
+  const [tamperDetected, setTamperDetected] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [tempNickname, setTempNickname] = useState("");
   const [tempTag, setTempTag] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/api/meters/${encodeURIComponent(meterId)}/tamper-history?limit=1`)
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => {
+        if (!cancelled) setTamperDetected(Array.isArray(data?.events) && data.events.length > 0);
+      })
+      .catch(() => { if (!cancelled) setTamperDetected(false); });
+    return () => { cancelled = true; };
+  }, [meterId]);
 
   useEffect(() => {
     try {
@@ -789,6 +801,11 @@ function MeterCard({
         <div className="flex items-center gap-2">
           <StatusBadge active={hasAccess} />
           <PlanBadge plan={meter.plan} />
+          {tamperDetected && (
+            <span role="status" aria-label="Tamper alert" className="rounded-full border border-red-500/50 bg-red-500/15 px-2 py-1 text-[10px] font-bold text-red-300">
+              Tamper alert
+            </span>
+          )}
         </div>
       </div>
 

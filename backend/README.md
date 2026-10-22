@@ -79,3 +79,9 @@ Real-time power outage detection engine and notification dispatcher. Implemented
   - `POST /api/outages/:id/resolve` — marks an outage resolved and records resolution timestamp
   - `POST /api/outages/circuits/:meterId/:circuitId` — dispatches MQTT commands to shed/restore individual circuits (#977)
 
+
+## Meter tamper detection (Issue #966)
+
+Meters publish physical tamper sensor events to `solargrid/meters/{meterId}/tamper` at QoS 2. A detected event is a JSON object such as `{ "tamper": true, "reason": "cover_open", "timestamp": "2026-01-01T00:00:00Z" }`. The bridge records the event timestamp in the tamper SQLite store, calls the Soroban `set_active(false)` operation, publishes an `OFF` command to the meter, and immediately POSTs `meter_tamper_detected` to provider webhooks (registered with provider id `provider`) and `PROVIDER_WEBHOOK_URL`. Optional `PROVIDER_WEBHOOK_SECRET` signs the direct provider request with `X-SolarGrid-Signature`.
+
+`GET /api/meters/:meterId/tamper-history?limit=100` returns the recorded events. The user dashboard displays a **Tamper alert** badge when history is non-empty. Configure `TAMPER_DB_PATH` to choose the persistent SQLite file; it defaults to `backend/data/tamper-events.sqlite`.
