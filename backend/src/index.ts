@@ -54,11 +54,14 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { emergencyContactsRouter } from "./routes/emergencyContacts.js";
+import { supportTicketsRouter } from "./routes/supportTickets.js";
 import { creditScoreRouter } from "./routes/creditScore.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import forecastRouter from "./routes/forecast.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { challengesRouter, startChallengeScheduler } from "./routes/challenges.js";
+import { createDisasterRecoveryRouter } from "./routes/disasterRecovery.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
@@ -131,6 +134,9 @@ import { rateLimitTiersRouter } from "./routes/rateLimitTiers.js";
 import { tieredRateLimiter } from "./middleware/tieredRateLimit.js";
 import { shadowsRouter } from "./routes/shadows.js";
 import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
+// #1046: federated learning coordinator
+import { federatedRouter } from "./routes/federated.js";
+import { startFederatedCoordinator, stopFederatedCoordinator } from "./lib/federatedLearning.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -223,6 +229,7 @@ app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
+app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/export", exportRouter);
@@ -251,7 +258,14 @@ app.use("/api/widgets", widgetsRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
+// #1059: gamified energy challenges
+app.use("/api/challenges", challengesRouter);
+startChallengeScheduler();
+// #1060: disaster recovery automation
+app.use("/api/dr", createDisasterRecoveryRouter());
 app.use("/api/communities", communitiesRouter);
+// #968: Customer support ticketing
+app.use("/api/tickets", writeLimiter, supportTicketsRouter);
 app.use("/api/smart-home", smartHomeRouter);
 // #989: voice assistant (Alexa / Google Assistant) skill endpoints
 app.use("/api/voice", readLimiter, voiceAssistantRouter);
@@ -272,6 +286,9 @@ app.use("/api/rate-limits", rateLimitTiersRouter);
 app.use("/api/shadows", tieredRateLimiter, shadowsRouter);
 // #1082: 7-day energy forecasting dashboard
 app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
+// #1046: federated learning (local training + privacy-preserving aggregation)
+app.use("/api/federated", writeLimiter, federatedRouter);
+startFederatedCoordinator();
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
@@ -416,7 +433,7 @@ httpServer.listen(PORT, () => {
   startRecommendationWorker();
 });
 
-export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner };
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);

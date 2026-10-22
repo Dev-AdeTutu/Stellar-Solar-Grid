@@ -15,6 +15,8 @@
  * refreshes the score so it stays current without requests.
  */
 import { getAllMeterHealth } from "./meterHealth.js";
+import { getBatteryStatus } from "./battery.js";
+import { getTradingState } from "./p2pTrading.js";
 
 export type Severity = "low" | "medium" | "high" | "critical";
 export type Vulnerability = { id: string; severity: Severity; metric: string; message: string; meterIds?: string[] };
@@ -30,6 +32,146 @@ export type ResilienceScore = {
   computedAt: string;
 };
 export type ResilienceSnapshot = { at: string; score: number; metrics: ResilienceMetrics };
+
+// ---------------------------------------------------------------------------
+// Micro-grid island mode (#1041)
+// ---------------------------------------------------------------------------
+export type IslandState = "grid-connected" | "islanded" | "resyncing";
+export type GridSignal = { meterId: string; frequencyHz: number; voltageV: number; at: number };
+export type IslandEvent = { at: string; from: IslandState; to: IslandState; reason: string };
+export type IslandStatus = {
+  state: IslandState;
+  since: string;
+  members: string[];
+  localGenerationKw: number;
+  storageSocPercent: number;
+  p2pEnabled: boolean;
+  lastEvent: IslandEvent | null;
+  events: IslandEvent[];
+};
+
+const NOMINAL_FREQ_HZ = Number(process.env.ISLAND_NOMINAL_FREQ_HZ ?? 50);
+const NOMINAL_VOLTAGE_V = Number(process.env.ISLAND_NOMINAL_VOLTAGE_V ?? 230);
+const FREQ_TOLERANCE_HZ = Number(process.env.ISLAND_FREQ_TOLERANCE_HZ ?? 0.5);
+const VOLTAGE_TOLERANCE_V = Number(process.env.ISLAND_VOLTAGE_TOLERANCE_V ?? 20);
+const SIGNAL_STALE_MS = Number(process.env.ISLAND_SIGNAL_STALE_MS ?? 30_000);
+const RESYNC_STABLE_MS = Number(process.env.ISLAND_RESYNC_STABLE_MS ?? 10_000);
+const EVENT_LIMIT = Number(process.env.ISLAND_EVENT_LIMIT ?? 100);
+
+const island: {
+  state: IslandState;
+  since: number;
+  members: string[];
+  signals: Map<string, GridSignal>;
+  resyncSince: number | null;
+  events: IslandEvent[];
+} = { state: "grid-connected", since: Date.now(), members: [], signals: new Map(), resyncSince: null, events: [] };
+
+function recordIslandEvent(from: IslandState, to: IslandState, reason: string, now: number): void {
+  island.state = to;
+  island.since = now;
+  island.events.push({ at: new Date(now).toISOString(), from, to, reason });
+  if (island.events.length > EVENT_LIMIT) island.events.splice(0, island.events.length - EVENT_LIMIT);
+}
+
+/** Ingest a frequency/voltage reading from an IoT meter (called from MQTT handler). */
+export function ingestGridSignal(meterId: string, frequencyHz: number, voltageV: number, now = Date.now()): void {
+  island.signals.set(meterId, { meterId, frequencyHz, voltageV, at: now });
+  if (!island.members.includes(meterId)) island.members.push(meterId);
+}
+
+const withinTolerance = (s: GridSignal) =>
+  Math.abs(s.frequencyHz - NOMINAL_FREQ_HZ) <= FREQ_TOLERANCE_HZ && Math.abs(s.voltageV - NOMINAL_VOLTAGE_V) <= VOLTAGE_TOLERANCE_V;
+
+/** True when the majority of fresh meter signals are outside nominal tolerances. */
+export function detectGridDisconnection(now = Date.now()): boolean {
+  const fresh = [...island.signals.values()].filter((s) => now - s.at <= SIGNAL_STALE_MS);
+  if (!fresh.length) return false;
+  const abnormal = fresh.filter((s) => !withinTolerance(s)).length;
+  return abnormal / fresh.length > 0.5;
+}
+
+/** True when all fresh signals are back within nominal tolerances. */
+export function isGridStable(now = Date.now()): boolean {
+  const fresh = [...island.signals.values()].filter((s) => now - s.at <= SIGNAL_STALE_MS);
+  return fresh.length > 0 && fresh.every(withinTolerance);
+}
+
+function localResources(): { localGenerationKw: number; storageSocPercent: number } {
+  let localGenerationKw = 0;
+  let storageSocPercent = 0;
+  try {
+    const battery = getBatteryStatus();
+    localGenerationKw = Number(battery?.chargeRateKw ?? 0);
+    storageSocPercent = Number(battery?.socPercent ?? 0);
+  } catch {
+    /* battery module unavailable */
+  }
+  return { localGenerationKw, storageSocPercent };
+}
+
+function p2pEnabled(): boolean {
+  try {
+    return getTradingState().enabled !== false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Advance the island state machine based on current grid signals.
+ * grid-connected -> islanded on disconnection detection;
+ * islanded -> resyncing once the grid is stable;
+ * resyncing -> grid-connected after RESYNC_STABLE_MS of stability.
+ */
+export function evaluateIslandMode(now = Date.now()): IslandStatus {
+  if (island.state === "grid-connected") {
+    if (detectGridDisconnection(now)) recordIslandEvent("grid-connected", "islanded", "main grid disconnection detected", now);
+  } else if (island.state === "islanded") {
+    if (isGridStable(now)) {
+      island.resyncSince = now;
+      recordIslandEvent("islanded", "resyncing", "grid signals stable; synchronizing frequency/phase", now);
+    }
+  } else if (island.state === "resyncing") {
+    if (!isGridStable(now)) {
+      island.resyncSince = null;
+      recordIslandEvent("resyncing", "islanded", "grid instability during resync", now);
+    } else if (island.resyncSince !== null && now - island.resyncSince >= RESYNC_STABLE_MS) {
+      island.resyncSince = null;
+      recordIslandEvent("resyncing", "grid-connected", "frequency/phase synchronized; reconnected to main grid", now);
+    }
+  }
+  return getIslandStatus(now);
+}
+
+export function getIslandStatus(now = Date.now()): IslandStatus {
+  const { localGenerationKw, storageSocPercent } = localResources();
+  return {
+    state: island.state,
+    since: new Date(island.since).toISOString(),
+    members: [...island.members],
+    localGenerationKw,
+    storageSocPercent,
+    p2pEnabled: island.state !== "grid-connected" && p2pEnabled(),
+    lastEvent: island.events.at(-1) ?? null,
+    events: [...island.events],
+  };
+}
+
+/** P2P energy sharing is only permitted between members while islanded. */
+export function canShareEnergy(fromMeterId: string, toMeterId: string): boolean {
+  if (island.state !== "islanded") return false;
+  return island.members.includes(fromMeterId) && island.members.includes(toMeterId);
+}
+
+export function _resetIslandMode(): void {
+  island.state = "grid-connected";
+  island.since = Date.now();
+  island.members = [];
+  island.signals.clear();
+  island.resyncSince = null;
+  island.events = [];
+}
 
 const WEIGHTS: ResilienceMetrics = { availability: 0.3, uptime: 0.25, reliability: 0.2, latency: 0.1, redundancy: 0.15 };
 const LATENCY_TARGET_MS = Number(process.env.RESILIENCE_LATENCY_TARGET_MS ?? 500);
@@ -129,4 +271,5 @@ export function startResilienceMonitor(intervalMs = Number(process.env.RESILIENC
 
 export function _resetResilience(): void {
   history.length = 0;
+  _resetIslandMode();
 }

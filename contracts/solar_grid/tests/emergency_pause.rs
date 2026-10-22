@@ -1,7 +1,7 @@
 use solar_grid::{ContractError, PaymentPlan, SolarGridContract, SolarGridContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    token, Address, Env, String,
+    token, Address, Env, String, Symbol, TryFromVal, Val,
 };
 
 fn setup() -> (Env, SolarGridContractClient<'static>, Address, Address) {
@@ -68,4 +68,27 @@ fn pause_expires_at_48_hours_and_allows_payments_again() {
 
     // The automatic expiry is equivalent to an explicit unpause.
     client.make_payment(&meter_id, &owner, &1_000_i128, &PaymentPlan::Daily, &None);
+}
+
+#[test]
+fn canonical_pause_aliases_emit_transition_events_and_keep_reads_available() {
+    let (env, client, _admin, _token_address) = setup();
+    client.pause_contract();
+    assert!(client.is_paused());
+    assert!(has_event_topic(&env, Symbol::new(&env, "ContractPaused")));
+    client.unpause_contract();
+    assert!(!client.is_paused());
+    assert!(has_event_topic(&env, Symbol::new(&env, "ContractUnpaused")));
+}
+
+fn has_event_topic(env: &Env, expected: Symbol) -> bool {
+    env.events().all().events().iter().any(|event| {
+        let soroban_sdk::xdr::ContractEventBody::V0(v0) = &event.body;
+        v0.topics.iter().any(|topic| {
+            Val::try_from_val(env, topic)
+                .ok()
+                .and_then(|value| Symbol::try_from_val(env, &value).ok())
+                == Some(expected.clone())
+        })
+    })
 }

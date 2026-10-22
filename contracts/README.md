@@ -1,5 +1,24 @@
 # SolarGrid Smart Contract
 
+## Administrator pause circuit breaker (Issue #969)
+
+The contract administrator can pause and resume mutable contract operations with
+`pause_contract()` and `unpause_contract()`. The existing `pause()` and
+`unpause()` entrypoints remain supported as compatibility aliases. Both actions
+require the configured administrator's authorization; attempting to repeat an
+action returns `AlreadyPaused` or `NotPaused`.
+
+While paused, state-changing entrypoints return `ContractPaused`. Read-only
+queries remain available, and the pause/unpause entrypoints remain available so
+the administrator can recover the contract. The existing automatic 48-hour
+expiry is retained: an expired pause is treated as unpaused on the next state
+check.
+
+Each explicit transition emits the canonical `ContractPaused` or
+`ContractUnpaused` event with `(admin, timestamp)` data. The legacy lowercase
+`contract_paused` and `contract_unpaused` events are also emitted for existing
+indexers. Automatic expiry continues to emit the legacy unpause notification.
+
 ## Event Schema
 
 The contract emits Soroban events for real-time monitoring by backend and frontend systems.
@@ -582,20 +601,3 @@ Decentralized marketplace allowing solar producers to sell excess generation dir
 - **Events:**
   - `energy_listed`: `(seller, kwh_available, price_per_kwh)`
   - `energy_traded`: `(seller, buyer, kwh_traded, total_cost)`
-
-
-## Energy Consumption Limits (Issue #967)
-
-Each `Meter` supports a configurable **consumption limit** measured in milli-kWh
-units. `set_consumption_limit(meter_id, limit, period)` may be called by the
-meter owner or the contract admin. `limit = 0` disables enforcement, and
-`period` is one of `Daily`, `Weekly`, or `Monthly` (monthly uses the contract's
-fixed 30-day UTC accounting period).
-
-The contract tracks `period_consumed` and resets it automatically at the UTC
-period boundary. Usage that would exceed the configured limit pauses the meter
-without recording the rejected update. Usage that exactly reaches the limit is
-recorded and then pauses the meter. In either case it emits
-`ConsumptionLimitReached` with topics `(solargrid, ConsumptionLimitReached,
-meter_id)` and data `(limit, period_consumed, requested_units, period, timestamp)`.
-An administrator can explicitly reactivate a paused meter with `set_active`.

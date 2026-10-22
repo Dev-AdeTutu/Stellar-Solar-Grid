@@ -60,3 +60,38 @@ Retrieves the current dynamic pricing rate, multiplier, and next update schedule
 
 Returns benchmarking statistics, efficiency percentiles, peer group averages, and actionable insights for a meter compared to other meters in the same capacity and location tier.
 
+
+## Customer Support Ticketing (#968)
+
+Support tickets require a wallet session obtained from `POST /api/smart-home/auth/session`. Send the returned token as `Authorization: Bearer <token>`; ticket ownership is derived from the authenticated wallet address and cannot be supplied by the client.
+
+### `POST /api/tickets`
+
+Creates a ticket for the authenticated user.
+
+```json
+{
+  "subject": "Meter is offline",
+  "description": "The meter has not reported for two hours.",
+  "priority": "high",
+  "email": "user@example.com"
+}
+```
+
+`subject` is required (1–160 characters), `description` is required (1–10,000 characters), `priority` is optional (`low`, `normal`, `high`, or `urgent`) and defaults to `normal`, and `email` is optional but must be a valid address when present. Returns `201` with `{ "ticket": ... }`; new tickets start with `status: "open"`.
+
+### `GET /api/tickets`
+
+Lists the authenticated user's tickets, newest first. Returns `{ "tickets": [...] }`. Tickets belonging to other wallet addresses are never included.
+
+### `PATCH /api/tickets/:id`
+
+Updates the status of a ticket owned by the authenticated user.
+
+```json
+{ "status": "in_progress" }
+```
+
+Allowed statuses are `open`, `in_progress`, `resolved`, and `closed`. Returns `404` for an unknown ticket or a ticket owned by another user, and `400` for an invalid id or status.
+
+Ticket objects contain `id`, `user`, `userEmail`, `subject`, `description`, `status`, `priority`, `createdAt`, and `updatedAt`. When `SUPPORT_EMAIL` is configured, ticket creation and status changes notify the support team; users who provide `email` receive the same updates. Notifications use the existing `EMAIL_PROVIDER`/`EMAIL_FROM` mailer configuration and never prevent a successfully persisted ticket.

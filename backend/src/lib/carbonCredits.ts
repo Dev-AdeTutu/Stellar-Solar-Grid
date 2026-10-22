@@ -8,6 +8,8 @@
 
 export type CreditStatus = "issued" | "retired" | "listed" | "sold";
 
+export type VerificationStatus = "unverified" | "pending" | "verified" | "rejected";
+
 export type CarbonCredit = {
   id: string;
   ownerId: string;
@@ -20,6 +22,15 @@ export type CarbonCredit = {
   retiredAt: string | null;
   meterId: string | null;
   auditTrail: AuditEntry[];
+  /** On-chain token id once the credit has been tokenized (fungible token). */
+  tokenId: string | null;
+  tokenized: boolean;
+  verificationStatus: VerificationStatus;
+  verifiedBy: string | null;
+  verifiedAt: string | null;
+  certificationRef: string | null;
+  certifiedBy: string | null;
+  certifiedAt: string | null;
 };
 
 export type AuditEntry = {
@@ -81,9 +92,141 @@ export function issueCredit(params: {
         detail: `${creditsIssued.toFixed(4)} credits for ${params.kwhProduced} kWh`,
       },
     ],
+    tokenId: null,
+    tokenized: false,
+    verificationStatus: "unverified",
+    verifiedBy: null,
+    verifiedAt: null,
+    certificationRef: null,
+    certifiedBy: null,
+    certifiedAt: null,
   };
   credits.set(id, credit);
   return credit;
+}
+
+// ── Tokenization (#1043) ─────────────────────────────────────────────────────
+
+let tokenSeq = 1;
+
+/**
+ * Tokenize a credit as a fungible token. Only verified credits may be
+ * tokenized so that marketplace buyers can trust the underlying asset.
+ */
+export function tokenizeCredit(creditId: string, actor: string): CarbonCredit {
+  const credit = credits.get(creditId);
+  if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
+  if (credit.tokenized) throw Object.assign(new Error("Credit already tokenized"), { code: "CONFLICT" });
+  if (credit.verificationStatus !== "verified") {
+    throw Object.assign(new Error("Credit must be verified before tokenization"), { code: "CONFLICT" });
+  }
+  const now = new Date().toISOString();
+  credit.tokenId = `CCT-${tokenSeq++}`;
+  credit.tokenized = true;
+  credit.auditTrail.push({
+    action: "tokenized",
+    actor,
+    timestamp: now,
+    detail: `Token ${credit.tokenId} minted for ${credit.creditsIssued.toFixed(4)} credits`,
+  });
+  return credit;
+}
+
+// ── Verification and certification (#1043) ───────────────────────────────────
+
+/** Submit a credit for third-party verification. */
+export function submitForVerification(creditId: string, actor: string): CarbonCredit {
+  const credit = credits.get(creditId);
+  if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
+  if (credit.verificationStatus === "verified") {
+    throw Object.assign(new Error("Credit already verified"), { code: "CONFLICT" });
+  }
+  const now = new Date().toISOString();
+  credit.verificationStatus = "pending";
+  credit.auditTrail.push({ action: "verification_requested", actor, timestamp: now });
+  return credit;
+}
+
+/** A verifier attests (or rejects) the generation data behind a credit. */
+export function verifyCredit(creditId: string, verifier: string, approved = true): CarbonCredit {
+  const credit = credits.get(creditId);
+  if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
+  if (credit.verificationStatus === "verified") {
+    throw Object.assign(new Error("Credit already verified"), { code: "CONFLICT" });
+  }
+  const now = new Date().toISOString();
+  credit.verificationStatus = approved ? "verified" : "rejected";
+  credit.verifiedBy = verifier;
+  credit.verifiedAt = now;
+  credit.auditTrail.push({
+    action: approved ? "verified" : "verification_rejected",
+    actor: verifier,
+    timestamp: now,
+  });
+  return credit;
+}
+
+/** Issue a certification reference for a verified credit. */
+export function certifyCredit(creditId: string, certifier: string, certificationRef?: string): CarbonCredit {
+  const credit = credits.get(creditId);
+  if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
+  if (credit.verificationStatus !== "verified") {
+    throw Object.assign(new Error("Credit must be verified before certification"), { code: "CONFLICT" });
+  }
+  if (credit.certificationRef) {
+    throw Object.assign(new Error("Credit already certified"), { code: "CONFLICT" });
+  }
+  const now = new Date().toISOString();
+  credit.certificationRef = certificationRef ?? `CERT-${credit.id}`;
+  credit.certifiedBy = certifier;
+  credit.certifiedAt = now;
+  credit.auditTrail.push({
+    action: "certified",
+    actor: certifier,
+    timestamp: now,
+    detail: credit.certificationRef,
+  });
+  return credit;
+}
+
+// ── Automated issuance from solar generation (#1043) ─────────────────────────
+
+/** Per-meter cumulative kWh tracking used for automated issuance. */
+const meterTotals = new Map<string, number>();
+
+/**
+ * Record solar generation for a meter and automatically issue a credit once
+ * enough kWh have accumulated to mint at least one whole credit.
+ * Returns the newly issued credit, or null if the threshold was not reached.
+ */
+export function issueFromGeneration(params: {
+  ownerId: string;
+  meterId: string;
+  kwhProduced: number;
+  vintage?: string;
+}): CarbonCredit | null {
+  if (params.kwhProduced <= 0) {
+    throw Object.assign(new Error("kWh produced must be positive"), { code: "VALIDATION_ERROR" });
+  }
+  const total = (meterTotals.get(params.meterId) ?? 0) + params.kwhProduced;
+  meterTotals.set(params.meterId, total);
+  if (total < KWH_PER_CREDIT) return null;
+
+  // Consume the accumulated kWh that map to whole credits; keep the remainder.
+  const wholeCredits = Math.floor(total / KWH_PER_CREDIT);
+  const consumedKwh = wholeCredits * KWH_PER_CREDIT;
+  meterTotals.set(params.meterId, total - consumedKwh);
+
+  return issueCredit({
+    ownerId: params.ownerId,
+    kwhProduced: consumedKwh,
+    meterId: params.meterId,
+    vintage: params.vintage,
+  });
+}
+
+export function getMeterAccumulatedKwh(meterId: string): number {
+  return meterTotals.get(meterId) ?? 0;
 }
 
 export function retireCredit(creditId: string, actor: string): CarbonCredit {
@@ -155,6 +298,128 @@ export function listCreditsByOwner(ownerId: string): CarbonCredit[] {
 
 export function getMarketListings(): MarketListing[] {
   return [...listings.values()];
+}
+
+// ── Order book and price discovery (#1043) ───────────────────────────────────
+
+export type OrderSide = "bid" | "ask";
+
+export type Order = {
+  id: string;
+  side: OrderSide;
+  traderId: string;
+  pricePerCredit: number;
+  quantity: number;
+  remaining: number;
+  createdAt: string;
+};
+
+export type Trade = {
+  id: string;
+  bidId: string;
+  askId: string;
+  buyerId: string;
+  sellerId: string;
+  pricePerCredit: number;
+  quantity: number;
+  executedAt: string;
+};
+
+const bids: Order[] = [];
+const asks: Order[] = [];
+const trades: Trade[] = [];
+
+let orderSeq = 1;
+let tradeSeq = 1;
+
+function insertSorted(book: Order[], order: Order): void {
+  book.push(order);
+  book.sort((a, b) => (order.side === "bid" ? b.pricePerCredit - a.pricePerCredit : a.pricePerCredit - b.pricePerCredit));
+}
+
+/** Place a limit order and attempt to match it against the opposite book. */
+export function placeOrder(params: {
+  side: OrderSide;
+  traderId: string;
+  pricePerCredit: number;
+  quantity: number;
+}): { order: Order; trades: Trade[] } {
+  if (params.pricePerCredit <= 0) {
+    throw Object.assign(new Error("Price must be positive"), { code: "VALIDATION_ERROR" });
+  }
+  if (params.quantity <= 0) {
+    throw Object.assign(new Error("Quantity must be positive"), { code: "VALIDATION_ERROR" });
+  }
+  const order: Order = {
+    id: `ORD-${orderSeq++}`,
+    side: params.side,
+    traderId: params.traderId,
+    pricePerCredit: params.pricePerCredit,
+    quantity: params.quantity,
+    remaining: params.quantity,
+    createdAt: new Date().toISOString(),
+  };
+  const book = order.side === "bid" ? bids : asks;
+  insertSorted(book, order);
+  const executed = matchOrders();
+  return { order, trades: executed };
+}
+
+function matchOrders(): Trade[] {
+  const executed: Trade[] = [];
+  while (bids.length > 0 && asks.length > 0) {
+    const bestBid = bids[0];
+    const bestAsk = asks[0];
+    if (bestBid.pricePerCredit < bestAsk.pricePerCredit) break;
+
+    const quantity = Math.min(bestBid.remaining, bestAsk.remaining);
+    const price = bestAsk.pricePerCredit; // price-time priority: resting ask sets price
+    const trade: Trade = {
+      id: `TRD-${tradeSeq++}`,
+      bidId: bestBid.id,
+      askId: bestAsk.id,
+      buyerId: bestBid.traderId,
+      sellerId: bestAsk.traderId,
+      pricePerCredit: price,
+      quantity,
+      executedAt: new Date().toISOString(),
+    };
+    trades.push(trade);
+    executed.push(trade);
+
+    bestBid.remaining -= quantity;
+    bestAsk.remaining -= quantity;
+    if (bestBid.remaining === 0) bids.shift();
+    if (bestAsk.remaining === 0) asks.shift();
+  }
+  return executed;
+}
+
+export function getOrderBook(): { bids: Order[]; asks: Order[] } {
+  return {
+    bids: bids.map((o) => ({ ...o })),
+    asks: asks.map((o) => ({ ...o })),
+  };
+}
+
+export function getTrades(): Trade[] {
+  return trades.map((t) => ({ ...t }));
+}
+
+/**
+ * Volume-weighted index price across all executed trades.
+ * Returns null when no trades have occurred yet.
+ */
+export function getIndexPrice(): number | null {
+  if (trades.length === 0) return null;
+  let notional = 0;
+  let volume = 0;
+  for (const t of trades) {
+    notional += t.pricePerCredit * t.quantity;
+    volume += t.quantity;
+  }
+  if (volume === 0) return null;
+  return Number((notional / volume).toFixed(6));
 }
 
 export function getCreditStats(): {

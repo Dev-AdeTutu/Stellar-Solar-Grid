@@ -15,6 +15,9 @@
  *   DELETE /api/devices/:id/maintenance/:scheduleId
  *   POST   /api/devices/:id/performance                  — HTTP telemetry (alternative to MQTT)
  *   GET    /api/devices/:id/performance?days=7           — readings + summary
+ *   GET    /api/devices/security/events                  — detected security threats (#1042)
+ *   POST   /api/devices/:id/quarantine                   — quarantine a compromised device
+ *   POST   /api/devices/:id/unquarantine                 — release a quarantined device
  */
 import { Router } from "express";
 import { z } from "zod";
@@ -41,6 +44,12 @@ import {
   scheduleMaintenance,
   updateDevice,
 } from "../lib/deviceRegistry.js";
+import {
+  THREAT_TYPES,
+  listSecurityEvents,
+  quarantineDevice,
+  unquarantineDevice,
+} from "../lib/threatDetection.js";
 
 export const devicesRouter = Router();
 
@@ -164,6 +173,25 @@ devicesRouter.get("/certifications/expiring", (req, res) => {
   res.json({ certifications: listExpiringCertifications(intParam(req.query.withinDays, 30, 365)) });
 });
 
+devicesRouter.get("/security/events", (req, res) => {
+  const { deviceId, type, severity } = req.query as Record<string, string | undefined>;
+  if (type && !THREAT_TYPES.includes(type as any)) {
+    return res.status(400).json({ error: `type must be one of ${THREAT_TYPES.join(", ")}` });
+  }
+  if (severity && !["low", "medium", "high", "critical"].includes(severity)) {
+    return res.status(400).json({ error: "severity must be one of low, medium, high, critical" });
+  }
+  res.json({
+    events: listSecurityEvents({
+      deviceId,
+      type: type as any,
+      severity: severity as any,
+      limit: intParam(req.query.limit, 100, 500),
+      offset: Number(req.query.offset) || 0,
+    }),
+  });
+});
+
 devicesRouter.get("/:id", (req, res) => {
   const device = getDevice(req.params.id);
   if (!device) return res.status(404).json({ error: "Device not found" });
@@ -255,4 +283,19 @@ devicesRouter.get("/:id/stability", (req, res) => {
   if (!getDevice(req.params.id)) return res.status(404).json({ error: "Device not found" });
   const days = intParam(req.query.days, 7, 90);
   res.json(getStabilityReport(req.params.id, days));
+});
+
+devicesRouter.post("/:id/quarantine", (req, res) => {
+  if (!getDevice(req.params.id)) return res.status(404).json({ error: "Device not found" });
+  const reason = typeof req.body?.reason === "string" ? req.body.reason.slice(0, 500) : undefined;
+  const result = quarantineDevice(req.params.id, reason ?? "manual quarantine");
+  if (!result) return res.status(404).json({ error: "Device not found" });
+  res.json(result);
+});
+
+devicesRouter.post("/:id/unquarantine", (req, res) => {
+  if (!getDevice(req.params.id)) return res.status(404).json({ error: "Device not found" });
+  const result = unquarantineDevice(req.params.id);
+  if (!result) return res.status(404).json({ error: "Device not found" });
+  res.json(result);
 });
