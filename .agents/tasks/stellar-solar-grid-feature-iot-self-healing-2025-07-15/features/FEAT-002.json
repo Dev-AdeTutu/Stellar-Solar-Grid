@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Integration with existing systems: wire self-healing service into backend index.ts, add audit logging for all recovery attempts, implement escalation to technicians after max retry threshold, handle recovery result callbacks from meters, and add comprehensive test coverage",
+  "status": "pending",
+  "steps": [
+    "Modify backend/src/index.ts to start the self-healing monitor. Import startSelfHealingMonitor from backend/src/lib/selfHealing.ts and call it after startHealthMonitor() (line 226 in current index.ts). Pass configuration from env vars: SELF_HEALING_POLL_INTERVAL_MS, SELF_HEALING_MAX_RETRIES (default 3).",
+    "Add audit logging to backend/src/lib/selfHealing.ts for all recovery actions. Import recordAudit from backend/src/lib/auditTrail.ts. In executeRecovery(), call recordAudit({ providerId: 'system', action: 'self_healing_recovery', meterId, details: { failureMode, recoveryAction, attemptCount } }) after dispatching each recovery command. On recovery success/failure (when meter reports back), log a second audit entry with the outcome.",
+    "Implement escalation logic in backend/src/lib/selfHealing.ts. When attemptCount reaches maxRecoveryAttempts for a meter, call escalateToTechnician(meterId: string, failureMode: FailureMode). Create this function to: (1) log an error-level message with structured metadata, (2) record an audit entry with action 'self_healing_escalation', (3) mark the meter's failure state as escalated (add 'escalated: boolean' field to MeterFailureState type), (4) call the existing emergency contact notification system if available (check backend/src/lib/meterHealth.ts for notifyEmergencyContacts pattern, import if exists), (5) return escalation metadata.",
+    "Add MQTT listener for recovery result callbacks in backend/src/iot/bridge.ts. Subscribe to topic solargrid/meters/+/recovery/result in the existing MQTT message handler (around line 996 where heartbeat topic is handled). Parse payload { requestId: string, status: 'success' | 'failure', durationMs?: number, error?: string }. Import a new function handleRecoveryResult from backend/src/lib/selfHealing.ts and call it with (meterId, result). Implement handleRecoveryResult to update the meter's failure state (mark as resolved if success, increment attempt and schedule retry if failure), and record audit log.",
+    "Create backend/tests/selfHealing.integration.test.ts following the vitest pattern from backend/tests/admin-auth.test.ts. Test suite: (1) describe('SelfHealingService', ...), (2) test that startSelfHealingMonitor starts the polling loop, (3) test failure detection for service_crash using mocked getMeterHealth returning red status, (4) test that executeRecovery publishes correct MQTT command using mocked mqttClient, (5) test escalation after max attempts using mocked logger and audit, (6) test handleRecoveryResult updates state correctly. Use vi.mock for meterHealth, mqttClient, auditTrail, and logger modules.",
+    "Create backend/tests/selfHealing-escalation.integration.test.ts to specifically test escalation flow. Mock getAllMeterHealth to return a meter in red status. Mock time using vi.useFakeTimers(). Call runHealthCheck() multiple times (maxRecoveryAttempts + 1 times) with time advancing between calls. Assert that escalateToTechnician was called exactly once, audit log contains escalation entry, and logger.error was called with correct metadata."
+  ],
+  "acceptance_criteria": [
+    "Self-healing monitor starts automatically when backend starts (wired into index.ts after startHealthMonitor)",
+    "All recovery attempts are logged to the audit trail with structured details (failure mode, action, attempt count, outcome)",
+    "Escalation to technicians occurs after configured max retries (default 3), logging error with structured metadata and recording escalation audit entry",
+    "Meters can report recovery results via MQTT topic solargrid/meters/{meterId}/recovery/result and results update internal failure state",
+    "Full test coverage: integration tests cover failure detection, recovery dispatch, escalation threshold, and result handling",
+    "All tests pass: npm run test in backend directory shows green for all self-healing tests"
+  ],
+  "verification": [
+    "cd backend && npm run build -- compiles without errors",
+    "cd backend && npm run test -- all tests pass including new selfHealing.integration.test.ts and selfHealing-escalation.integration.test.ts",
+    "Check backend/src/index.ts contains startSelfHealingMonitor() call after line 226",
+    "Check backend/data/audit.sqlite (after running tests) contains recovery and escalation audit entries",
+    "Verify MQTT subscription in backend/src/iot/bridge.ts includes recovery/result topic"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

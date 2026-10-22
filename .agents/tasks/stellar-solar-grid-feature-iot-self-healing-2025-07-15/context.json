@@ -1,0 +1,28 @@
+{
+  "project_type": "TypeScript backend with Express, MQTT, Redis, better-sqlite3",
+  "language": "TypeScript",
+  "build_system": "npm with tsc for compilation",
+  "test_framework": "vitest for unit and integration tests (*.integration.test.ts pattern), run with `npm run test` or `vitest run` from backend directory",
+  "build_command": "cd backend && npm run build",
+  "test_command": "cd backend && npm run test",
+  "verification_instructions": "1. Run `npm run build` from backend/ to compile TypeScript. 2. Run `npm run test` to execute vitest test suite. 3. Integration tests use *.integration.test.ts naming and are in backend/tests/. 4. Check that no compilation errors occur and all tests pass.",
+  "snapshot_or_generated_files": null,
+  "environment_constraints": "MQTT broker runs on mqtt://localhost:1883 (configurable via MQTT_BROKER env var). Redis is used for rate limiting and caching (ioredis). SQLite databases are used for audit logs (data/audit.sqlite) and usage events (data/usage-events.sqlite). The backend server should not be restarted during testing (it's part of the docker-compose stack).",
+  "contribution_requirements": "Follow Conventional Commits format (feat:, fix:, docs:). Branch naming: feat/ for features. Use TypeScript strict mode, no 'any' types. Run tsc --noEmit before committing. Keep functions small and single-purpose. Document public functions with doc comments. Handle errors explicitly (no unwrap in contract-equivalent code). Tests must be added for all new modules.",
+  "key_patterns": "1. Services live in backend/src/lib/ and backend/src/services/. 2. Routes in backend/src/routes/ follow Express Router pattern with middleware. 3. MQTT integration via backend/src/iot/mqttClient.ts using mqtt npm package with exponential backoff reconnection. 4. Existing health monitoring in backend/src/lib/meterHealth.ts tracks heartbeats, classifies meters as green/yellow/red, records diagnostics. 5. Audit logging via backend/src/lib/auditTrail.ts using better-sqlite3 with hash-chained append-only logs. 6. Logger is winston-based (backend/src/lib/logger.ts) with structured logging and request ID injection. 7. Database schemas are initialized in service modules (see applyUsageEventSchema pattern in usageEvents.ts). 8. MQTT command publishing pattern in backend/src/iot/bridge.ts shows how to send control commands to meters. 9. Tests follow vitest patterns with beforeEach, describe, it, expect, vi.mock for stubs.",
+  "relevant_files": [
+    "backend/src/lib/meterHealth.ts",
+    "backend/src/routes/meterHealth.ts",
+    "backend/src/iot/mqttClient.ts",
+    "backend/src/iot/bridge.ts",
+    "backend/src/lib/auditTrail.ts",
+    "backend/src/lib/logger.ts",
+    "backend/src/lib/usageEvents.ts",
+    "backend/src/index.ts",
+    "backend/tests/admin-auth.test.ts",
+    "backend/vitest.config.ts",
+    "backend/package.json",
+    "CONTRIBUTING.md"
+  ],
+  "directory_structure": "backend/src/lib/ - business logic services; backend/src/routes/ - Express route handlers; backend/src/iot/ - MQTT bridge and IoT device integration; backend/src/services/ - domain services; backend/src/middleware/ - Express middleware; backend/tests/ - test files; backend/data/ - SQLite database files; iot/ (to be created at worktree root) - IoT device documentation"
+}
