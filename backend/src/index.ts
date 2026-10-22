@@ -32,6 +32,11 @@ import { achievementsRouter, leaderboardsRouter } from "./routes/gamification.js
 import { smsPreferencesRouter, smsNotificationsRouter } from "./routes/smsNotifications.js";
 import { meterDepreciationRouter } from "./routes/meterDepreciation.js";
 import { startDepreciationMonitor } from "./lib/meterDepreciation.js";
+import { congestionRouter } from "./routes/congestion.js";
+import { meterConfigRouter } from "./routes/meterConfig.js";
+import { locationalPricingRouter } from "./routes/locationalPricing.js";
+import { startLocationalPricing } from "./lib/locationalPricing.js";
+import { anonymousAuthRouter } from "./routes/anonymousAuth.js";
 import { marketTradeAnalyticsRouter } from "./routes/marketTradeAnalytics.js";
 import { startIoTBridge } from "./iot/bridge.js";
 import { statsRouter } from "./routes/stats.js";
@@ -240,6 +245,14 @@ startHealthMonitor();
 // #998: meter lifespan & depreciation tracking
 app.use("/api/meters", meterDepreciationRouter);
 startDepreciationMonitor();
+// #1055: meter configuration backup & restore
+app.use("/api/meter-config", writeLimiter, meterConfigRouter);
+// #1057: real-time locational marginal pricing (zone loads come from /api/congestion)
+app.use("/api/congestion", congestionRouter);
+app.use("/api/pricing", locationalPricingRouter);
+startLocationalPricing();
+// #1058: anonymous meter authentication (blind-signature credentials)
+app.use("/api/anon-auth", writeLimiter, anonymousAuthRouter);
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
 app.use("/api", createMeterOperationsRouter(stellarService));
