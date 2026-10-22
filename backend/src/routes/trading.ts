@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
-import * as keys from "../lib/apiKeys.js";
+import * as keys from "../lib/tradingBotApiKeys.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 
 export const tradingRouter = Router();

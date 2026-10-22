@@ -275,6 +275,38 @@ The balance is read from the contract unless `?balance=<stroops>` is given.
 `estimatedDaysRemaining` is `null` when there is no usage history or usage is
 not trending toward depletion.
 
+## P2P Energy Trading Market Analytics (#999)
+
+### `GET /api/market/analytics`
+
+Returns a snapshot of the peer-to-peer energy trading market (`/api/p2p`,
+`/api/orderbook`): the volume-weighted average price, traded volume,
+supply/demand depth and a liquidity indicator from the open order book, and
+price history bucketed by hour, day and week.
+
+```json
+{
+  "generatedAt": "2026-09-28T15:00:00.000Z",
+  "avgPrice": 0.2286,
+  "totalVolumeKwh": 14,
+  "totalVolumeXlm": 3.2,
+  "tradeCount": 2,
+  "supplyKwh": 7,
+  "demandKwh": 3,
+  "liquidity": 0.4286,
+  "priceHistory": {
+    "hourly": [{ "bucket": "2026-09-28T14", "avgPrice": 0.2, "volumeKwh": 10, "trades": 1 }],
+    "daily": [{ "bucket": "2026-09-28", "avgPrice": 0.2286, "volumeKwh": 14, "trades": 2 }],
+    "weekly": [{ "bucket": "2026-09-28", "avgPrice": 0.2286, "volumeKwh": 14, "trades": 2 }]
+  }
+}
+```
+
+`avgPrice` is `null` and `priceHistory` buckets are omitted when there are no
+settled or matched trades yet. `liquidity` is `0` whenever either side of the
+order book (open sell or open buy offers) is empty; otherwise it is the
+smaller side's depth as a fraction of the larger side's (0–1, higher is more
+liquid). `supplyKwh`/`demandKwh` only count currently open, unexpired offers.
 ## Weather-Based Usage Forecasting (#982)
 
 `GET /api/meters/:meterId/forecast?days=7`

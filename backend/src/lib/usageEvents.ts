@@ -1267,6 +1267,53 @@ export function getMeterUsageStats(): MeterUsageStats[] {
     .all() as MeterUsageStats[];
 }
 
+// #996: peak-hour avoidance / week-over-week trend for the gamification achievements.
+const PEAK_HOURS = new Set([7, 8, 9, 17, 18, 19, 20]);
+
+/**
+ * Share (0–1) of submitted units consumed during peak hours across the given
+ * meters over the trailing `days` window. Returns 0 when there is no data.
+ */
+export function getPeakUsageShare(meterIds: string[], days = 30): number {
+  if (meterIds.length === 0) return 0;
+  const placeholders = meterIds.map(() => "?").join(",");
+  const rows = db()
+    .prepare(
+      `SELECT substr(received_at, 12, 2) AS hour, SUM(units) AS units
+       FROM usage_events
+       WHERE meter_id IN (${placeholders}) AND status = 'submitted' AND received_at >= datetime('now', ?)
+       GROUP BY hour`,
+    )
+    .all(...meterIds, `-${days} days`) as { hour: string; units: number }[];
+  let total = 0;
+  let peak = 0;
+  for (const r of rows) {
+    total += r.units;
+    if (PEAK_HOURS.has(Number(r.hour))) peak += r.units;
+  }
+  return total > 0 ? peak / total : 0;
+}
+
+/** True when units consumed across the given meters fell over the trailing 7 days vs. the 7 before that. */
+export function hasWeeklyReduction(meterIds: string[], now = new Date()): boolean {
+  if (meterIds.length === 0) return false;
+  const placeholders = meterIds.map(() => "?").join(",");
+  const end = now.toISOString();
+  const midpoint = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const start = new Date(now.getTime() - 14 * 86_400_000).toISOString();
+  const row = db()
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN received_at >= ? THEN units ELSE 0 END) AS recent,
+         SUM(CASE WHEN received_at < ? THEN units ELSE 0 END) AS previous
+       FROM usage_events
+       WHERE meter_id IN (${placeholders}) AND status = 'submitted' AND received_at >= ? AND received_at < ?`,
+    )
+    .get(midpoint, midpoint, ...meterIds, start, end) as { recent: number | null; previous: number | null };
+  if (!row.previous) return false;
+  return (row.recent ?? 0) < row.previous;
+}
+
 /**
  * Return all events in 'failed' (dead-lettered) status, newest first.
  * Supports optional pagination via limit/offset.

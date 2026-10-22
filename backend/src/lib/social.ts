@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { getMeterUsageStats, type MeterUsageStats } from "./usageEvents.js";
+import {
+  getMeterUsageStats, getPeakUsageShare, hasWeeklyReduction, type MeterUsageStats,
+} from "./usageEvents.js";
 
 const DB_PATH =
   process.env.SOCIAL_DB_PATH ??
@@ -19,6 +21,8 @@ export type Profile = {
   bio: string;
   avatarUrl: string | null;
   meterIds: string[];
+  /** Free-text region/country code (#996), used to group "top savers by region". */
+  region: string | null;
   privacy: Privacy;
   updatedAt: string;
 };
@@ -30,6 +34,10 @@ export type UserStats = {
   activeDays: number;
   meters: number;
   profileComplete: boolean;
+  /** Share (0–1) of recent usage consumed outside peak hours; higher is better. */
+  peakAvoidanceShare: number;
+  /** True when usage over the trailing 7 days fell versus the 7 days before that. */
+  weeklyReduction: boolean;
 };
 
 export type Achievement = {
@@ -52,6 +60,7 @@ const db = (() => {
       bio TEXT NOT NULL DEFAULT '',
       avatar_url TEXT,
       meter_ids TEXT NOT NULL DEFAULT '[]',
+      region TEXT,
       privacy TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -76,6 +85,11 @@ const db = (() => {
       PRIMARY KEY (board, day)
     );
   `);
+  // Migrate existing tables that predate the region column (#996).
+  const cols = d.pragma("table_info(profiles)") as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "region")) {
+    d.exec("ALTER TABLE profiles ADD COLUMN region TEXT");
+  }
   return d;
 })();
 
@@ -110,12 +124,20 @@ export const ACHIEVEMENTS: Achievement[] = [
     (s) => s.totalUnits >= 100 && s.totalCost / s.totalUnits < 1),
   tier("all_rounder", "All-Rounder", "1,000 units, 1,000 traded and 30 active days",
     (s) => s.totalUnits >= 1_000 && s.totalCost >= 1_000 && s.activeDays >= 30),
+  // #996: energy consumption gamification.
+  tier("peak_avoider", "Peak Avoider", "Keep 80%+ of your usage outside peak hours (100+ units recorded)",
+    (s) => s.totalUnits >= 100 && s.peakAvoidanceShare >= 0.8),
+  tier("seven_day_saver", "7-Day Saver", "Use less energy this week than the week before",
+    (s) => s.weeklyReduction),
+  // Awarded directly when a profile reaches #1 on the green leaderboard (see refreshLeaderboards);
+  // its test() always returns false so syncAchievements() never unlocks it from stats alone.
+  tier("solar_champion", "Solar Champion", "Reach #1 on the green-energy leaderboard", () => false),
 ];
 
 // ── Profiles ────────────────────────────────────────────────────────────────
 type ProfileRow = {
   address: string; display_name: string; bio: string; avatar_url: string | null;
-  meter_ids: string; privacy: string; updated_at: string;
+  meter_ids: string; region: string | null; privacy: string; updated_at: string;
 };
 
 const toProfile = (r: ProfileRow): Profile => ({
@@ -124,6 +146,7 @@ const toProfile = (r: ProfileRow): Profile => ({
   bio: r.bio,
   avatarUrl: r.avatar_url,
   meterIds: JSON.parse(r.meter_ids),
+  region: r.region,
   privacy: { ...DEFAULT_PRIVACY, ...JSON.parse(r.privacy) },
   updatedAt: r.updated_at,
 });
@@ -139,7 +162,7 @@ function allProfiles(): Profile[] {
 
 export function upsertProfile(
   address: string,
-  patch: Partial<Pick<Profile, "displayName" | "bio" | "avatarUrl" | "meterIds">> & { privacy?: Partial<Privacy> },
+  patch: Partial<Pick<Profile, "displayName" | "bio" | "avatarUrl" | "meterIds" | "region">> & { privacy?: Partial<Privacy> },
 ): Profile {
   const existing = getProfile(address);
   const next: Profile = {
@@ -148,17 +171,18 @@ export function upsertProfile(
     bio: (patch.bio ?? existing?.bio ?? "").slice(0, 280),
     avatarUrl: patch.avatarUrl !== undefined ? patch.avatarUrl : existing?.avatarUrl ?? null,
     meterIds: patch.meterIds ?? existing?.meterIds ?? [],
+    region: patch.region !== undefined ? patch.region : existing?.region ?? null,
     privacy: { ...DEFAULT_PRIVACY, ...existing?.privacy, ...patch.privacy },
     updatedAt: new Date().toISOString(),
   };
   db.prepare(
-    `INSERT INTO profiles (address, display_name, bio, avatar_url, meter_ids, privacy, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO profiles (address, display_name, bio, avatar_url, meter_ids, region, privacy, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(address) DO UPDATE SET display_name = excluded.display_name, bio = excluded.bio,
-       avatar_url = excluded.avatar_url, meter_ids = excluded.meter_ids,
+       avatar_url = excluded.avatar_url, meter_ids = excluded.meter_ids, region = excluded.region,
        privacy = excluded.privacy, updated_at = excluded.updated_at`,
   ).run(next.address, next.displayName, next.bio, next.avatarUrl, JSON.stringify(next.meterIds),
-    JSON.stringify(next.privacy), next.updatedAt);
+    next.region, JSON.stringify(next.privacy), next.updatedAt);
   if (!existing) addActivity(address, "joined", `${next.displayName || shortAddr(address)} joined the community`);
   syncAchievements(address);
   return next;
@@ -174,7 +198,9 @@ export function publicProfile(p: Profile) {
 // ── Stats & achievements ────────────────────────────────────────────────────
 function statsFor(p: Profile, usage: Map<string, MeterUsageStats>): UserStats {
   const s: UserStats = { totalUnits: 0, totalCost: 0, events: 0, activeDays: 0, meters: p.meterIds.length,
-    profileComplete: Boolean(p.displayName && p.bio && p.avatarUrl) };
+    profileComplete: Boolean(p.displayName && p.bio && p.avatarUrl),
+    peakAvoidanceShare: p.meterIds.length ? 1 - getPeakUsageShare(p.meterIds) : 0,
+    weeklyReduction: hasWeeklyReduction(p.meterIds) };
   for (const m of p.meterIds) {
     const u = usage.get(m);
     if (!u) continue;
@@ -203,6 +229,20 @@ export function syncAchievements(address: string, usage = usageMap()): string[] 
     }
   }
   return unlocked;
+}
+
+/** Directly award an achievement whose unlock condition isn't a pure function of UserStats (e.g. leaderboard rank). */
+function unlockAchievementDirect(address: string, achievementId: string): boolean {
+  const profile = getProfile(address);
+  if (!profile) return false;
+  const changed = db
+    .prepare("INSERT OR IGNORE INTO user_achievements (address, achievement_id, unlocked_at) VALUES (?, ?, ?)")
+    .run(address, achievementId, new Date().toISOString()).changes > 0;
+  if (changed) {
+    const achievement = ACHIEVEMENTS.find((a) => a.id === achievementId);
+    addActivity(address, "achievement", `${profile.displayName || shortAddr(address)} unlocked "${achievement?.name ?? achievementId}"`);
+  }
+  return changed;
 }
 
 export function getUserAchievements(address: string) {
@@ -239,9 +279,33 @@ export function refreshLeaderboards(day = new Date().toISOString().slice(0, 10))
     .sort((a, b) => b[key] - a[key])
     .map((r, i) => ({ rank: i + 1, address: r.address, displayName: r.displayName, score: r[key] }));
   const result = { green: rank("green"), trader: rank("trader") };
+  if (result.green[0]) unlockAchievementDirect(result.green[0].address, "solar_champion");
   const save = db.prepare("INSERT OR REPLACE INTO leaderboard_snapshots (board, day, data) VALUES (?, ?, ?)");
   for (const b of ["green", "trader"] as const) save.run(b, day, JSON.stringify(result[b]));
   return result;
+}
+
+/** Top green-energy savers grouped by region (#996); profiles without a region are grouped under "unknown". */
+export function getRegionLeaderboard(limit = 20) {
+  const usage = usageMap();
+  const byRegion = new Map<string, { address: string; displayName: string; score: number }[]>();
+  for (const p of allProfiles()) {
+    if (!p.privacy.showOnLeaderboard) continue;
+    const score = statsFor(p, usage).totalUnits;
+    if (score <= 0) continue;
+    const region = p.region?.trim().toUpperCase() || "UNKNOWN";
+    const list = byRegion.get(region) ?? [];
+    list.push({ address: p.address, displayName: p.privacy.publicProfile ? p.displayName : "Private user", score });
+    byRegion.set(region, list);
+  }
+  const regions: Record<string, { rank: number; address: string; displayName: string; score: number }[]> = {};
+  for (const [region, list] of byRegion) {
+    regions[region] = list
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map((r, i) => ({ rank: i + 1, ...r }));
+  }
+  return regions;
 }
 
 let dailyTimer: NodeJS.Timeout | undefined;
