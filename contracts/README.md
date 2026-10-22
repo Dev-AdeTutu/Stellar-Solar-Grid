@@ -1,5 +1,24 @@
 # SolarGrid Smart Contract
 
+## Administrator pause circuit breaker (Issue #969)
+
+The contract administrator can pause and resume mutable contract operations with
+`pause_contract()` and `unpause_contract()`. The existing `pause()` and
+`unpause()` entrypoints remain supported as compatibility aliases. Both actions
+require the configured administrator's authorization; attempting to repeat an
+action returns `AlreadyPaused` or `NotPaused`.
+
+While paused, state-changing entrypoints return `ContractPaused`. Read-only
+queries remain available, and the pause/unpause entrypoints remain available so
+the administrator can recover the contract. The existing automatic 48-hour
+expiry is retained: an expired pause is treated as unpaused on the next state
+check.
+
+Each explicit transition emits the canonical `ContractPaused` or
+`ContractUnpaused` event with `(admin, timestamp)` data. The legacy lowercase
+`contract_paused` and `contract_unpaused` events are also emitted for existing
+indexers. Automatic expiry continues to emit the legacy unpause notification.
+
 ## Event Schema
 
 The contract emits Soroban events for real-time monitoring by backend and frontend systems.
@@ -582,4 +601,3 @@ Decentralized marketplace allowing solar producers to sell excess generation dir
 - **Events:**
   - `energy_listed`: `(seller, kwh_available, price_per_kwh)`
   - `energy_traded`: `(seller, buyer, kwh_traded, total_cost)`
-

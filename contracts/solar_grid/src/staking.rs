@@ -194,6 +194,7 @@ impl SolarGridContract {
         reward_rate: i128,
         cooldown_secs: u64,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if reward_rate < 0 || cooldown_secs > MAX_COOLDOWN_SECS {
             return Err(ContractError::InvalidConfiguration);
@@ -244,6 +245,7 @@ impl SolarGridContract {
 
     /// Deposit `amount` of the reward token into the reward reserve. Anyone may fund.
     pub fn fund_staking_rewards(env: Env, from: Address, amount: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         from.require_auth();
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -266,10 +268,8 @@ impl SolarGridContract {
 
     /// Stake `amount` of the stake token.
     pub fn stake(env: Env, staker: Address, amount: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         staker.require_auth();
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -303,6 +303,7 @@ impl SolarGridContract {
     /// Begin unstaking `amount`. Tokens stop earning immediately and can be
     /// withdrawn after the cooldown. Returns the unlock timestamp.
     pub fn request_unstake(env: Env, staker: Address, amount: i128) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         staker.require_auth();
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -340,6 +341,7 @@ impl SolarGridContract {
 
     /// Return cooled-down tokens to the staker. Returns the amount withdrawn.
     pub fn withdraw_unstaked(env: Env, staker: Address) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         staker.require_auth();
         let cfg = load_config(&env)?;
         let key = StakeKey::Unstaking(staker.clone());
@@ -366,10 +368,8 @@ impl SolarGridContract {
 
     /// Move tokens that are cooling down back into the active stake.
     pub fn cancel_unstake(env: Env, staker: Address) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         staker.require_auth();
-        if Self::pause_is_active(&env) {
-            return Err(ContractError::ContractPaused);
-        }
         let key = StakeKey::Unstaking(staker.clone());
         let request: UnstakeRequest = env
             .storage()
@@ -398,6 +398,7 @@ impl SolarGridContract {
 
     /// Pay out all accrued rewards. Returns the amount claimed.
     pub fn claim_staking_rewards(env: Env, staker: Address) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         staker.require_auth();
         let (cfg, pool) = touch_pool(&env)?;
         let mut pos = load_position(&env, &staker);
