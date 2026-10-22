@@ -86,6 +86,7 @@ import { privacyRouter } from "./routes/privacy.js";
 import { sendRelayCommand, startIoTBridge, stopIoTBridge } from "./iot/bridge.js";
 import { startLimitWatcher } from "./iot/limitWatcher.js";
 import { startScheduleExecutor } from "./iot/scheduleExecutor.js";
+import { startSelfHealing, stopSelfHealing } from "./iot/selfHealing.js";
 import { logger } from "./lib/logger.js";
 import { runWithRequestId } from "./lib/requestContext.js";
 import { requestLogger } from "./lib/requestLogger.js";
@@ -404,6 +405,12 @@ const httpServer = app.listen(PORT, () => {
   } catch (err) {
     logger.error("Failed to start IoT bridge", { err });
   }
+  // Start IoT self-healing system for automated failure recovery
+  try {
+    startSelfHealing();
+  } catch (err) {
+    logger.error("Failed to start self-healing system", { err });
+  }
   // #993: listen for diagnostic results reported by meters over MQTT
   try {
     startDiagnosticResultListener();
@@ -422,7 +429,7 @@ httpServer.listen(PORT, () => {
   startRecommendationWorker();
 });
 
-export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator };
+export { app, pool, recordFirmware, isOutdated, firmwareByMeter, stopVoiceTokenPruner, stopFederatedCoordinator, stopSelfHealing };
 
 // #923: Arbitrage Trading Bot
 app.use("/api/arbitrage", arbitrageBotRouter);
