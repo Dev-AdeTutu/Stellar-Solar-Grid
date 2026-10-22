@@ -34,6 +34,7 @@ export default function Navbar() {
     { href: "/analytics", label: t("analytics") },
     { href: "/resilience", label: t("resilience") },
     { href: "/privacy", label: t("privacy") },
+    { href: "/support", label: "Support" },
     { href: "/bills", label: t("bills") },
     { href: "/communities", label: t("communities") },
     { href: "/competitions", label: t("competitions") },

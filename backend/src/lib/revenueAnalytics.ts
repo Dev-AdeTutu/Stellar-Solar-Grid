@@ -238,6 +238,209 @@ export function calculateGeoBreakdown(rows: RevenueRow[]): GeoRevenuePoint[] {
     .sort((a, b) => b.revenue - a.revenue);
 }
 
+// ---------------------------------------------------------------------------
+// VPP performance & revenue tracking (#1044)
+// ---------------------------------------------------------------------------
+
+/**
+ * A single dispatch event issued to a VPP portfolio by the grid operator.
+ * `dispatchedKw` is the aggregate power requested across the fleet; the
+ * per-meter contributions are recorded separately as VppDispatchAllocation
+ * rows so revenue can be attributed back to individual participants.
+ */
+export interface VppDispatchEvent {
+  id: string;
+  vppId: string;
+  /** Grid operator that issued the signal, e.g. "ERCOT" or "PJM". */
+  operatorId: string;
+  /** Operator signal type, e.g. "capacity", "frequency_response", "demand_response". */
+  signalType: string;
+  /** ISO-8601 timestamp the dispatch window opens. */
+  startAt: string;
+  /** ISO-8601 timestamp the dispatch window closes. */
+  endAt: string;
+  /** Aggregate power requested from the portfolio, in kW. */
+  dispatchedKw: number;
+  /** Aggregate power actually delivered by the fleet, in kW. */
+  deliveredKw: number;
+  /** Revenue earned from the operator for this event, in stroops. */
+  revenue: number;
+  /** ISO-8601 timestamp the event was recorded. */
+  createdAt: string;
+}
+
+/** One participant meter's share of a VPP dispatch event. */
+export interface VppDispatchAllocation {
+  eventId: string;
+  vppId: string;
+  meterId: string;
+  /** Power this meter was asked to contribute, in kW. */
+  allocatedKw: number;
+  /** Power this meter actually delivered, in kW. */
+  deliveredKw: number;
+  /** Participant's share of the event revenue, in stroops. */
+  earnings: number;
+}
+
+export interface VppPerformanceSummary {
+  vppId: string;
+  eventCount: number;
+  totalDispatchedKw: number;
+  totalDeliveredKw: number;
+  /** Delivered / dispatched, clamped to [0, 1]; 1 when nothing was dispatched. */
+  deliveryRate: number;
+  totalRevenue: number;
+  totalRevenueXlm: number;
+  participantCount: number;
+}
+
+export interface VppParticipantEarnings {
+  meterId: string;
+  eventCount: number;
+  totalAllocatedKw: number;
+  totalDeliveredKw: number;
+  deliveryRate: number;
+  earnings: number;
+  earningsXlm: number;
+  /** Participant's share of the portfolio's total earnings, as a percentage. */
+  percentageOfTotal: number;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function safeNumber(value: number | null | undefined): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * Split an event's revenue across its allocations proportionally to each
+ * meter's delivered kW (falling back to allocated kW when nothing was
+ * delivered). Returns allocations with `earnings` filled in; the sum of
+ * earnings equals the event revenue exactly (rounding remainder is assigned
+ * to the largest contributor).
+ */
+export function allocateDispatchRevenue(
+  revenue: number,
+  allocations: Array<Pick<VppDispatchAllocation, "meterId" | "allocatedKw" | "deliveredKw">>,
+): VppDispatchAllocation[] {
+  const total = safeNumber(revenue);
+  if (allocations.length === 0) return [];
+
+  const weights = allocations.map((a) => {
+    const delivered = safeNumber(a.deliveredKw);
+    return delivered > 0 ? delivered : safeNumber(a.allocatedKw);
+  });
+  const weightSum = weights.reduce((sum, w) => sum + w, 0);
+
+  if (weightSum <= 0 || total === 0) {
+    return allocations.map((a) => ({
+      eventId: "",
+      vppId: "",
+      meterId: a.meterId,
+      allocatedKw: safeNumber(a.allocatedKw),
+      deliveredKw: safeNumber(a.deliveredKw),
+      earnings: 0,
+    }));
+  }
+
+  const raw = weights.map((w) => (w / weightSum) * total);
+  const floored = raw.map((v) => Math.floor(v));
+  let remainder = Math.round(total) - floored.reduce((sum, v) => sum + v, 0);
+
+  // Distribute the rounding remainder to the largest fractional parts.
+  const order = raw
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac);
+  const earnings = [...floored];
+  for (let k = 0; k < order.length && remainder > 0; k++) {
+    earnings[order[k].i] += 1;
+    remainder -= 1;
+  }
+
+  return allocations.map((a, i) => ({
+    eventId: "",
+    vppId: "",
+    meterId: a.meterId,
+    allocatedKw: safeNumber(a.allocatedKw),
+    deliveredKw: safeNumber(a.deliveredKw),
+    earnings: earnings[i],
+  }));
+}
+
+/** Aggregate performance metrics for a single VPP portfolio. */
+export function calculateVppPerformance(
+  vppId: string,
+  events: VppDispatchEvent[],
+  allocations: VppDispatchAllocation[] = [],
+): VppPerformanceSummary {
+  const scoped = events.filter((e) => e.vppId === vppId);
+  const totalDispatchedKw = scoped.reduce((sum, e) => sum + safeNumber(e.dispatchedKw), 0);
+  const totalDeliveredKw = scoped.reduce((sum, e) => sum + safeNumber(e.deliveredKw), 0);
+  const totalRevenue = scoped.reduce((sum, e) => sum + safeNumber(e.revenue), 0);
+  const participants = new Set(
+    allocations.filter((a) => a.vppId === vppId).map((a) => a.meterId),
+  );
+
+  return {
+    vppId,
+    eventCount: scoped.length,
+    totalDispatchedKw,
+    totalDeliveredKw,
+    deliveryRate:
+      totalDispatchedKw <= 0 ? 1 : clamp01(totalDeliveredKw / totalDispatchedKw),
+    totalRevenue,
+    totalRevenueXlm: stroopsToXlm(totalRevenue),
+    participantCount: participants.size,
+  };
+}
+
+/**
+ * Per-participant earnings for a VPP portfolio, sorted by earnings descending.
+ * `percentageOfTotal` is each meter's share of the portfolio's total earnings.
+ */
+export function calculateVppParticipantEarnings(
+  vppId: string,
+  allocations: VppDispatchAllocation[],
+): VppParticipantEarnings[] {
+  const scoped = allocations.filter((a) => a.vppId === vppId);
+  const groups = new Map<
+    string,
+    { eventIds: Set<string>; allocatedKw: number; deliveredKw: number; earnings: number }
+  >();
+
+  for (const a of scoped) {
+    const entry =
+      groups.get(a.meterId) ??
+      { eventIds: new Set<string>(), allocatedKw: 0, deliveredKw: 0, earnings: 0 };
+    entry.eventIds.add(a.eventId);
+    entry.allocatedKw += safeNumber(a.allocatedKw);
+    entry.deliveredKw += safeNumber(a.deliveredKw);
+    entry.earnings += safeNumber(a.earnings);
+    groups.set(a.meterId, entry);
+  }
+
+  const totalEarnings = [...groups.values()].reduce((sum, v) => sum + v.earnings, 0);
+
+  return [...groups.entries()]
+    .map(([meterId, v]) => ({
+      meterId,
+      eventCount: v.eventIds.size,
+      totalAllocatedKw: v.allocatedKw,
+      totalDeliveredKw: v.deliveredKw,
+      deliveryRate: v.allocatedKw <= 0 ? 1 : clamp01(v.deliveredKw / v.allocatedKw),
+      earnings: v.earnings,
+      earningsXlm: stroopsToXlm(v.earnings),
+      percentageOfTotal: totalEarnings === 0 ? 0 : (v.earnings / totalEarnings) * 100,
+    }))
+    .sort((a, b) => b.earnings - a.earnings);
+}
+
 export interface RevenueAnalyticsSummary {
   range: { from: string; to: string; granularity: RevenueGranularity };
   totalRevenue: number;

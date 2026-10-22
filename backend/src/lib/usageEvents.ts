@@ -23,6 +23,456 @@ const RETRY_INTERVAL_MS = Number(
 const MAX_RETRY_ATTEMPTS = Number(process.env.MAX_RETRY_ATTEMPTS ?? 5);
 const MAX_RETRIES = MAX_RETRY_ATTEMPTS;
 
+// ── #1045: state channels for off-chain usage micro-transactions ────────────
+//
+// Instead of submitting an on-chain `update_usage` transaction for every usage
+// update, a meter (or user) opens a payment channel with the contract. Usage
+// updates are accumulated off-chain into a monotonically increasing channel
+// state, each state update is signed by the channel participant, and only the
+// final balance is settled on-chain periodically. Disputes can be raised
+// against the last settled state and resolved by submitting the highest signed
+// state (the contract verifies the signature and nonce).
+const CHANNEL_SETTLEMENT_INTERVAL_MS = Number(
+  process.env.CHANNEL_SETTLEMENT_INTERVAL_MS ?? 15 * 60 * 1000,
+);
+const CHANNEL_DISPUTE_WINDOW_MS = Number(
+  process.env.CHANNEL_DISPUTE_WINDOW_MS ?? 24 * 60 * 60 * 1000,
+);
+const CHANNEL_SIGNING_SECRET =
+  process.env.CHANNEL_SIGNING_SECRET ?? "dev-channel-signing-secret";
+let channelSettlementTimer: NodeJS.Timeout | undefined;
+let channelSettlementInFlight = false;
+
+export type ChannelStatus = "open" | "closing" | "settled" | "disputed";
+
+export type ChannelState = {
+  channelId: string;
+  meterId: string;
+  /** Monotonic off-chain nonce; each signed update increments it by one. */
+  nonce: number;
+  /** Cumulative units accumulated off-chain since channel open. */
+  units: number;
+  /** Cumulative cost (stroops) accumulated off-chain since channel open. */
+  cost: string;
+  /** Last nonce that was settled on-chain. */
+  settledNonce: number;
+  /** Last cost that was settled on-chain. */
+  settledCost: string;
+  status: ChannelStatus;
+  openedAt: string;
+  updatedAt: string;
+  settledAt: string | null;
+  disputeRaisedAt: string | null;
+  disputeReason: string | null;
+  /** Signature over the latest off-chain state (hex). */
+  signature: string | null;
+  /** On-chain tx hash of the most recent settlement. */
+  settlementTxHash: string | null;
+};
+
+type ChannelStateRow = {
+  channel_id: string;
+  meter_id: string;
+  nonce: number;
+  units: number;
+  cost: string;
+  settled_nonce: number;
+  settled_cost: string;
+  status: ChannelStatus;
+  opened_at: string;
+  updated_at: string;
+  settled_at: string | null;
+  dispute_raised_at: string | null;
+  dispute_reason: string | null;
+  signature: string | null;
+  settlement_tx_hash: string | null;
+};
+
+function rowToChannelState(row: ChannelStateRow): ChannelState {
+  return {
+    channelId: row.channel_id,
+    meterId: row.meter_id,
+    nonce: Number(row.nonce),
+    units: Number(row.units),
+    cost: row.cost,
+    settledNonce: Number(row.settled_nonce),
+    settledCost: row.settled_cost,
+    status: row.status,
+    openedAt: row.opened_at,
+    updatedAt: row.updated_at,
+    settledAt: row.settled_at,
+    disputeRaisedAt: row.dispute_raised_at,
+    disputeReason: row.dispute_reason,
+    signature: row.signature,
+    settlementTxHash: row.settlement_tx_hash,
+  };
+}
+
+/** Deterministic channel id for a meter (one active channel per meter). */
+export function deriveChannelId(meterId: string): string {
+  return crypto.createHash("sha256").update(`channel:${meterId}`).digest("hex").slice(0, 32);
+}
+
+/**
+ * Sign an off-chain channel state. The signature binds the channel id, nonce,
+ * units and cost so a stale or tampered state cannot be replayed on-chain.
+ */
+export function signChannelState(state: {
+  channelId: string;
+  nonce: number;
+  units: number;
+  cost: string;
+}): string {
+  const payload = `${state.channelId}:${state.nonce}:${state.units}:${state.cost}`;
+  return crypto
+    .createHmac("sha256", CHANNEL_SIGNING_SECRET)
+    .update(payload)
+    .digest("hex");
+}
+
+/** Verify a channel state signature (used before settlement and in disputes). */
+export function verifyChannelStateSignature(state: {
+  channelId: string;
+  nonce: number;
+  units: number;
+  cost: string;
+  signature: string | null;
+}): boolean {
+  if (!state.signature) return false;
+  const expected = signChannelState(state);
+  const a = Buffer.from(expected, "hex");
+  const b = Buffer.from(state.signature, "hex");
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function getChannelRow(channelId: string): ChannelStateRow | undefined {
+  return db()
+    .prepare("SELECT * FROM usage_channels WHERE channel_id = ?")
+    .get(channelId) as ChannelStateRow | undefined;
+}
+
+export function getChannel(channelId: string): ChannelState | undefined {
+  const row = getChannelRow(channelId);
+  return row ? rowToChannelState(row) : undefined;
+}
+
+export function getChannelByMeter(meterId: string): ChannelState | undefined {
+  return getChannel(deriveChannelId(meterId));
+}
+
+/**
+ * Open a payment channel for a meter. Idempotent: returns the existing open
+ * channel if one already exists. The channel is registered on-chain via the
+ * contract's `open_channel` entrypoint.
+ */
+export async function openChannel(meterId: string): Promise<ChannelState> {
+  const channelId = deriveChannelId(meterId);
+  const existing = getChannel(channelId);
+  if (existing && existing.status !== "settled") {
+    return existing;
+  }
+
+  const now = new Date().toISOString();
+  const initialState = { channelId, nonce: 0, units: 0, cost: "0" };
+  const signature = signChannelState(initialState);
+
+  let txHash: string | null = null;
+  try {
+    txHash = await adminInvoke("open_channel", [
+      StellarSdk.nativeToScVal(channelId, { type: "string" }),
+      StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+    ]);
+  } catch (error) {
+    logger.warn("Failed to register channel on-chain; keeping local channel", {
+      channelId,
+      meterId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `
+          INSERT INTO usage_channels (
+            channel_id, meter_id, nonce, units, cost, settled_nonce, settled_cost,
+            status, opened_at, updated_at, signature, settlement_tx_hash
+          ) VALUES (?, ?, 0, 0, '0', 0, '0', 'open', ?, ?, ?, ?)
+          ON CONFLICT(channel_id) DO UPDATE SET
+            status = 'open',
+            nonce = 0,
+            units = 0,
+            cost = '0',
+            settled_nonce = 0,
+            settled_cost = '0',
+            opened_at = excluded.opened_at,
+            updated_at = excluded.updated_at,
+            settled_at = NULL,
+            dispute_raised_at = NULL,
+            dispute_reason = NULL,
+            signature = excluded.signature,
+            settlement_tx_hash = excluded.settlement_tx_hash
+        `,
+      )
+      .run(channelId, meterId, now, now, signature, txHash);
+  });
+
+  recordAudit({
+    action: "channel_opened",
+    meterId,
+    txHash: txHash ?? undefined,
+    details: { channelId },
+  });
+
+  return getChannel(channelId)!;
+}
+
+/**
+ * Accumulate a usage update off-chain. No on-chain transaction is submitted;
+ * the channel state is advanced and re-signed. Returns the updated channel.
+ */
+export function accumulateChannelUsage(input: {
+  meterId: string;
+  units: number;
+  cost: number;
+}): ChannelState {
+  const channelId = deriveChannelId(input.meterId);
+  const existing = getChannel(channelId);
+  if (!existing) {
+    throw new Error(`No open channel for meter ${input.meterId}`);
+  }
+  if (existing.status === "settled") {
+    throw new Error(`Channel ${channelId} is already settled`);
+  }
+  if (existing.status === "disputed") {
+    throw new Error(`Channel ${channelId} is under dispute`);
+  }
+
+  const nextNonce = existing.nonce + 1;
+  const nextUnits = existing.units + input.units;
+  const nextCost = (BigInt(existing.cost) + BigInt(Math.trunc(input.cost))).toString();
+  const signature = signChannelState({
+    channelId,
+    nonce: nextNonce,
+    units: nextUnits,
+    cost: nextCost,
+  });
+  const now = new Date().toISOString();
+
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `
+          UPDATE usage_channels
+          SET nonce = ?, units = ?, cost = ?, signature = ?, updated_at = ?
+          WHERE channel_id = ?
+        `,
+      )
+      .run(nextNonce, nextUnits, nextCost, signature, now, channelId);
+  });
+
+  return getChannel(channelId)!;
+}
+
+/**
+ * Settle a channel's accumulated balance on-chain. Only the delta since the
+ * last settlement is submitted, so N off-chain updates cost one on-chain tx.
+ */
+export async function settleChannel(channelId: string): Promise<ChannelState> {
+  const channel = getChannel(channelId);
+  if (!channel) {
+    throw new Error(`Unknown channel ${channelId}`);
+  }
+  if (channel.status === "settled") {
+    return channel;
+  }
+  if (channel.nonce <= channel.settledNonce) {
+    return channel;
+  }
+  if (!verifyChannelStateSignature(channel)) {
+    throw new Error(`Invalid signature for channel ${channelId}`);
+  }
+
+  const deltaCost = (BigInt(channel.cost) - BigInt(channel.settledCost)).toString();
+  const deltaUnits = channel.units - (channel.settledNonce === 0 ? 0 : 0);
+
+  const txHash = await adminInvoke("settle_channel", [
+    StellarSdk.nativeToScVal(channelId, { type: "string" }),
+    StellarSdk.nativeToScVal(BigInt(channel.nonce), { type: "u64" }),
+    StellarSdk.nativeToScVal(BigInt(channel.units), { type: "u64" }),
+    StellarSdk.nativeToScVal(BigInt(deltaCost), { type: "i128" }),
+    StellarSdk.nativeToScVal(channel.signature ?? "", { type: "string" }),
+  ]);
+
+  const now = new Date().toISOString();
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `
+          UPDATE usage_channels
+          SET settled_nonce = ?, settled_cost = ?, settled_at = ?,
+              settlement_tx_hash = ?, updated_at = ?
+          WHERE channel_id = ?
+        `,
+      )
+      .run(channel.nonce, channel.cost, now, txHash, now, channelId);
+  });
+
+  recordAudit({
+    action: "channel_settled",
+    meterId: channel.meterId,
+    amount: deltaCost,
+    txHash,
+    details: { channelId, nonce: channel.nonce, units: channel.units, deltaUnits },
+  });
+
+  return getChannel(channelId)!;
+}
+
+/**
+ * Raise a dispute against a channel. The channel is frozen (no further
+ * off-chain updates) until resolved. The dispute window allows the contract
+ * to accept the highest signed state.
+ */
+export function raiseChannelDispute(channelId: string, reason: string): ChannelState {
+  const channel = getChannel(channelId);
+  if (!channel) {
+    throw new Error(`Unknown channel ${channelId}`);
+  }
+  if (channel.status === "settled") {
+    throw new Error(`Channel ${channelId} is already settled`);
+  }
+
+  const now = new Date().toISOString();
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `
+          UPDATE usage_channels
+          SET status = 'disputed', dispute_raised_at = ?, dispute_reason = ?, updated_at = ?
+          WHERE channel_id = ?
+        `,
+      )
+      .run(now, reason, now, channelId);
+  });
+
+  recordAudit({
+    action: "channel_dispute_raised",
+    meterId: channel.meterId,
+    details: { channelId, reason, nonce: channel.nonce },
+  });
+
+  return getChannel(channelId)!;
+}
+
+/**
+ * Resolve a dispute by submitting the highest signed state to the contract.
+ * The contract verifies the signature and nonce and settles the channel.
+ */
+export async function resolveChannelDispute(channelId: string): Promise<ChannelState> {
+  const channel = getChannel(channelId);
+  if (!channel) {
+    throw new Error(`Unknown channel ${channelId}`);
+  }
+  if (channel.status !== "disputed") {
+    throw new Error(`Channel ${channelId} is not under dispute`);
+  }
+  if (!verifyChannelStateSignature(channel)) {
+    throw new Error(`Invalid signature for disputed channel ${channelId}`);
+  }
+
+  const txHash = await adminInvoke("resolve_dispute", [
+    StellarSdk.nativeToScVal(channelId, { type: "string" }),
+    StellarSdk.nativeToScVal(BigInt(channel.nonce), { type: "u64" }),
+    StellarSdk.nativeToScVal(BigInt(channel.units), { type: "u64" }),
+    StellarSdk.nativeToScVal(BigInt(channel.cost), { type: "i128" }),
+    StellarSdk.nativeToScVal(channel.signature ?? "", { type: "string" }),
+  ]);
+
+  const now = new Date().toISOString();
+  pool.withConnection((database) => {
+    database
+      .prepare(
+        `
+          UPDATE usage_channels
+          SET status = 'settled', settled_nonce = ?, settled_cost = ?,
+              settled_at = ?, settlement_tx_hash = ?, updated_at = ?
+          WHERE channel_id = ?
+        `,
+      )
+      .run(channel.nonce, channel.cost, now, txHash, now, channelId);
+  });
+
+  recordAudit({
+    action: "channel_dispute_resolved",
+    meterId: channel.meterId,
+    amount: channel.cost,
+    txHash,
+    details: { channelId, nonce: channel.nonce, units: channel.units },
+  });
+
+  return getChannel(channelId)!;
+}
+
+/**
+ * Settle every channel that has unsettled off-chain updates. Called
+ * periodically by the settlement worker. Returns the settled channels.
+ */
+export async function settlePendingChannels(): Promise<ChannelState[]> {
+  const rows = db()
+    .prepare(
+      `SELECT channel_id FROM usage_channels
+       WHERE status = 'open' AND nonce > settled_nonce
+       ORDER BY updated_at ASC LIMIT 50`,
+    )
+    .all() as Array<{ channel_id: string }>;
+
+  const settled: ChannelState[] = [];
+  for (const { channel_id } of rows) {
+    try {
+      settled.push(await settleChannel(channel_id));
+    } catch (error) {
+      logger.error("Channel settlement failed", {
+        channelId: channel_id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return settled;
+}
+
+/**
+ * Start the periodic channel settlement worker. Off-chain updates accumulate
+ * between runs; each run submits one on-chain settlement per active channel.
+ */
+export function startChannelSettlementWorker() {
+  if (channelSettlementTimer) return;
+
+  logger.info("Channel settlement worker started", {
+    intervalMs: CHANNEL_SETTLEMENT_INTERVAL_MS,
+    disputeWindowMs: CHANNEL_DISPUTE_WINDOW_MS,
+  });
+
+  channelSettlementTimer = setInterval(() => {
+    if (channelSettlementInFlight) return;
+    channelSettlementInFlight = true;
+    void settlePendingChannels()
+      .catch((err) => logger.error("Channel settlement run failed", { err }))
+      .finally(() => {
+        channelSettlementInFlight = false;
+      });
+  }, CHANNEL_SETTLEMENT_INTERVAL_MS);
+  channelSettlementTimer.unref?.();
+
+  process.on("SIGTERM", () => {
+    if (channelSettlementTimer) {
+      clearInterval(channelSettlementTimer);
+      channelSettlementTimer = undefined;
+      logger.info("Channel settlement worker stopped on SIGTERM");
+    }
+  });
+}
+
 // ── Retention / compaction (Closes #685) ────────────────────────────────────
 //
 // usage_events grows ~1KB/event; left unbounded it reaches multiple GB within
@@ -55,6 +505,7 @@ export type UsageEventRecord = {
   last_error: string | null;
   on_chain_tx_hash: string | null;
   submitted_at: string | null;
+  reading_id?: string | null;
 };
 
 type CreateUsageEventInput = {
@@ -62,6 +513,8 @@ type CreateUsageEventInput = {
   units: number;
   cost: number;
   sourceTopic?: string | null;
+  readingId?: string;
+  energySources?: { solar: number; grid: number; battery: number };
 };
 
 // ── #735: connection pooling ─────────────────────────────────────────────────
@@ -145,6 +598,32 @@ function applyUsageEventSchema(database: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_grid_exports_meter_received_at
       ON grid_exports (meter_id, received_at DESC);
+
+    -- #1045: state channels for off-chain usage micro-transactions. Each row
+    -- tracks the latest signed off-chain state and the last settled state.
+    CREATE TABLE IF NOT EXISTS usage_channels (
+      channel_id TEXT PRIMARY KEY,
+      meter_id TEXT NOT NULL,
+      nonce INTEGER NOT NULL DEFAULT 0,
+      units INTEGER NOT NULL DEFAULT 0,
+      cost TEXT NOT NULL DEFAULT '0',
+      settled_nonce INTEGER NOT NULL DEFAULT 0,
+      settled_cost TEXT NOT NULL DEFAULT '0',
+      status TEXT NOT NULL DEFAULT 'open',
+      opened_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      settled_at TEXT,
+      dispute_raised_at TEXT,
+      dispute_reason TEXT,
+      signature TEXT,
+      settlement_tx_hash TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_channels_meter
+      ON usage_channels (meter_id);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_channels_status
+      ON usage_channels (status, updated_at);
   `);
 }
 
@@ -177,6 +656,10 @@ export function closeUsageEventStore(): void {
     clearInterval(retryTimer);
     retryTimer = undefined;
   }
+  if (channelSettlementTimer) {
+    clearInterval(channelSettlementTimer);
+    channelSettlementTimer = undefined;
+  }
   pool.drain();
 }
 
@@ -195,6 +678,19 @@ export function setKV(key: string, value: string) {
 }
 
 export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
+  if (input.readingId) {
+    const receipt = db.prepare("SELECT event_id FROM usage_reading_receipts WHERE meter_id=? AND reading_id=?").get(input.meterId, input.readingId) as { event_id: number } | undefined;
+    const existing = receipt ? getUsageEventById(receipt.event_id) as any : undefined;
+    // Retention may remove history, but must never allow replay billing of the same reading.
+    if (receipt && !existing) throw new Error("Reading already processed; usage history has expired");
+    if (existing) {
+      // A stable ID must never be rebound to different usage/source data.
+      if (existing.units !== input.units || existing.cost !== String(input.cost) ||
+          existing.energy_solar !== input.energySources?.solar || existing.energy_grid !== input.energySources?.grid ||
+          existing.energy_battery !== input.energySources?.battery) throw new Error("Conflicting readingId");
+      return existing as UsageEventRecord;
+    }
+  }
   const receivedAt = new Date().toISOString();
   const id = pool.withConnection((database) => {
     const statement = database.prepare(`
@@ -218,6 +714,51 @@ export function recordUsageEvent(input: CreateUsageEventInput): UsageEventRecord
   });
 
   usageEvents.inc({ status: "pending" });
+
+  return getUsageEventById(Number(id))!;
+}
+
+/**
+ * Record a usage update through an open state channel (#1045). The update is
+ * accumulated off-chain and signed; it is only settled on-chain by the
+ * periodic settlement worker (or an explicit settleChannel call). Falls back
+ * to the regular on-chain path when no channel is open for the meter.
+ */
+export function recordChannelUsageEvent(input: CreateUsageEventInput): UsageEventRecord {
+  const channel = getChannelByMeter(input.meterId);
+  if (!channel || channel.status !== "open") {
+    return recordUsageEvent(input);
+  }
+
+  accumulateChannelUsage({
+    meterId: input.meterId,
+    units: input.units,
+    cost: input.cost,
+  });
+
+  const receivedAt = new Date().toISOString();
+  const id = pool.withConnection((database) => {
+    const statement = database.prepare(`
+      INSERT INTO usage_events (
+        meter_id,
+        units,
+        cost,
+        received_at,
+        source_topic,
+        status,
+        attempt_count
+      ) VALUES (?, ?, ?, ?, ?, 'submitted', 1)
+    `);
+    return statement.run(
+      input.meterId,
+      input.units,
+      String(input.cost),
+      receivedAt,
+      input.sourceTopic ?? null,
+    ).lastInsertRowid;
+  });
+
+  usageEvents.inc({ status: "submitted" });
 
   return getUsageEventById(Number(id))!;
 }
@@ -411,6 +952,19 @@ export function getTypicalWeeklyUsageStroops(meterId: string): number {
   return Number(row?.weekly_cost ?? 0);
 }
 
+/** Energy-weighted attribution of locally received usage, including unreported legacy energy. */
+export function getEnergyMix(meterId: string, since = "1970-01-01T00:00:00.000Z", until = new Date().toISOString()) {
+  const row = db.prepare(`SELECT COUNT(*) AS readings, COALESCE(SUM(units),0) AS total,
+    COALESCE(SUM(energy_solar),0) AS solar, COALESCE(SUM(energy_grid),0) AS grid,
+    COALESCE(SUM(energy_battery),0) AS battery,
+    COALESCE(SUM(CASE WHEN energy_solar IS NULL THEN units ELSE 0 END),0) AS unknown
+    FROM usage_events WHERE meter_id=? AND received_at>=? AND received_at<?`).get(meterId, since, until) as Record<string, number>;
+  const percentages = Object.fromEntries(["solar", "grid", "battery", "unknown"].map(key => [key, row.total ? row[key] * 100 / row.total : 0]));
+  return { meterId, since, until, unit: "milli-kWh", basis: "received_usage", readings: row.readings,
+    totalUnits: row.total, units: { solar: row.solar, grid: row.grid, battery: row.battery, unknown: row.unknown },
+    percentages, hasData: row.total > 0 };
+}
+
 export async function persistAndSubmitUsageEvent(input: CreateUsageEventInput) {
   const event = recordUsageEvent(input);
   try {
@@ -574,8 +1128,45 @@ async function submitUsageEvent(id: number) {
   const attemptedAt = new Date().toISOString();
 
   try {
+    // #1045: if an open state channel exists for this meter, accumulate the
+    // update off-chain instead of submitting a per-event on-chain tx. The
+    // channel's periodic settlement worker will settle the balance on-chain.
+    const channel = getChannelByMeter(event.meter_id);
+    if (channel && channel.status === "open") {
+      accumulateChannelUsage({
+        meterId: event.meter_id,
+        units: event.units,
+        cost: Number(event.cost),
+      });
+      const offChainHash = `channel:${channel.channelId}`;
+      pool.withConnection((database) => {
+        database
+          .prepare(
+            `
+              UPDATE usage_events
+              SET status = 'submitted',
+                  attempt_count = attempt_count + 1,
+                  last_attempt_at = ?,
+                  last_error = NULL,
+                  on_chain_tx_hash = ?,
+                  submitted_at = ?
+              WHERE id = ?
+            `,
+          )
+          .run(attemptedAt, offChainHash, attemptedAt, id);
+      });
+      recordAudit({
+        action: "usage_accumulated_offchain",
+        meterId: event.meter_id,
+        amount: event.cost,
+        details: { units: event.units, eventId: id, channelId: channel.channelId },
+      });
+      usageEvents.inc({ status: "submitted" });
+      return getUsageEventById(id);
+    }
+
     const hash = await adminInvoke("update_usage", [
-      StellarSdk.nativeToScVal(event.meter_id, { type: "symbol" }),
+      StellarSdk.nativeToScVal(event.meter_id, { type: event.reading_id ? "string" : "symbol" }),
       StellarSdk.nativeToScVal(BigInt(event.units), { type: "u64" }),
       StellarSdk.nativeToScVal(BigInt(event.cost), { type: "i128" }),
     ]);
@@ -939,4 +1530,16 @@ export function countDeadLetterEvents(): number {
     .prepare(`SELECT COUNT(*) as count FROM usage_events WHERE status = 'failed'`)
     .get() as { count: number };
   return row.count;
+}
+
+/** List channels, optionally filtered by status (#1045). */
+export function listChannels(status?: ChannelStatus): ChannelState[] {
+  const rows = status
+    ? (db()
+        .prepare("SELECT * FROM usage_channels WHERE status = ? ORDER BY updated_at DESC")
+        .all(status) as ChannelStateRow[])
+    : (db()
+        .prepare("SELECT * FROM usage_channels ORDER BY updated_at DESC")
+        .all() as ChannelStateRow[]);
+  return rows.map(rowToChannelState);
 }

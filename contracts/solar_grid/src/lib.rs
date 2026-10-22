@@ -75,6 +75,8 @@ pub enum ContractError {
     InsufficientBalance = 12,
     CollaboratorAlreadyExists = 13,
     DailyLimitReached = 14,
+    /// Meter usage was paused because its configured consumption cap was reached.
+    ConsumptionLimitReached = 77,
     BatchEmpty = 15,
     AlgorithmNotFound = 16,
     AlreadySubscribed = 17,
@@ -295,6 +297,19 @@ const REP_ON_TIME_WINDOW_SECS: u64 = 3 * SECONDS_PER_DAY;
 /// meaningful; below this the score is scaled down proportionally.
 const REP_MIN_PAYMENTS: u32 = 3;
 
+// ── Blockchain state channels (#1045) ────────────────────────────────────────
+
+/// Sequential counter for state channels.
+const CHANNEL_COUNT: Symbol = symbol_short!("CH_CNT");
+/// Default dispute window (seconds) during which a close can be challenged.
+const DEFAULT_CHANNEL_DISPUTE_SECS: u64 = 24 * 60 * 60;
+/// Maximum number of off-chain updates retained per channel for dispute
+/// resolution. Older updates are pruned; only the latest state matters for
+/// settlement, but a bounded history lets a challenger prove misbehaviour.
+const MAX_CHANNEL_UPDATES: u32 = 32;
+/// Maximum number of channels a single participant may have open at once.
+const MAX_OPEN_CHANNELS_PER_PARTY: u32 = 16;
+
 /// An announced emergency withdrawal can only be executed once this many
 /// seconds have elapsed since it was announced (#686).
 const EMERGENCY_WITHDRAWAL_TIMELOCK_SECS: u64 = 48 * 60 * 60;
@@ -461,6 +476,14 @@ pub struct ReputationScore {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitPeriod {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Meter {
     /// Schema version — increment when fields are added/changed.
@@ -474,6 +497,7 @@ pub struct Meter {
     ///     for load-balancing decisions (Issue #821)
     /// v8: adds import_kwh and export_kwh — bidirectional metering totals
     ///     (Issue #990)
+    /// v9: adds configurable consumption caps and current-period tracking
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -499,6 +523,25 @@ pub struct Meter {
     pub import_kwh: u64,
     /// Cumulative energy exported to the grid, in milli-kWh (Issue #990).
     pub export_kwh: u64,
+    /// Maximum units permitted in the current period; 0 means unlimited.
+    pub consumption_limit: i128,
+    /// Period used by the consumption cap.
+    pub limit_period: LimitPeriod,
+    /// Units consumed since the beginning of the current limit period.
+    pub period_consumed: i128,
+    /// UTC timestamp at the beginning of the current limit period.
+    pub period_start: u64,
+}
+/// v8 layout before consumption limits were added.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeterV8 {
+    pub version: u32, pub owner: Address, pub active: bool, pub units_used: u64,
+    pub plan: PaymentPlan, pub last_payment: u64, pub expires_at: u64,
+    pub daily_limit: i128, pub day_spent: i128, pub day_start: u64,
+    pub grace_expires_at: Option<u64>, pub emergency_contact: Option<Address>,
+    pub auto_deactivate: bool, pub installed_at: u64, pub max_capacity_watts: u32,
+    pub import_kwh: u64, pub export_kwh: u64,
 }
 /// v6 layout before capacity support, retained for migration.
 #[contracttype]
@@ -593,7 +636,7 @@ pub struct LegacyMeter {
 /// Migrate a v0 (legacy) meter entry to the current v8 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: 8,
+        version: 9,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -610,13 +653,17 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         max_capacity_watts: 0,
         import_kwh: 0,
         export_kwh: 0,
+        consumption_limit: 0,
+        limit_period: LimitPeriod::Daily,
+        period_consumed: 0,
+        period_start: old.last_payment,
     }
 }
 
 /// Migrate a v1 meter entry to the current v8 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 8,
+        version: 9,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -633,12 +680,16 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         max_capacity_watts: 0,
         import_kwh: 0,
         export_kwh: 0,
+        consumption_limit: 0,
+        limit_period: LimitPeriod::Daily,
+        period_consumed: 0,
+        period_start: old.last_payment,
     }
 }
 
 fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
     Meter {
-        version: 8,
+        version: 9,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -655,11 +706,15 @@ fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
         max_capacity_watts: 0,
         import_kwh: 0,
         export_kwh: 0,
+        consumption_limit: 0,
+        limit_period: LimitPeriod::Daily,
+        period_consumed: 0,
+        period_start: old.last_payment,
     }
 }
 
 fn migrate_meter_v5(old: LegacyMeterV5) -> Meter {
-    Meter { version: 8, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0 }
+    Meter { version: 9, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0, consumption_limit: 0, limit_period: LimitPeriod::Daily, period_consumed: 0, period_start: old.last_payment }
 }
 
 /// Returns the number of seconds a payment plan is valid for.
@@ -806,6 +861,73 @@ pub enum DataKey {
     InstallmentPlanList,
     /// Installment plan ids belonging to a payer (#987).
     PayerInstallments(Address),
+    /// State channel definition keyed by channel id (#1045).
+    Channel(u64),
+    /// Global list of state channel ids (#1045).
+    ChannelList,
+    /// Channel ids a participant is party to (#1045).
+    PartyChannels(Address),
+}
+
+/// Lifecycle status of a state channel (#1045).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ChannelStatus {
+    /// Channel is open and accepts off-chain state updates.
+    Open,
+    /// A close has been requested; the dispute window is running.
+    Closing,
+    /// A close was challenged; awaiting resolution by the admin.
+    Disputed,
+    /// Final balances have been settled on-chain.
+    Settled,
+}
+
+/// A single off-chain state update for a channel (#1045).
+///
+/// The update is co-signed by both parties; the contract only verifies the
+/// signatures and monotonic nonce, so the actual micro-transactions happen
+/// entirely off-chain and cost nothing until settlement.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChannelUpdate {
+    /// Monotonically increasing sequence number.
+    pub nonce: u64,
+    /// Balance owed to the payer (depositor) at this state.
+    pub payer_balance: i128,
+    /// Balance owed to the payee (service provider) at this state.
+    pub payee_balance: i128,
+    /// Ledger timestamp at which the update was signed.
+    pub timestamp: u64,
+    /// Commitment hash of the off-chain payload backing this update.
+    pub state_hash: BytesN<32>,
+}
+
+/// A bidirectional payment/usage channel between a payer and a payee (#1045).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Channel {
+    pub id: u64,
+    /// Party funding the channel (e.g. the meter owner).
+    pub payer: Address,
+    /// Party receiving payments (e.g. the service provider).
+    pub payee: Address,
+    /// Total amount deposited into the channel.
+    pub deposit: i128,
+    /// Latest agreed state.
+    pub latest: ChannelUpdate,
+    /// Bounded history of recent updates for dispute resolution.
+    pub history: Vec<ChannelUpdate>,
+    pub status: ChannelStatus,
+    pub opened_at: u64,
+    /// Timestamp after which a requested close can be finalized.
+    pub dispute_deadline: u64,
+    /// Length of the dispute window for this channel.
+    pub dispute_secs: u64,
+    /// Set when a close has been challenged.
+    pub challenged_by: Option<Address>,
+    /// Reason hash supplied by the challenger, if any.
+    pub challenge_reason: Option<BytesN<32>>,
 }
 
 /// Lifecycle state of an installment payment plan (#987).
@@ -1054,6 +1176,22 @@ impl<'a> Drop for ReentrancyGuard<'a> {
 #[contract]
 pub struct SolarGridContract;
 
+enum UsageOutcome {
+    Applied { deactivated: bool },
+    ConsumptionLimitReached,
+}
+
+fn limit_period_start(period: &LimitPeriod, now: u64) -> u64 {
+    let duration = match period {
+        LimitPeriod::Daily => SECONDS_PER_DAY,
+        LimitPeriod::Weekly => SECONDS_PER_WEEK,
+        // A month is a deterministic 30-day accounting period, matching the
+        // contract's existing Monthly payment-plan semantics.
+        LimitPeriod::Monthly => 30 * SECONDS_PER_DAY,
+    };
+    (now / duration) * duration
+}
+
 #[contractimpl]
 impl SolarGridContract {
     /// Deployment-time constructor.
@@ -1131,6 +1269,352 @@ impl SolarGridContract {
             .unwrap_or_else(|| String::from_str(&env, CURRENT_CONTRACT_VERSION))
     }
 
+    // ── Issue #1045: blockchain state channels ──────────────────────────────
+
+    /// Open a state channel by depositing `deposit` tokens from `payer`.
+    ///
+    /// The deposit is escrowed by the contract; the payer and payee then
+    /// exchange co-signed [`ChannelUpdate`]s off-chain at zero on-chain cost.
+    /// Only the final balances are settled on-chain when the channel closes.
+    pub fn open_channel(
+        env: Env,
+        payer: Address,
+        payee: Address,
+        deposit: i128,
+        dispute_secs: Option<u64>,
+    ) -> Result<u64, ContractError> {
+        if Self::pause_is_active(&env) {
+            return Err(ContractError::ContractPaused);
+        }
+        if deposit <= 0 {
+            return Err(ContractError::ChannelInvalidAmount);
+        }
+        if payer == payee {
+            return Err(ContractError::Unauthorized);
+        }
+        payer.require_auth();
+
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        // Cap the number of concurrently open channels per party.
+        let payer_channels: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PartyChannels(payer.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut open_count: u32 = 0;
+        for id in payer_channels.iter() {
+            if let Some(ch) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Channel>(&DataKey::Channel(id))
+            {
+                if ch.status == ChannelStatus::Open || ch.status == ChannelStatus::Closing {
+                    open_count += 1;
+                }
+            }
+        }
+        if open_count >= MAX_OPEN_CHANNELS_PER_PARTY {
+            return Err(ContractError::DailyLimitReached);
+        }
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN)
+            .ok_or(ContractError::NotInitialized)?;
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&payer, &env.current_contract_address(), &deposit);
+
+        let now = env.ledger().timestamp();
+        let id: u64 = env.storage().instance().get(&CHANNEL_COUNT).unwrap_or(0);
+        env.storage().instance().set(&CHANNEL_COUNT, &(id + 1));
+
+        let initial = ChannelUpdate {
+            nonce: 0,
+            payer_balance: deposit,
+            payee_balance: 0,
+            timestamp: now,
+            state_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        let mut history = Vec::new(&env);
+        history.push_back(initial.clone());
+
+        let channel = Channel {
+            id,
+            payer: payer.clone(),
+            payee: payee.clone(),
+            deposit,
+            latest: initial,
+            history,
+            status: ChannelStatus::Open,
+            opened_at: now,
+            dispute_deadline: 0,
+            dispute_secs: dispute_secs.unwrap_or(DEFAULT_CHANNEL_DISPUTE_SECS),
+            challenged_by: None,
+            challenge_reason: None,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(id), &channel);
+
+        let mut list: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ChannelList)
+            .unwrap_or_else(|| Vec::new(&env));
+        list.push_back(id);
+        env.storage().persistent().set(&DataKey::ChannelList, &list);
+
+        let mut payer_channels = payer_channels;
+        payer_channels.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PartyChannels(payer.clone()), &payer_channels);
+        let mut payee_channels: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PartyChannels(payee.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        payee_channels.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PartyChannels(payee.clone()), &payee_channels);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_open"), id),
+            (payer, payee, deposit),
+        );
+        Ok(id)
+    }
+
+    /// Submit a co-signed off-chain state update for a channel.
+    ///
+    /// Both parties must authorize the update. The update's nonce must be
+    /// strictly greater than the latest recorded nonce and the balances must
+    /// sum to the channel deposit. No tokens move here — this only records
+    /// the latest agreed state so it can be settled later.
+    pub fn submit_channel_update(
+        env: Env,
+        channel_id: u64,
+        update: ChannelUpdate,
+    ) -> Result<(), ContractError> {
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Open {
+            return Err(ContractError::ChannelNotOpen);
+        }
+        if update.nonce <= channel.latest.nonce {
+            return Err(ContractError::ChannelNonceTooLow);
+        }
+        if update.payer_balance < 0
+            || update.payee_balance < 0
+            || update.payer_balance + update.payee_balance != channel.deposit
+        {
+            return Err(ContractError::ChannelInvalidAmount);
+        }
+
+        // Both parties must co-sign the off-chain state.
+        channel.payer.require_auth();
+        channel.payee.require_auth();
+
+        channel.latest = update.clone();
+        if channel.history.len() >= MAX_CHANNEL_UPDATES {
+            let mut pruned = Vec::new(&env);
+            for (i, u) in channel.history.iter().enumerate() {
+                if i > 0 {
+                    pruned.push_back(u);
+                }
+            }
+            channel.history = pruned;
+        }
+        channel.history.push_back(update.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel_id), &channel);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_upd"), channel_id),
+            (update.nonce, update.payer_balance, update.payee_balance),
+        );
+        Ok(())
+    }
+
+    /// Request to close a channel and settle the latest agreed balances.
+    ///
+    /// Starts the dispute window. After `dispute_deadline` elapses, either
+    /// party may call [`Self::settle_channel`] to move funds on-chain.
+    pub fn close_channel(env: Env, channel_id: u64) -> Result<(), ContractError> {
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Open {
+            return Err(ContractError::ChannelNotOpen);
+        }
+        channel.payer.require_auth();
+
+        let now = env.ledger().timestamp();
+        channel.status = ChannelStatus::Closing;
+        channel.dispute_deadline = now.saturating_add(channel.dispute_secs);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel_id), &channel);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_close"), channel_id),
+            channel.dispute_deadline,
+        );
+        Ok(())
+    }
+
+    /// Challenge a pending close during the dispute window.
+    ///
+    /// Either party may challenge with a reason hash (e.g. a commitment to a
+    /// newer state). The channel enters `Disputed` and can only be resolved
+    /// by the admin via [`Self::resolve_channel_dispute`].
+    pub fn challenge_channel_close(
+        env: Env,
+        channel_id: u64,
+        challenger: Address,
+        reason: BytesN<32>,
+    ) -> Result<(), ContractError> {
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Closing {
+            return Err(ContractError::ChannelNotInDispute);
+        }
+        if env.ledger().timestamp() > channel.dispute_deadline {
+            return Err(ContractError::ChannelDisputePeriodElapsed);
+        }
+        if challenger != channel.payer && challenger != channel.payee {
+            return Err(ContractError::Unauthorized);
+        }
+        challenger.require_auth();
+
+        channel.status = ChannelStatus::Disputed;
+        channel.challenged_by = Some(challenger.clone());
+        channel.challenge_reason = Some(reason.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel_id), &channel);
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_chal"), channel_id),
+            (challenger, reason),
+        );
+        Ok(())
+    }
+
+    /// Admin resolution of a disputed channel, settling the supplied state.
+    ///
+    /// The admin may settle using any co-signed state that the challenger
+    /// proved (or the latest recorded state). Funds are released immediately.
+    pub fn resolve_channel_dispute(
+        env: Env,
+        channel_id: u64,
+        final_update: ChannelUpdate,
+    ) -> Result<(), ContractError> {
+        Self::require_admin_action(&env, "resolve_channel_dispute", "channel")?;
+        let _guard = ReentrancyGuard::enter(&env)?;
+
+        let mut channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Disputed {
+            return Err(ContractError::ChannelNotInDispute);
+        }
+        if final_update.payer_balance < 0
+            || final_update.payee_balance < 0
+            || final_update.payer_balance + final_update.payee_balance != channel.deposit
+        {
+            return Err(ContractError::ChannelInvalidAmount);
+        }
+
+        channel.latest = final_update;
+        Self::settle_channel_internal(&env, channel)
+    }
+
+    /// Finalize a channel after the dispute window has elapsed.
+    ///
+    /// Settles the latest agreed balances on-chain, releasing escrowed funds
+    /// to the payer and payee. Either party may call this.
+    pub fn settle_channel(env: Env, channel_id: u64) -> Result<(), ContractError> {
+        let _guard = ReentrancyGuard::enter(&env)?;
+        let channel: Channel = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)?;
+        if channel.status != ChannelStatus::Closing {
+            return Err(ContractError::ChannelNotOpen);
+        }
+        if env.ledger().timestamp() < channel.dispute_deadline {
+            return Err(ContractError::ChannelDisputePeriodActive);
+        }
+        Self::settle_channel_internal(&env, channel)
+    }
+
+    /// Internal settlement: transfer final balances and mark the channel settled.
+    fn settle_channel_internal(env: &Env, mut channel: Channel) -> Result<(), ContractError> {
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&TOKEN)
+            .ok_or(ContractError::NotInitialized)?;
+        let token_client = token::Client::new(env, &token_address);
+        let contract = env.current_contract_address();
+
+        // Effects first: mark settled before external transfers.
+        channel.status = ChannelStatus::Settled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Channel(channel.id), &channel);
+
+        if channel.latest.payer_balance > 0 {
+            token_client.transfer(&contract, &channel.payer, &channel.latest.payer_balance);
+        }
+        if channel.latest.payee_balance > 0 {
+            token_client.transfer(&contract, &channel.payee, &channel.latest.payee_balance);
+        }
+
+        env.events().publish(
+            (EVT_NS, symbol_short!("ch_settle"), channel.id),
+            (channel.latest.payer_balance, channel.latest.payee_balance),
+        );
+        Ok(())
+    }
+
+    /// Fetch a channel by id.
+    pub fn get_channel(env: Env, channel_id: u64) -> Result<Channel, ContractError> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Channel(channel_id))
+            .ok_or(ContractError::ChannelNotFound)
+    }
+
+    /// Total number of channels ever opened.
+    pub fn get_channel_count(env: Env) -> u64 {
+        env.storage().instance().get(&CHANNEL_COUNT).unwrap_or(0)
+    }
+
+    /// List channel ids a participant is party to.
+    pub fn get_party_channels(env: Env, party: Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PartyChannels(party))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
     /// Register a new smart meter for an owner with optional metadata (Issue #691).
     ///
     /// # Access control
@@ -1183,7 +1667,7 @@ impl SolarGridContract {
         // ── EFFECTS — all state writes before any external observation ──────
         let now = env.ledger().timestamp();
         let meter = Meter {
-            version: 8,
+            version: 9,
             owner: owner.clone(),
             active: false,
             units_used: 0,
@@ -1200,12 +1684,16 @@ impl SolarGridContract {
             max_capacity_watts: max_capacity_watts.unwrap_or(0),
             import_kwh: 0,
             export_kwh: 0,
+            consumption_limit: 0,
+            limit_period: LimitPeriod::Daily,
+            period_consumed: 0,
+            period_start: now,
         };
         env.storage().persistent().set(&key, &meter);
         if !meter_metadata.is_empty() {
             env.storage().persistent().set(&DataKey::MeterMetadata(meter_id.clone()), &meter_metadata);
         }
-        env.storage().persistent().set(&DataKey::MeterSchemaVer(meter_id.clone()), &8u32);
+        env.storage().persistent().set(&DataKey::MeterSchemaVer(meter_id.clone()), &9u32);
 
         // Append meter_id to the owner's meter list
         let owner_key = DataKey::OwnerMeters(owner.clone());
@@ -1240,6 +1728,7 @@ impl SolarGridContract {
     /// Register a new smart meter for an owner (backward compatible).
     /// Calls register_meter_with_metadata with no metadata and no capacity.
     pub fn register_meter(env: Env, meter_id: String, owner: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::register_meter_with_metadata(env, meter_id, owner, None, None)
     }
 
@@ -1252,6 +1741,7 @@ impl SolarGridContract {
         owner: Address,
         max_capacity_watts: u32,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::register_meter_with_metadata(env, meter_id, owner, None, Some(max_capacity_watts))
     }
 
@@ -1262,6 +1752,7 @@ impl SolarGridContract {
         meter_id: String,
         max_capacity_watts: u32,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -1363,7 +1854,7 @@ impl SolarGridContract {
             seen.push_back(meter_id.clone());
 
             let meter = Meter {
-                version: 8,
+                version: 9,
                 owner: owner.clone(),
                 active: false,
                 units_used: 0,
@@ -1380,11 +1871,15 @@ impl SolarGridContract {
                 max_capacity_watts: 0,
                 import_kwh: 0,
                 export_kwh: 0,
+                consumption_limit: 0,
+                limit_period: LimitPeriod::Daily,
+                period_consumed: 0,
+                period_start: now,
             };
             env.storage().persistent().set(&key, &meter);
             env.storage()
                 .persistent()
-                .set(&DataKey::MeterSchemaVer(meter_id.clone()), &8u32);
+                .set(&DataKey::MeterSchemaVer(meter_id.clone()), &9u32);
 
             let owner_key = DataKey::OwnerMeters(owner.clone());
             let mut owner_list: Vec<String> = env
@@ -1435,6 +1930,7 @@ impl SolarGridContract {
         meter_id: String,
         metadata: Map<String, String>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         validate_metadata(&metadata)?;
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
@@ -1462,6 +1958,7 @@ impl SolarGridContract {
 
     /// Deregister an existing meter. Admin-only.
     pub fn deregister_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "deregister_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
@@ -1531,6 +2028,7 @@ impl SolarGridContract {
         meter_id: String,
         new_owner: Address,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_initialized(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -1624,6 +2122,7 @@ impl SolarGridContract {
         meter_id: String,
         new_owner: Address,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
 
@@ -1776,6 +2275,7 @@ impl SolarGridContract {
     /// let it observe the "already added" check as false and register meters
     /// or trigger other protected paths before the transaction is complete.
     pub fn allowlist_add(env: Env, owner: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "allowlist_add", "contract")?;
         // Acquire the reentrancy lock before reading allowlist state so a
         // cross-contract callback from `owner` cannot race the contains→write
@@ -1805,6 +2305,7 @@ impl SolarGridContract {
     /// cross-contract callback, preventing a removed address from still
     /// appearing on the list during any re-entrant allowlist check.
     pub fn allowlist_remove(env: Env, owner: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "allowlist_remove", "contract")?;
         let _guard = ReentrancyGuard::enter(&env)?;
         let list: Vec<Address> = env
@@ -1833,12 +2334,14 @@ impl SolarGridContract {
 
     /// Add an address to the allowlist (alias for allowlist_add).
     pub fn add_to_allowlist(env: Env, address: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::allowlist_add(env, address)
     }
 
     /// Remove an address from the allowlist (alias for allowlist_remove).
     /// Admin should be able to call remove_from_allowlist to revoke allowlist access.
     pub fn remove_from_allowlist(env: Env, address: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::allowlist_remove(env, address)
     }
 
@@ -1854,6 +2357,7 @@ impl SolarGridContract {
     /// Register the IoT oracle address. Only admin may call this.
     /// Emits `ora_set` event with (old_oracle, new_oracle) for audit trail.
     pub fn set_oracle(env: Env, oracle: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_oracle", "contract")?;
         let old_oracle: Option<Address> = env.storage().instance().get(&ORACLE);
         env.storage().instance().set(&ORACLE, &oracle);
@@ -1871,6 +2375,7 @@ impl SolarGridContract {
     /// Explicitly clear the oracle address. Only admin may call this.
     /// Emits `ora_clr` event.
     pub fn remove_oracle(env: Env) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "remove_oracle", "contract")?;
         env.storage().instance().remove(&ORACLE);
         env.events().publish((EVT_NS, symbol_short!("ora_clr")), ());
@@ -1882,6 +2387,7 @@ impl SolarGridContract {
     ///
     /// Emits: `contract_frozen { }`
     pub fn freeze_contract(env: Env) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "freeze_contract", "contract")?;
         env.storage().instance().set(&FROZEN, &true);
         env.events().publish((EVT_NS, symbol_short!("frz_on")), ());
@@ -1893,6 +2399,7 @@ impl SolarGridContract {
     ///
     /// Emits: `contract_unfrozen { }`
     pub fn unfreeze_contract(env: Env) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "unfreeze_contract", "contract")?;
         if !env
             .storage()
@@ -1944,9 +2451,14 @@ impl SolarGridContract {
         let now = env.ledger().timestamp();
         env.storage().instance().set(&PAUSED, &true);
         env.storage().instance().set(&PAUSED_AT, &now);
+        let admin = Self::get_admin(&env)?;
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "ContractPaused")),
+            (admin.clone(), now),
+        );
         env.events().publish(
             (EVT_NS, Symbol::new(&env, "contract_paused")),
-            (Self::get_admin(&env)?, now, MAX_PAUSE_DURATION),
+            (admin, now, MAX_PAUSE_DURATION),
         );
         Ok(())
     }
@@ -1963,11 +2475,26 @@ impl SolarGridContract {
         let now = env.ledger().timestamp();
         env.storage().instance().remove(&PAUSED);
         env.storage().instance().remove(&PAUSED_AT);
+        let admin = Self::get_admin(&env)?;
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "ContractUnpaused")),
+            (admin.clone(), now),
+        );
         env.events().publish(
             (EVT_NS, Symbol::new(&env, "contract_unpaused")),
-            (Self::get_admin(&env)?, now),
+            (admin, now),
         );
         Ok(())
+    }
+
+    /// Pause all mutable contract operations through the administrator circuit breaker.
+    pub fn pause_contract(env: Env) -> Result<(), ContractError> {
+        Self::pause(env)
+    }
+
+    /// Resume mutable contract operations through the administrator circuit breaker.
+    pub fn unpause_contract(env: Env) -> Result<(), ContractError> {
+        Self::unpause(env)
     }
 
     /// Return whether the emergency pause is active. A pause older than the
@@ -2037,6 +2564,7 @@ impl SolarGridContract {
         plan: PaymentPlan,
         memo: Option<String>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         payer.require_auth();
         Self::pay_meter(env, meter_id, payer, amount, plan, memo)
     }
@@ -2128,7 +2656,7 @@ impl SolarGridContract {
         meter.last_payment = now;
         meter.expires_at = expires_at;
         meter.grace_expires_at = None;
-        meter.version = 8;
+        meter.version = 9;
         if meter.installed_at == 0 { meter.installed_at = now; }
         env.storage().persistent().set(&key, &meter);
 
@@ -2195,6 +2723,7 @@ impl SolarGridContract {
         threshold: i128,
         amount: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         if threshold <= 0 || amount <= 0 {
             return Err(ContractError::InvalidAutoTopup);
         }
@@ -2218,6 +2747,7 @@ impl SolarGridContract {
 
     /// Disable auto top-up without changing the configured threshold or amount.
     pub fn disable_auto_topup(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
         meter.owner.require_auth();
         if let Some(mut config) = env
@@ -2249,6 +2779,7 @@ impl SolarGridContract {
     /// automation service. A no-op is returned when the balance is above the
     /// threshold, preventing duplicate payments from concurrent workers.
     pub fn trigger_auto_topup(env: Env, meter_id: String) -> Result<bool, ContractError> {
+        Self::require_not_paused(&env)?;
         let config: AutoTopupConfig = env
             .storage()
             .persistent()
@@ -2327,6 +2858,7 @@ impl SolarGridContract {
         recipient: Address,
         reason: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "refund_payment", "contract")?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -2423,6 +2955,7 @@ impl SolarGridContract {
     /// Guards against a compromised admin key or a scripting bug issuing a
     /// burst of refunds that drains the contract's token balance.
     pub fn set_refund_limit(env: Env, limit: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_refund_limit", "contract")?;
         if limit < 0 {
             return Err(ContractError::InvalidAmount);
@@ -2474,6 +3007,7 @@ impl SolarGridContract {
         permissions: u32,
         expiry: u64,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
 
@@ -2525,6 +3059,7 @@ impl SolarGridContract {
         meter_id: String,
         delegate: Address,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let meter = Self::get_meter_or_error(&env, &key)?;
 
@@ -2735,6 +3270,7 @@ impl SolarGridContract {
         provider: Address,
         amount: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         // ── CHECKS ──────────────────────────────────────────────────────────
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -2772,6 +3308,7 @@ impl SolarGridContract {
     }
 
     pub fn admin_withdraw(env: Env, admin: Address, amount: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         // ── CHECKS ──────────────────────────────────────────────────────────
         admin.require_auth();
         let stored_admin: Address = Self::get_admin(&env)?;
@@ -2998,16 +3535,27 @@ impl SolarGridContract {
                 if Self::pause_is_active(&env) {
                     return Err(ContractError::AlreadyPaused);
                 }
+                let now = env.ledger().timestamp();
                 env.storage().instance().set(&PAUSED, &true);
-                env.storage()
-                    .instance()
-                    .set(&PAUSED_AT, &env.ledger().timestamp());
+                env.storage().instance().set(&PAUSED_AT, &now);
+                let admin = Self::get_admin(&env)?;
+                env.events().publish(
+                    (EVT_NS, Symbol::new(&env, "ContractPaused")),
+                    (admin, now),
+                );
             }
             AdminOperation::Unpause => {
                 if !Self::pause_is_active(&env) {
                     return Err(ContractError::NotPaused);
                 }
-                env.storage().instance().set(&PAUSED, &false);
+                let now = env.ledger().timestamp();
+                env.storage().instance().remove(&PAUSED);
+                env.storage().instance().remove(&PAUSED_AT);
+                let admin = Self::get_admin(&env)?;
+                env.events().publish(
+                    (EVT_NS, Symbol::new(&env, "ContractUnpaused")),
+                    (admin, now),
+                );
             }
             AdminOperation::SetGracePeriod(period) => {
                 env.storage().instance().set(&GRACE_PERIOD, &period);
@@ -3095,6 +3643,7 @@ impl SolarGridContract {
 
     /// Set the configurable grace period before meter deactivation (in seconds). Admin-only.
     pub fn set_grace_period(env: Env, period: u64) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_grace_period", "contract")?;
         env.storage().instance().set(&GRACE_PERIOD, &period);
         Ok(())
@@ -3117,6 +3666,7 @@ impl SolarGridContract {
     ///
     /// Emits: `prc_set { old, new }`.
     pub fn set_unit_price(env: Env, price: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_unit_price", "contract")?;
         if price <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -3146,6 +3696,7 @@ impl SolarGridContract {
         env: Env,
         rates: Vec<SeasonalRate>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_seasonal_rates", "contract")?;
         let mut previous_end: u64 = 0;
         for rate in rates.iter() {
@@ -3190,6 +3741,7 @@ impl SolarGridContract {
 
     /// Store validated weekday/weekend windows. All timestamps are interpreted as UTC.
     pub fn set_pricing_schedule(env: Env, schedule: PricingSchedule) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_pricing_schedule", "contract")?;
         Self::validate_pricing_windows(&schedule.weekday)?;
         Self::validate_pricing_windows(&schedule.weekend)?;
@@ -3337,6 +3889,7 @@ impl SolarGridContract {
         units: u64,
         cost: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         if env
             .storage()
             .instance()
@@ -3362,8 +3915,11 @@ impl SolarGridContract {
         // Daily spending limit: reset window if 24 h has elapsed, then enforce cap.
         // Active check is performed inside apply_usage.
         let now = env.ledger().timestamp();
-        let _deactivated = Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now)?;
+        let outcome = Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now)?;
         env.storage().persistent().set(&key, &meter);
+        if matches!(outcome, UsageOutcome::ConsumptionLimitReached) {
+            return Ok(());
+        }
 
         // Auto top-up is best-effort for meters that have not opted in. A
         // configured meter uses its token allowance when its post-usage
@@ -3399,6 +3955,7 @@ impl SolarGridContract {
     /// envelope approves the whole batch. Execution is atomic — any failing
     /// action reverts every state change in the batch.
     pub fn execute_batch(env: Env, actions: Vec<AdminAction>) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         let n = actions.len();
         if n == 0 {
@@ -3431,6 +3988,7 @@ impl SolarGridContract {
         name: String,
         fee: i128,
     ) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         creator.require_auth();
         if fee < 0 {
             return Err(ContractError::InvalidAmount);
@@ -3456,6 +4014,7 @@ impl SolarGridContract {
     /// Subscribe to an algorithm, paying its fee. The creator receives
     /// `CREATOR_SHARE_BPS` of the fee; the remainder goes to the admin.
     pub fn subscribe_algorithm(env: Env, user: Address, algo_id: u32) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         user.require_auth();
         let key = AlgoKey::Algo(algo_id);
         let mut algo: Algorithm = env
@@ -3487,6 +4046,7 @@ impl SolarGridContract {
 
     /// Cancel a subscription.
     pub fn unsubscribe_algorithm(env: Env, user: Address, algo_id: u32) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         user.require_auth();
         let sub_key = AlgoKey::Sub(algo_id, user);
         if env.storage().persistent().has(&sub_key) {
@@ -3502,6 +4062,7 @@ impl SolarGridContract {
 
     /// Oracle-only: record a trade executed off-chain on behalf of subscribers.
     pub fn record_algo_trade(env: Env, algo_id: u32, pnl: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let oracle: Address = env
             .storage()
             .instance()
@@ -3523,6 +4084,7 @@ impl SolarGridContract {
 
     /// Creator-only: enable or disable new subscriptions.
     pub fn set_algorithm_active(env: Env, algo_id: u32, active: bool) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = AlgoKey::Algo(algo_id);
         let mut algo: Algorithm = env
             .storage()
@@ -3557,9 +4119,6 @@ impl SolarGridContract {
         env.storage().persistent().has(&AlgoKey::Sub(algo_id, user))
     }
 
-    /// Migrate a meter from v1 (LegacyMeterV1) to v2 (Meter) schema. Admin-only.
-    pub fn migrate_meter_to_v2(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
     /// Get meter details.
     pub fn get_meter(env: Env, meter_id: String) -> Result<Meter, ContractError> {
         let key = DataKey::Meter(meter_id);
@@ -3573,6 +4132,7 @@ impl SolarGridContract {
         meter_id: String,
         contact: Option<Address>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
         meter.owner.require_auth();
@@ -3611,6 +4171,7 @@ impl SolarGridContract {
     /// - `meter_activated   { meter_id }` when toggled on
     /// - `meter_deactivated { meter_id }` when toggled off
     pub fn set_active(env: Env, meter_id: String, active: bool) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_active", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -3643,6 +4204,7 @@ impl SolarGridContract {
 
     /// Admin can manually toggle meter access (alias for set_active, #811).
     pub fn set_meter_active(env: Env, meter_id: String, active: bool) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::set_active(env, meter_id, active)
     }
 
@@ -3653,6 +4215,7 @@ impl SolarGridContract {
     /// Emits:
     /// - `meter_deactivated { meter_id, reason, timestamp }`
     pub fn deactivate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "deactivate_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -3694,6 +4257,7 @@ impl SolarGridContract {
         env: Env,
         meter_ids: Vec<String>,
     ) -> Result<BatchDeactivateSummary, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "batch_deactivate_meters", "contract")?;
 
         let len = meter_ids.len();
@@ -3769,6 +4333,7 @@ impl SolarGridContract {
         env: Env,
         meter_ids: Vec<String>,
     ) -> Result<BatchDeactivateSummary, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::batch_deactivate_meters(env, meter_ids)
     }
 
@@ -3781,6 +4346,7 @@ impl SolarGridContract {
         collaborator: Address,
         basis_points: u32,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "add_collaborator", "contract")?;
         if basis_points == 0 || basis_points > 10_000 {
             return Err(ContractError::InvalidAmount);
@@ -3820,6 +4386,7 @@ impl SolarGridContract {
     /// Returns `Unauthorized` if the caller is not the admin.
     /// Returns `CollaboratorNotFound` if the address is not a registered collaborator.
     pub fn remove_collaborator(env: Env, collaborator: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "remove_collaborator", "contract")?;
 
         let collabs: Vec<Address> = env
@@ -3888,6 +4455,7 @@ impl SolarGridContract {
     /// Distribute `amount` stroops among collaborators proportionally.
     /// Iterates the ordered Vec and looks up shares from the Map.
     pub fn distribute(env: Env, amount: i128) -> Result<Map<Address, i128>, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "distribute", "contract")?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -3934,6 +4502,7 @@ impl SolarGridContract {
         env: Env,
         amount: i128,
     ) -> Result<Map<Address, i128>, ContractError> {
+        Self::require_not_paused(&env)?;
         // ── CHECKS ──────────────────────────────────────────────────────────
         Self::require_admin_action(&env, "distribute_and_transfer", "contract")?;
         if amount <= 0 {
@@ -3968,6 +4537,7 @@ impl SolarGridContract {
         response_kwh: u64,
         revenue: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         if response_kwh == 0 || revenue < 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -3994,6 +4564,7 @@ impl SolarGridContract {
     pub fn gift_energy_credit(
         env: Env, sender_meter_id: String, recipient_meter_id: String, amount: i128, message: Option<String>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         if amount <= 0 { return Err(ContractError::InvalidAmount); }
         if let Some(ref memo) = message { if memo.len() > MAX_MEMO_LEN { return Err(ContractError::MemoTooLong); } }
         let sender_key = DataKey::Meter(sender_meter_id.clone());
@@ -4019,6 +4590,7 @@ impl SolarGridContract {
     pub fn get_gift_history(env: Env, owner: Address) -> Vec<EnergyGift> { env.storage().persistent().get(&DataKey::GiftHistory(owner)).unwrap_or(Vec::new(&env)) }
     /// Admin creates a subscription box tier. Prices are in token base units.
     pub fn create_subscription_tier(env: Env, name: String, price: i128, included_kwh: u64, rollover_limit: u64) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "create_subscription_tier", "contract")?;
         if price <= 0 || included_kwh == 0 { return Err(ContractError::InvalidAmount); }
         let id: u32 = env.storage().instance().get(&DataKey::SubscriptionTierCount).unwrap_or(0);
@@ -4028,6 +4600,7 @@ impl SolarGridContract {
     }
     pub fn get_subscription_tier(env: Env, tier_id: u32) -> Option<SubscriptionTier> { env.storage().persistent().get(&DataKey::SubscriptionTier(tier_id)) }
     pub fn subscribe(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         owner.require_auth();
         let tier = Self::get_subscription_tier(env.clone(), tier_id).ok_or(ContractError::InvalidConfiguration)?;
         env.storage().persistent().set(&DataKey::Subscription(owner.clone()), &EnergySubscription { owner: owner.clone(), tier_id, remaining_kwh: tier.included_kwh, rollover_kwh: 0, renewed_at: env.ledger().timestamp(), active: true });
@@ -4035,9 +4608,14 @@ impl SolarGridContract {
         Ok(())
     }
     pub fn get_subscription(env: Env, owner: Address) -> Option<EnergySubscription> { env.storage().persistent().get(&DataKey::Subscription(owner)) }
-    pub fn upgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> { Self::change_subscription(env, owner, tier_id) }
-    pub fn downgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> { Self::change_subscription(env, owner, tier_id) }
+    pub fn upgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        Self::change_subscription(env, owner, tier_id)
+    }
+    pub fn downgrade_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        Self::change_subscription(env, owner, tier_id)
+    }
     fn change_subscription(env: Env, owner: Address, tier_id: u32) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         owner.require_auth();
         let tier = Self::get_subscription_tier(env.clone(), tier_id).ok_or(ContractError::InvalidConfiguration)?;
         let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner.clone())).ok_or(ContractError::InvalidConfiguration)?;
@@ -4047,6 +4625,7 @@ impl SolarGridContract {
         Ok(())
     }
     pub fn renew_subscription(env: Env, owner: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         owner.require_auth();
         let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner.clone())).ok_or(ContractError::InvalidConfiguration)?;
         let tier = Self::get_subscription_tier(env.clone(), sub.tier_id).ok_or(ContractError::InvalidConfiguration)?;
@@ -4060,6 +4639,7 @@ impl SolarGridContract {
         env.events().publish((EVT_NS, Symbol::new(&env, "SubscriptionRenewed")), (owner, sub.tier_id, tier.price)); Ok(())
     }
     pub fn consume_subscription_kwh(env: Env, owner: Address, kwh: u64) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         let mut sub: EnergySubscription = env.storage().persistent().get(&DataKey::Subscription(owner)).ok_or(ContractError::InvalidConfiguration)?;
         if sub.remaining_kwh < kwh { return Err(ContractError::InsufficientBalance); } sub.remaining_kwh -= kwh; let remaining = sub.remaining_kwh; env.storage().persistent().set(&DataKey::Subscription(sub.owner.clone()), &sub); Ok(remaining)
     }
@@ -4088,6 +4668,7 @@ impl SolarGridContract {
         amount: i128,
         recipient: Address,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         // ── CHECKS ──────────────────────────────────────────────────────────
         Self::require_admin_action(&env, "emergency_withdraw", "contract")?;
         let frozen: bool = env.storage().instance().get(&FROZEN).unwrap_or(false);
@@ -4162,6 +4743,7 @@ impl SolarGridContract {
     /// Cancel a pending emergency-withdrawal announcement. Admin-only.
     /// Returns `NoWithdrawalAnnounced` if there is nothing pending.
     pub fn cancel_emergency_withdrawal(env: Env) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if env
             .storage()
@@ -4201,6 +4783,7 @@ impl SolarGridContract {
         expires_at: u64,
         max_uses: u32,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if discount_pct == 0 || discount_pct > 100 {
             return Err(ContractError::InvalidDiscountPercent);
@@ -4256,6 +4839,7 @@ impl SolarGridContract {
     /// auditing/uses history) but is immediately rejected by `is_discount_valid`
     /// and `make_payment_with_discount`.
     pub fn admin_revoke_discount(env: Env, code: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         let key = DataKey::Discount(code.clone());
         let mut discount: Discount = env
@@ -4282,6 +4866,7 @@ impl SolarGridContract {
         plan: PaymentPlan,
         code: String,
     ) -> Result<i128, ContractError> {
+        Self::require_not_paused(&env)?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
         }
@@ -4316,6 +4901,7 @@ impl SolarGridContract {
     /// Useful for policy violations or testing expiry flows.
     /// Returns `MeterNotFound` for unknown meter IDs.
     pub fn expire_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "expire_meter", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter: Meter = env
@@ -4384,8 +4970,23 @@ impl SolarGridContract {
         let has = |name: &str| fields.contains_key(Symbol::new(env, name));
         let decode_err = |_| ContractError::MeterNotFound;
 
-        if has("installed_at") {
+        if has("installed_at") && has("consumption_limit") {
             return Meter::try_from_val(env, &raw).map_err(decode_err);
+        }
+        if has("installed_at") {
+            let old = LegacyMeterV8::try_from_val(env, &raw).map_err(decode_err)?;
+            let migrated = Meter {
+                version: 9, owner: old.owner, active: old.active, units_used: old.units_used,
+                plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at,
+                daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start,
+                grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact,
+                auto_deactivate: old.auto_deactivate, installed_at: old.installed_at,
+                max_capacity_watts: old.max_capacity_watts, import_kwh: old.import_kwh,
+                export_kwh: old.export_kwh, consumption_limit: 0,
+                limit_period: LimitPeriod::Daily, period_consumed: 0, period_start: old.installed_at,
+            };
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
         }
         let legacy_metadata = has("metadata");
         let migrated = if has("balance") {
@@ -4393,7 +4994,7 @@ impl SolarGridContract {
         } else if legacy_metadata {
             let old = LegacyMeterV4::try_from_val(env, &raw).map_err(decode_err)?;
             let metadata = old.metadata.clone();
-            let meter = Meter { version: 8, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0 };
+            let meter = Meter { version: 9, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0, consumption_limit: 0, limit_period: LimitPeriod::Daily, period_consumed: 0, period_start: old.last_payment };
             if let DataKey::Meter(meter_id) = key {
                 env.storage().persistent().set(&DataKey::MeterMetadata(meter_id.clone()), &metadata);
             }
@@ -4411,6 +5012,7 @@ impl SolarGridContract {
     }
 
     pub fn migrate_meter_v4(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
         Ok(())
@@ -4418,15 +5020,17 @@ impl SolarGridContract {
 
     /// Migrate a v5 meter to v6, defaulting installed_at to registration/last-payment time.
     pub fn migrate_meter_v5(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?;
         Ok(())
     }
     pub fn set_installation_date(env: Env, meter_id: String, installed_at: u64) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         if installed_at > env.ledger().timestamp() { return Err(ContractError::InvalidInstallationDate); }
         let key = DataKey::Meter(meter_id.clone()); let mut meter = Self::get_meter_or_error(&env, &key)?;
-        meter.installed_at = installed_at; meter.version = 8; env.storage().persistent().set(&key, &meter);
+        meter.installed_at = installed_at; meter.version = 9; env.storage().persistent().set(&key, &meter);
         env.events().publish((EVT_NS, symbol_short!("inst_date"), meter_id), installed_at); Ok(())
     }
     pub fn get_installed_at(env: Env, meter_id: String) -> Result<u64, ContractError> { Ok(Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?.installed_at) }
@@ -4440,6 +5044,7 @@ impl SolarGridContract {
         subject: Address,
         did: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         subject.require_auth();
         if did.len() == 0 || did.len() > MAX_DID_LEN {
             return Err(ContractError::InvalidDid);
@@ -4465,6 +5070,7 @@ impl SolarGridContract {
         amount: i128,
         payment_hash: BytesN<32>,
     ) -> Result<u32, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_oracle_or_admin(&env)?;
         if amount <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -4689,6 +5295,7 @@ impl SolarGridContract {
         env: Env,
         updates: Vec<(String, u64, i128)>,
     ) -> Result<Vec<String>, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin(&env)?;
         let oracle: Option<Address> = env.storage().instance().get(&ORACLE);
         if oracle.is_none() {
@@ -4714,10 +5321,22 @@ impl SolarGridContract {
                     .publish((symbol_short!("btch_skip"), EVT_NS, meter_id.clone()), ());
                 continue;
             }
-            let mut meter: Meter = env.storage().persistent().get(&key).unwrap();
+            let mut meter = match Self::get_meter_or_error(&env, &key) {
+                Ok(meter) => meter,
+                Err(_) => {
+                    failed.push_back(meter_id.clone());
+                    env.events()
+                        .publish((symbol_short!("btch_skip"), EVT_NS, meter_id.clone()), ());
+                    continue;
+                }
+            };
 
             match Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now) {
-                Ok(_deactivated) => {
+                Ok(UsageOutcome::ConsumptionLimitReached) => {
+                    env.storage().persistent().set(&key, &meter);
+                    processed_count = processed_count.saturating_add(1);
+                }
+                Ok(UsageOutcome::Applied { .. }) => {
                     env.storage().persistent().set(&key, &meter);
                     processed_count = processed_count.saturating_add(1);
                     total_units = total_units.saturating_add(units);
@@ -4753,11 +5372,32 @@ impl SolarGridContract {
         units: u64,
         cost: i128,
         now: u64,
-    ) -> Result<bool, ContractError> {
+    ) -> Result<UsageOutcome, ContractError> {
         // Reject usage updates for inactive meters
         if !meter.active {
             return Err(ContractError::MeterNotActive);
         }
+
+        // Consumption caps are measured in milli-kWh units and reset at the
+        // deterministic UTC period boundary. A breached cap pauses the meter
+        // and commits the pause/event without recording the over-limit usage.
+        let period_start = limit_period_start(&meter.limit_period, now);
+        if period_start != meter.period_start {
+            meter.period_start = period_start;
+            meter.period_consumed = 0;
+        }
+        let projected_consumption = meter.period_consumed.saturating_add(units as i128);
+        if meter.consumption_limit > 0 && projected_consumption > meter.consumption_limit {
+            meter.active = false;
+            env.events().publish(
+                (EVT_NS, Symbol::new(env, "ConsumptionLimitReached"), meter_id.clone()),
+                (meter.consumption_limit, meter.period_consumed, units, meter.limit_period.clone(), now),
+            );
+            return Ok(UsageOutcome::ConsumptionLimitReached);
+        }
+        let consumption_limit_reached = meter.consumption_limit > 0
+            && projected_consumption >= meter.consumption_limit;
+        meter.period_consumed = projected_consumption;
 
         // Reset at UTC midnight (i.e. when the calendar-day index changes)
         // rather than a rolling 24h window from day_start, so the cap always
@@ -4832,12 +5472,50 @@ impl SolarGridContract {
                 },
             );
         }
-        Ok(deactivated)
+        if consumption_limit_reached {
+            meter.active = false;
+            env.events().publish(
+                (EVT_NS, Symbol::new(env, "ConsumptionLimitReached"), meter_id.clone()),
+                (meter.consumption_limit, meter.period_consumed, units, meter.limit_period.clone(), now),
+            );
+        }
+        Ok(UsageOutcome::Applied { deactivated: deactivated || consumption_limit_reached })
+    }
+
+    /// Configure a meter's maximum consumption for a daily, weekly, or
+    /// monthly accounting period. The meter owner or contract admin may call
+    /// this function. A zero limit disables the cap.
+    pub fn set_consumption_limit(
+        env: Env,
+        meter_id: String,
+        limit: i128,
+        period: LimitPeriod,
+    ) -> Result<(), ContractError> {
+        if limit < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        let admin = Self::get_admin(&env)?;
+        if admin.try_require_auth().is_err() {
+            meter.owner.require_auth();
+        }
+        meter.consumption_limit = limit;
+        meter.limit_period = period;
+        meter.period_consumed = 0;
+        meter.period_start = limit_period_start(&meter.limit_period, env.ledger().timestamp());
+        env.storage().persistent().set(&key, &meter);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "ConsumptionLimitSet"), meter_id),
+            (limit, meter.limit_period.clone(), meter.period_start),
+        );
+        Ok(())
     }
 
     /// Set the daily spending limit for a meter. Admin-only.
     /// A limit of 0 means unlimited (the default for newly registered meters).
     pub fn set_daily_limit(env: Env, meter_id: String, limit: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_daily_limit", "contract")?;
         if limit < 0 {
             return Err(ContractError::InvalidAmount);
@@ -4862,6 +5540,7 @@ impl SolarGridContract {
         meter_id: String,
         auto_deactivate: bool,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_cap_mode", "contract")?;
         let key = DataKey::Meter(meter_id.clone());
         let mut meter = Self::get_meter_or_error(&env, &key)?;
@@ -4875,6 +5554,7 @@ impl SolarGridContract {
     }
 
     pub fn create_meter_group(env: Env, group_id: String, name: String, owner: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         owner.require_auth();
         let key = DataKey::MeterGroup(group_id.clone());
         if env.storage().persistent().has(&key) { return Err(ContractError::MeterGroupAlreadyExists); }
@@ -4884,12 +5564,14 @@ impl SolarGridContract {
         groups.push_back(group_id); env.storage().persistent().set(&owner_key, &groups); Ok(())
     }
     pub fn add_meter_to_group(env: Env, group_id: String, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::MeterGroup(group_id); let mut group: MeterGroup = env.storage().persistent().get(&key).ok_or(ContractError::MeterGroupNotFound)?;
         group.owner.require_auth(); let meter = Self::get_meter_or_error(&env, &DataKey::Meter(meter_id.clone()))?;
         if meter.owner != group.owner { return Err(ContractError::Unauthorized); }
         if !group.meter_ids.contains(&meter_id) { group.meter_ids.push_back(meter_id); env.storage().persistent().set(&key, &group); } Ok(())
     }
     pub fn remove_meter_from_group(env: Env, group_id: String, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::MeterGroup(group_id); let mut group: MeterGroup = env.storage().persistent().get(&key).ok_or(ContractError::MeterGroupNotFound)?; group.owner.require_auth();
         let mut kept = Vec::new(&env); for id in group.meter_ids.iter() { if id != meter_id { kept.push_back(id); } } group.meter_ids = kept; env.storage().persistent().set(&key, &group); Ok(())
     }
@@ -4899,13 +5581,18 @@ impl SolarGridContract {
         for id in group.meter_ids.iter() { if let Ok(meter) = Self::get_meter_or_error(&env, &DataKey::Meter(id.clone())) { stats.meter_count += 1; if meter.active { stats.active_count += 1; } stats.total_units_used = stats.total_units_used.saturating_add(meter.units_used); stats.total_balance = stats.total_balance.saturating_add(env.storage().persistent().get(&DataKey::MeterBalance(id)).unwrap_or(0)); } } Ok(stats)
     }
     pub fn batch_pay_group(env: Env, group_id: String, payer: Address, amount: i128, plan: PaymentPlan, memo: Option<String>) -> Result<Vec<String>, ContractError> {
+        Self::require_not_paused(&env)?;
         let group: MeterGroup = env.storage().persistent().get(&DataKey::MeterGroup(group_id)).ok_or(ContractError::MeterGroupNotFound)?;
         if group.meter_ids.len() == 0 || amount <= 0 { return Err(ContractError::InvalidAmount); }
         payer.require_auth(); let count = i128::from(group.meter_ids.len()); let share = amount / count; let mut remainder = amount % count; let mut paid = Vec::new(&env);
         for id in group.meter_ids.iter() { let part = share + if remainder > 0 { remainder -= 1; 1 } else { 0 }; Self::pay_meter(env.clone(), id.clone(), payer.clone(), part, plan.clone(), memo.clone())?; paid.push_back(id); } Ok(paid)
     }
-    pub fn set_referral_bonus_percent(env: Env, percent: u32) -> Result<(), ContractError> { Self::require_admin(&env)?; if percent > 100 { return Err(ContractError::InvalidReferral); } env.storage().instance().set(&DataKey::ReferralBonusPercent, &percent); Ok(()) }
-    pub fn set_referrer(env: Env, referred: Address, referrer: Address) -> Result<(), ContractError> { referred.require_auth(); if referred == referrer || env.storage().persistent().has(&DataKey::Referrer(referred.clone())) { return Err(ContractError::InvalidReferral); } env.storage().persistent().set(&DataKey::Referrer(referred), &referrer); let key = DataKey::ReferralStats(referrer); let mut stats: ReferralStats = env.storage().persistent().get(&key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }); stats.referred_count = stats.referred_count.saturating_add(1); env.storage().persistent().set(&key, &stats); Ok(()) }
+    pub fn set_referral_bonus_percent(env: Env, percent: u32) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
+        Self::require_admin(&env)?; if percent > 100 { return Err(ContractError::InvalidReferral); } env.storage().instance().set(&DataKey::ReferralBonusPercent, &percent); Ok(()) }
+    pub fn set_referrer(env: Env, referred: Address, referrer: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
+        referred.require_auth(); if referred == referrer || env.storage().persistent().has(&DataKey::Referrer(referred.clone())) { return Err(ContractError::InvalidReferral); } env.storage().persistent().set(&DataKey::Referrer(referred), &referrer); let key = DataKey::ReferralStats(referrer); let mut stats: ReferralStats = env.storage().persistent().get(&key).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }); stats.referred_count = stats.referred_count.saturating_add(1); env.storage().persistent().set(&key, &stats); Ok(()) }
     pub fn get_referral_stats(env: Env, user: Address) -> ReferralStats { env.storage().persistent().get(&DataKey::ReferralStats(user)).unwrap_or(ReferralStats { referred_count: 0, total_credits: 0 }) }
     pub fn get_referral_credit(env: Env, user: Address) -> i128 { env.storage().persistent().get(&DataKey::ReferralCredit(user)).unwrap_or(0) }
 
@@ -4924,6 +5611,7 @@ impl SolarGridContract {
         capacity_watts: u32,
         share_price: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "create_solar_farm", "contract")?;
         if capacity_watts == 0 || share_price <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -4971,6 +5659,7 @@ impl SolarGridContract {
         buyer: Address,
         amount: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         if amount <= 0 {
             return Err(ContractError::InvalidShareAmount);
         }
@@ -5020,6 +5709,7 @@ impl SolarGridContract {
         farm_id: String,
         generation_kwh: i128,
     ) -> Result<Map<Address, i128>, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "distribute_generation_credits", "contract")?;
         if generation_kwh <= 0 {
             return Err(ContractError::InvalidAmount);
@@ -5084,6 +5774,7 @@ impl SolarGridContract {
     ///
     /// Emits: `exp_rate { old, new }`.
     pub fn set_export_rate(env: Env, rate: i128) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "set_export_rate", "contract")?;
         if rate <= 0 {
             return Err(ContractError::InvalidConfiguration);
@@ -5358,6 +6049,7 @@ impl SolarGridContract {
     }
 
     pub fn process_due_installments(env: Env) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let plan_ids: Vec<u64> = env
             .storage()
             .instance()
@@ -5403,6 +6095,7 @@ impl SolarGridContract {
 
     /// Migrate a v0 (LegacyMeter) entry to the current schema. Admin-only.
     pub fn migrate_meter(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "migrate_meter", "contract")?;
         // Idempotent: current-schema meters are returned unchanged, legacy
         // layouts are upgraded and persisted by the read-through migration.
@@ -5412,6 +6105,7 @@ impl SolarGridContract {
 
     /// Migrate a v1 (LegacyMeterV1) entry to the current schema. Admin-only.
     pub fn migrate_meter_to_v2(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "migrate_meter_to_v2", "contract")?;
         // Idempotent: current-schema meters are returned unchanged, legacy
         // layouts are upgraded and persisted by the read-through migration.
@@ -5422,6 +6116,7 @@ impl SolarGridContract {
     /// Migrate a pre-emergency-contact v2 meter to the current v6 schema.
     /// Admin-only and idempotent.
     pub fn migrate_meter_to_v3(env: Env, meter_id: String) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "migrate_meter_to_v3", "contract")?;
         // Idempotent: current-schema meters are returned unchanged, legacy
         // layouts are upgraded and persisted by the read-through migration.
@@ -5437,6 +6132,7 @@ impl SolarGridContract {
         authority: Address,
         standard: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "configure_certificate_authority", "contract")?;
         certificates::configure_authority(&env, authority, standard)
     }
@@ -5444,12 +6140,14 @@ impl SolarGridContract {
     /// Register a third-party verifier authorized to attest certificates.
     /// Admin-only.
     pub fn add_certificate_verifier(env: Env, verifier: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "add_certificate_verifier", "contract")?;
         certificates::add_verifier(&env, verifier)
     }
 
     /// Remove a third-party verifier. Admin-only.
     pub fn remove_certificate_verifier(env: Env, verifier: Address) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "remove_certificate_verifier", "contract")?;
         certificates::remove_verifier(&env, verifier)
     }
@@ -5464,6 +6162,7 @@ impl SolarGridContract {
         period_start: u64,
         period_end: u64,
     ) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "issue_energy_certificate", "contract")?;
         certificates::issue_certificate(&env, meter_id, generation_kwh, period_start, period_end)
     }
@@ -5493,6 +6192,7 @@ impl SolarGridContract {
         certificate_id: u64,
         reason: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "revoke_energy_certificate", "contract")?;
         certificates::revoke_certificate(&env, certificate_id, reason)
     }
@@ -5520,6 +6220,7 @@ impl SolarGridContract {
         algorithm: PqcAlgorithm,
         public_key: BytesN<32>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         owner.require_auth();
         quantum_crypto::register_key(&env, owner, algorithm, public_key)
     }
@@ -5531,6 +6232,7 @@ impl SolarGridContract {
         algorithm: PqcAlgorithm,
         public_key: BytesN<32>,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         owner.require_auth();
         quantum_crypto::rotate_key(&env, owner, algorithm, public_key)
     }
@@ -5566,6 +6268,7 @@ impl SolarGridContract {
         capacity_kwh: i128,
         boundary: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "create_commons_resource", "contract")?;
         commons::create_resource(&env, resource_id, capacity_kwh, boundary)
     }
@@ -5577,6 +6280,7 @@ impl SolarGridContract {
         member: Address,
         share_bps: u32,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "add_commons_member", "contract")?;
         commons::add_member(&env, resource_id, member, share_bps)
     }
@@ -5588,6 +6292,7 @@ impl SolarGridContract {
         resource_id: String,
         rule: String,
     ) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         member.require_auth();
         commons::propose_rule(&env, member, resource_id, rule)
     }
@@ -5599,6 +6304,7 @@ impl SolarGridContract {
         rule_id: u64,
         approve: bool,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         member.require_auth();
         commons::vote_rule(&env, member, rule_id, approve)
     }
@@ -5610,6 +6316,7 @@ impl SolarGridContract {
         resource_id: String,
         amount_kwh: i128,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         member.require_auth();
         commons::request_allocation(&env, member, resource_id, amount_kwh)
     }
@@ -5622,6 +6329,7 @@ impl SolarGridContract {
         offender: Address,
         details: String,
     ) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         reporter.require_auth();
         commons::report_violation(&env, reporter, resource_id, offender, details)
     }
@@ -5631,6 +6339,7 @@ impl SolarGridContract {
         env: Env,
         violation_id: u64,
     ) -> Result<CommonsSanction, ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "apply_commons_sanction", "contract")?;
         commons::apply_sanction(&env, violation_id)
     }
@@ -5642,6 +6351,7 @@ impl SolarGridContract {
         resource_id: String,
         description: String,
     ) -> Result<u64, ContractError> {
+        Self::require_not_paused(&env)?;
         member.require_auth();
         commons::open_conflict(&env, member, resource_id, description)
     }
@@ -5652,6 +6362,7 @@ impl SolarGridContract {
         conflict_id: u64,
         resolution: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         Self::require_admin_action(&env, "resolve_commons_conflict", "contract")?;
         commons::resolve_conflict(&env, conflict_id, resolution)
     }
@@ -9647,6 +10358,142 @@ mod tests {
         );
     }
 
+    // ── Issue #1045: state channel lifecycle ─────────────────────────────────
+
+    #[test]
+    fn test_channel_open_and_settle_after_dispute_window() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &10_000_i128);
+
+        let id = client.open_channel(&payer, &payee, &1_000_i128, &Some(100_u64));
+        assert_eq!(id, 0);
+        assert_eq!(client.get_channel_count(), 1);
+
+        let ch = client.get_channel(&id);
+        assert_eq!(ch.status, ChannelStatus::Open);
+        assert_eq!(ch.deposit, 1_000);
+        assert_eq!(ch.latest.payer_balance, 1_000);
+        assert_eq!(ch.latest.payee_balance, 0);
+
+        // Off-chain update: payee earns 300.
+        let update = ChannelUpdate {
+            nonce: 1,
+            payer_balance: 700,
+            payee_balance: 300,
+            timestamp: env.ledger().timestamp(),
+            state_hash: BytesN::from_array(&env, &[1u8; 32]),
+        };
+        client.submit_channel_update(&id, &update);
+        assert_eq!(client.get_channel(&id).latest.payee_balance, 300);
+
+        // Close starts the dispute window.
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.close_channel(&id);
+        assert_eq!(client.get_channel(&id).status, ChannelStatus::Closing);
+
+        // Cannot settle before the window elapses.
+        assert_eq!(
+            client.try_settle_channel(&id),
+            Err(Ok(ContractError::ChannelDisputePeriodActive))
+        );
+
+        env.ledger().with_mut(|li| li.timestamp = 1_200);
+        client.settle_channel(&id);
+        assert_eq!(client.get_channel(&id).status, ChannelStatus::Settled);
+    }
+
+    #[test]
+    fn test_channel_rejects_stale_nonce_and_bad_balances() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &10_000_i128);
+        let id = client.open_channel(&payer, &payee, &1_000_i128, &None);
+
+        let stale = ChannelUpdate {
+            nonce: 0,
+            payer_balance: 500,
+            payee_balance: 500,
+            timestamp: 0,
+            state_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        assert_eq!(
+            client.try_submit_channel_update(&id, &stale),
+            Err(Ok(ContractError::ChannelNonceTooLow))
+        );
+
+        let bad = ChannelUpdate {
+            nonce: 1,
+            payer_balance: 500,
+            payee_balance: 400,
+            timestamp: 0,
+            state_hash: BytesN::from_array(&env, &[0u8; 32]),
+        };
+        assert_eq!(
+            client.try_submit_channel_update(&id, &bad),
+            Err(Ok(ContractError::ChannelInvalidAmount))
+        );
+    }
+
+    #[test]
+    fn test_channel_dispute_and_admin_resolution() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        token_admin_client.mint(&payer, &10_000_i128);
+        let id = client.open_channel(&payer, &payee, &1_000_i128, &Some(100_u64));
+
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.close_channel(&id);
+
+        let reason = BytesN::from_array(&env, &[9u8; 32]);
+        client.challenge_channel_close(&id, &payee, &reason);
+        let ch = client.get_channel(&id);
+        assert_eq!(ch.status, ChannelStatus::Disputed);
+        assert_eq!(ch.challenged_by, Some(payee.clone()));
+
+        // Settle cannot run while disputed.
+        assert_eq!(
+            client.try_settle_channel(&id),
+            Err(Ok(ContractError::ChannelNotOpen))
+        );
+
+        let final_update = ChannelUpdate {
+            nonce: 2,
+            payer_balance: 600,
+            payee_balance: 400,
+            timestamp: 1_000,
+            state_hash: BytesN::from_array(&env, &[2u8; 32]),
+        };
+        client.resolve_channel_dispute(&id, &final_update);
+        assert_eq!(client.get_channel(&id).status, ChannelStatus::Settled);
+    }
+
+    #[test]
+    fn test_channel_open_rejects_invalid_deposit() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let payer = Address::generate(&env);
+        let payee = Address::generate(&env);
+        assert_eq!(
+            client.try_open_channel(&payer, &payee, &0_i128, &None),
+            Err(Ok(ContractError::ChannelInvalidAmount))
+        );
+    }
+
+    #[test]
+    fn test_channel_unknown_id_errors() {
+        let (_env, client, _admin, _token_address) = setup_with_token();
+        assert_eq!(
+            client.try_get_channel(&42_u64),
+            Err(Ok(ContractError::ChannelNotFound))
+        );
+    }
+
     #[test]
     fn test_batch_register_meters_too_large() {
         let (env, client, _admin) = setup();
@@ -9667,6 +10514,99 @@ mod tests {
             client.try_batch_register_meters(&batch),
             Err(Ok(ContractError::BatchTooLarge))
         );
+    }
+
+    /// Consumption limits are tracked in units and pause a meter at the cap.
+    #[test]
+    fn test_consumption_limit_pauses_at_limit_and_emits_event() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_PAUSE");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Daily);
+
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert!(!meter.active);
+        assert_eq!(meter.period_consumed, 100);
+        assert_eq!(meter.units_used, 100);
+        let found = events_as_tuples(&env, &env.events().all()).iter().any(|(_, topics, _)| {
+            topics.len() >= 3
+                && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
+                && sym_eq(
+                    &env,
+                    &topics.get(1).unwrap(),
+                    Symbol::new(&env, "ConsumptionLimitReached"),
+                )
+                && String::try_from_val(&env, &topics.get(2).unwrap()).ok() == Some(meter_id.clone())
+        });
+        assert!(found, "ConsumptionLimitReached event not emitted");
+    }
+
+    #[test]
+    fn test_consumption_limit_resets_at_daily_boundary() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_RESET");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Daily);
+        client.update_usage(&meter_id, &75_u64, &1_000_i128);
+        env.ledger().with_mut(|li| li.timestamp += SECONDS_PER_DAY);
+        client.update_usage(&meter_id, &50_u64, &1_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert!(meter.active);
+        assert_eq!(meter.period_consumed, 50);
+        assert_eq!(meter.period_start, SECONDS_PER_DAY);
+    }
+
+    #[test]
+    fn test_consumption_limit_resets_weekly_and_monthly() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_PERIODS");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &100_000_i128);
+        client.make_payment(&meter_id, &user, &100_000_i128, &PaymentPlan::UsageBased, &None);
+
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Weekly);
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        assert!(!client.get_meter(&meter_id).active);
+        client.set_active(&meter_id, &true);
+        env.ledger().with_mut(|li| li.timestamp += SECONDS_PER_WEEK);
+        client.update_usage(&meter_id, &50_u64, &1_000_i128);
+        assert_eq!(client.get_meter(&meter_id).period_consumed, 50);
+
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Monthly);
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        assert!(!client.get_meter(&meter_id).active);
+        client.set_active(&meter_id, &true);
+        env.ledger().with_mut(|li| li.timestamp += 30 * SECONDS_PER_DAY);
+        client.update_usage(&meter_id, &25_u64, &1_000_i128);
+        assert_eq!(client.get_meter(&meter_id).period_consumed, 25);
+    }
+
+    #[test]
+    fn test_consumption_limit_owner_admin_and_validation() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_AUTH");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        assert_eq!(
+            client.try_set_consumption_limit(&meter_id, &-1_i128, &LimitPeriod::Weekly),
+            Err(Ok(ContractError::InvalidAmount))
+        );
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Monthly);
+        assert_eq!(client.get_meter(&meter_id).limit_period, LimitPeriod::Monthly);
     }
 }
 

@@ -23,7 +23,13 @@ const DB_PATH =
 export const DEVICE_TYPES = ["solar_panel", "inverter", "meter", "battery"] as const;
 export type DeviceType = (typeof DEVICE_TYPES)[number];
 
-export const DEVICE_STATUSES = ["active", "inactive", "maintenance", "decommissioned"] as const;
+export const DEVICE_STATUSES = [
+  "active",
+  "inactive",
+  "maintenance",
+  "decommissioned",
+  "quarantined",
+] as const;
 export type DeviceStatus = (typeof DEVICE_STATUSES)[number];
 
 /** Free-form spec sheet; common keys per type are documented in backend/API.md. */
@@ -193,6 +199,21 @@ function db(): Database.Database {
         last_alert_at TEXT NOT NULL,
         PRIMARY KEY (device_id, metric)
       );
+      CREATE TABLE IF NOT EXISTS device_quarantine (
+        device_id TEXT PRIMARY KEY REFERENCES devices (id) ON DELETE CASCADE,
+        reason TEXT NOT NULL,
+        threat_type TEXT,
+        quarantined_at TEXT NOT NULL,
+        quarantined_by TEXT NOT NULL,
+        previous_status TEXT NOT NULL,
+        revoked_credentials INTEGER NOT NULL DEFAULT 0,
+        network_isolated INTEGER NOT NULL DEFAULT 0,
+        released_at TEXT,
+        released_by TEXT,
+        release_notes TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_device_quarantine_active
+        ON device_quarantine (released_at);
     `);
     const performanceColumns = new Set(
       (_db.pragma("table_info(device_performance)") as Array<{ name: string }>).map((column) => column.name),
@@ -414,6 +435,193 @@ export function updateDevice(id: string, patch: UpdateDeviceInput): Device | und
 
 export function deleteDevice(id: string): boolean {
   return db().prepare("DELETE FROM devices WHERE id = ?").run(id).changes > 0;
+}
+
+// ── Quarantine (cybersecurity response, #1042) ──────────────────────────────
+
+export type QuarantineRecord = {
+  deviceId: string;
+  reason: string;
+  threatType: string | null;
+  quarantinedAt: string;
+  quarantinedBy: string;
+  previousStatus: DeviceStatus;
+  revokedCredentials: boolean;
+  networkIsolated: boolean;
+  releasedAt: string | null;
+  releasedBy: string | null;
+  releaseNotes: string | null;
+};
+
+type QuarantineRow = {
+  device_id: string;
+  reason: string;
+  threat_type: string | null;
+  quarantined_at: string;
+  quarantined_by: string;
+  previous_status: DeviceStatus;
+  revoked_credentials: number;
+  network_isolated: number;
+  released_at: string | null;
+  released_by: string | null;
+  release_notes: string | null;
+};
+
+function toQuarantine(row: QuarantineRow): QuarantineRecord {
+  return {
+    deviceId: row.device_id,
+    reason: row.reason,
+    threatType: row.threat_type,
+    quarantinedAt: row.quarantined_at,
+    quarantinedBy: row.quarantined_by,
+    previousStatus: row.previous_status,
+    revokedCredentials: row.revoked_credentials === 1,
+    networkIsolated: row.network_isolated === 1,
+    releasedAt: row.released_at,
+    releasedBy: row.released_by,
+    releaseNotes: row.release_notes,
+  };
+}
+
+export type QuarantineDeviceInput = {
+  reason: string;
+  threatType?: string | null;
+  /** Operator or automated system that triggered the quarantine. */
+  quarantinedBy?: string;
+  /** Revoke the device's MQTT credentials (default true). */
+  revokeCredentials?: boolean;
+  /** Isolate the device from the network (default true). */
+  isolateNetwork?: boolean;
+};
+
+/**
+ * Quarantine a device: mark it compromised, revoke its credentials and isolate
+ * it from the network so it can no longer publish telemetry or accept commands.
+ * Idempotent — re-quarantining an already-quarantined device refreshes the
+ * reason without overwriting the original `previousStatus`.
+ */
+export function quarantineDevice(
+  id: string,
+  input: QuarantineDeviceInput,
+  now = new Date(),
+): QuarantineRecord | undefined {
+  const device = getDevice(id);
+  if (!device) return undefined;
+
+  const existing = getQuarantine(id);
+  const previousStatus = existing ? existing.previousStatus : device.status;
+  const revokeCredentials = input.revokeCredentials ?? true;
+  const isolateNetwork = input.isolateNetwork ?? true;
+  const quarantinedAt = now.toISOString();
+
+  db()
+    .prepare(
+      `INSERT INTO device_quarantine (device_id, reason, threat_type, quarantined_at, quarantined_by,
+                                      previous_status, revoked_credentials, network_isolated)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(device_id) DO UPDATE SET
+         reason = excluded.reason,
+         threat_type = excluded.threat_type,
+         quarantined_at = excluded.quarantined_at,
+         quarantined_by = excluded.quarantined_by,
+         revoked_credentials = excluded.revoked_credentials,
+         network_isolated = excluded.network_isolated,
+         released_at = NULL,
+         released_by = NULL,
+         release_notes = NULL`,
+    )
+    .run(
+      id,
+      input.reason,
+      input.threatType ?? null,
+      quarantinedAt,
+      input.quarantinedBy ?? "system",
+      previousStatus,
+      revokeCredentials ? 1 : 0,
+      isolateNetwork ? 1 : 0,
+    );
+
+  db()
+    .prepare("UPDATE devices SET status = 'quarantined', updated_at = ? WHERE id = ?")
+    .run(quarantinedAt, id);
+
+  logger.warn(
+    { deviceId: id, reason: input.reason, threatType: input.threatType ?? null, revokeCredentials, isolateNetwork },
+    "Device quarantined",
+  );
+
+  return getQuarantine(id);
+}
+
+/** Active (unreleased) quarantine record for a device, if any. */
+export function getQuarantine(id: string): QuarantineRecord | undefined {
+  const row = db()
+    .prepare("SELECT * FROM device_quarantine WHERE device_id = ? AND released_at IS NULL")
+    .get(id) as QuarantineRow | undefined;
+  return row ? toQuarantine(row) : undefined;
+}
+
+/** Full quarantine history for a device, newest first. */
+export function listQuarantineHistory(id: string): QuarantineRecord[] {
+  const rows = db()
+    .prepare("SELECT * FROM device_quarantine WHERE device_id = ? ORDER BY quarantined_at DESC")
+    .all(id) as QuarantineRow[];
+  return rows.map(toQuarantine);
+}
+
+export function isDeviceQuarantined(id: string): boolean {
+  return getQuarantine(id) !== undefined;
+}
+
+export type ReleaseQuarantineInput = {
+  /** Operator performing the release. */
+  releasedBy?: string;
+  /** Remediation notes recorded for the audit trail. */
+  notes?: string | null;
+  /** Status to restore; defaults to the status before quarantine. */
+  restoreStatus?: DeviceStatus;
+};
+
+/**
+ * Lift a quarantine after remediation, restoring the device to its previous
+ * status (or an explicit one). Returns undefined if the device is unknown or
+ * not currently quarantined.
+ */
+export function releaseQuarantine(
+  id: string,
+  input: ReleaseQuarantineInput = {},
+  now = new Date(),
+): QuarantineRecord | undefined {
+  const active = getQuarantine(id);
+  if (!active) return undefined;
+
+  const releasedAt = now.toISOString();
+  const restoreStatus =
+    input.restoreStatus && input.restoreStatus !== "quarantined"
+      ? input.restoreStatus
+      : active.previousStatus;
+
+  db()
+    .prepare(
+      `UPDATE device_quarantine
+          SET released_at = ?, released_by = ?, release_notes = ?
+        WHERE device_id = ? AND released_at IS NULL`,
+    )
+    .run(releasedAt, input.releasedBy ?? "system", input.notes ?? null, id);
+
+  db()
+    .prepare("UPDATE devices SET status = ?, updated_at = ? WHERE id = ?")
+    .run(restoreStatus, releasedAt, id);
+
+  logger.info(
+    { deviceId: id, releasedBy: input.releasedBy ?? "system", restoreStatus },
+    "Device quarantine released",
+  );
+
+  const row = db()
+    .prepare("SELECT * FROM device_quarantine WHERE device_id = ? ORDER BY quarantined_at DESC LIMIT 1")
+    .get(id) as QuarantineRow | undefined;
+  return row ? toQuarantine(row) : undefined;
 }
 
 // ── Certifications ──────────────────────────────────────────────────────────
@@ -749,6 +957,10 @@ export function prunePerformance(retentionDays = 90, now = new Date()): number {
 export function handleDeviceTelemetry(deviceId: string | undefined, payload: Buffer): void {
   if (!deviceId || !getDevice(deviceId)) {
     logger.warn({ deviceId }, "Telemetry for unregistered device ignored");
+    return;
+  }
+  if (isDeviceQuarantined(deviceId)) {
+    logger.warn({ deviceId }, "Telemetry from quarantined device dropped");
     return;
   }
   let body: Record<string, unknown>;

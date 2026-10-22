@@ -54,11 +54,14 @@ import { delegatesRouter } from "./routes/delegates.js";
 import { apiKeysRouter } from "./routes/apiKeys.js";
 import { meterHealthRouter } from "./routes/meterHealth.js";
 import { emergencyContactsRouter } from "./routes/emergencyContacts.js";
+import { supportTicketsRouter } from "./routes/supportTickets.js";
 import { creditScoreRouter } from "./routes/creditScore.js";
 import { predictionRouter } from "./routes/prediction.js";
 import { billingRouter } from "./routes/billing.js";
 import forecastRouter from "./routes/forecast.js";
 import { competitionsRouter } from "./routes/competitions.js";
+import { challengesRouter, startChallengeScheduler } from "./routes/challenges.js";
+import { createDisasterRecoveryRouter } from "./routes/disasterRecovery.js";
 import { communitiesRouter } from "./routes/communities.js";
 import { smartHomeRouter } from "./routes/smartHome.js";
 import { voiceAssistantRouter } from "./routes/voiceAssistant.js";
@@ -226,6 +229,7 @@ app.use("/api/meters", createApplianceRouter());
 startHealthMonitor();
 // Body parsing above makes payer/owner available before this limiter runs.
 // Missing payer identities remain governed by the global IP limiter.
+app.use("/api", createMeterOperationsRouter(stellarService));
 app.use("/api/meters", payerRateLimiter, createMeterRouter(stellarService));
 app.use("/api/payments", payerRateLimiter, writeLimiter, paymentsRouter);
 app.use("/api/export", exportRouter);
@@ -254,7 +258,14 @@ app.use("/api/widgets", widgetsRouter);
 app.use("/api/backtest", backtestRouter);
 app.use("/api/billing", writeLimiter, billingRouter);
 app.use("/api/competitions", competitionsRouter);
+// #1059: gamified energy challenges
+app.use("/api/challenges", challengesRouter);
+startChallengeScheduler();
+// #1060: disaster recovery automation
+app.use("/api/dr", createDisasterRecoveryRouter());
 app.use("/api/communities", communitiesRouter);
+// #968: Customer support ticketing
+app.use("/api/tickets", writeLimiter, supportTicketsRouter);
 app.use("/api/smart-home", smartHomeRouter);
 // #989: voice assistant (Alexa / Google Assistant) skill endpoints
 app.use("/api/voice", readLimiter, voiceAssistantRouter);

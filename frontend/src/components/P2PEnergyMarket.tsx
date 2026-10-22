@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import { useWalletStore } from "@/store/walletStore";
+import { useIslandModeStore } from "@/store/islandModeStore";
 
 export interface EnergyListingUI {
   id: number;
@@ -25,6 +26,7 @@ export interface TradeRecordUI {
 export default function P2PEnergyMarket() {
   const { address } = useWalletStore();
   const isConnected = Boolean(address);
+  const { isIslandMode, islandId, connectedPeers } = useIslandModeStore();
 
   const [listings, setListings] = useState<EnergyListingUI[]>([
     {
@@ -137,8 +139,28 @@ export default function P2PEnergyMarket() {
     handleBuy(best);
   };
 
+  // In island mode, only trades settled within the local island are eligible.
+  const visibleTrades = isIslandMode
+    ? trades.filter((t) => (t as TradeRecordUI & { islandId?: string }).islandId === islandId)
+    : trades;
+
   return (
     <div className="space-y-8">
+      {isIslandMode && (
+        <div className="p-4 bg-amber-950/60 border border-amber-800/80 rounded-xl text-amber-300 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold">⚡ Island Mode Active</span>
+            <span className="text-xs font-mono text-amber-400/80">
+              Island: {islandId ?? "local"}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-amber-400/80">
+            Main grid disconnected. Peer energy sharing is restricted to {connectedPeers} local
+            peer{connectedPeers === 1 ? "" : "s"} within this island.
+          </p>
+        </div>
+      )}
+
       {statusMessage && (
         <div className="p-4 bg-emerald-950/60 border border-emerald-800/80 rounded-xl text-emerald-300 text-sm">
           {statusMessage}
@@ -244,15 +266,19 @@ export default function P2PEnergyMarket() {
             </span>
           </div>
           <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-lg">
-            <span className="text-slate-400 text-xs block">Total Trades Settled</span>
-            <span className="text-xl font-bold text-white">{trades.length}</span>
+            <span className="text-slate-400 text-xs block">
+              {isIslandMode ? "Island Trades Settled" : "Total Trades Settled"}
+            </span>
+            <span className="text-xl font-bold text-white">{visibleTrades.length}</span>
           </div>
         </div>
       </div>
 
       {/* Order Book Table */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 shadow-lg">
-        <h2 className="text-lg font-bold text-white mb-4">Active Peer Listings</h2>
+        <h2 className="text-lg font-bold text-white mb-4">
+          {isIslandMode ? "Island Peer Listings" : "Active Peer Listings"}
+        </h2>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-950 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
@@ -266,6 +292,15 @@ export default function P2PEnergyMarket() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800 text-slate-300">
+              {listings.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="py-6 px-4 text-center text-slate-500">
+                    {isIslandMode
+                      ? "No island-eligible listings available. Awaiting local peer offers."
+                      : "No active listings available."}
+                  </td>
+                </tr>
+              )}
               {listings.map((item) => (
                 <tr key={item.id} className="hover:bg-slate-950/50 transition-colors">
                   <td className="py-3 px-4 font-mono font-medium text-white">{item.seller}</td>

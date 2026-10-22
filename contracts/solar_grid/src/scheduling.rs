@@ -118,6 +118,7 @@ impl SolarGridContract {
         meter_id: String,
         schedule: Schedule,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let meter = load_meter(&env, &meter_id)?;
         meter.owner.require_auth();
         validate_schedule(&schedule)?;
@@ -151,6 +152,7 @@ impl SolarGridContract {
         meter_id: String,
         circuit_id: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let meter = load_meter(&env, &meter_id)?;
         meter.owner.require_auth();
         env.storage()
@@ -170,6 +172,7 @@ impl SolarGridContract {
         forced_state: bool,
         until: u64,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let meter = load_meter(&env, &meter_id)?;
         meter.owner.require_auth();
         if until <= env.ledger().timestamp() {
@@ -199,6 +202,7 @@ impl SolarGridContract {
         meter_id: String,
         circuit_id: String,
     ) -> Result<(), ContractError> {
+        Self::require_not_paused(&env)?;
         let meter = load_meter(&env, &meter_id)?;
         meter.owner.require_auth();
         env.storage()
@@ -253,6 +257,7 @@ impl SolarGridContract {
         now: u64,
         last_state: bool,
     ) -> Result<bool, ContractError> {
+        Self::require_not_paused(&env)?;
         let desired =
             Self::circuit_should_be_on(env.clone(), meter_id.clone(), circuit_id.clone(), now)?;
         if desired != last_state {
