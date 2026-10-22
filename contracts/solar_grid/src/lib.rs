@@ -75,6 +75,8 @@ pub enum ContractError {
     InsufficientBalance = 12,
     CollaboratorAlreadyExists = 13,
     DailyLimitReached = 14,
+    /// Meter usage was paused because its configured consumption cap was reached.
+    ConsumptionLimitReached = 77,
     BatchEmpty = 15,
     AlgorithmNotFound = 16,
     AlreadySubscribed = 17,
@@ -474,6 +476,14 @@ pub struct ReputationScore {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitPeriod {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct Meter {
     /// Schema version — increment when fields are added/changed.
@@ -487,6 +497,7 @@ pub struct Meter {
     ///     for load-balancing decisions (Issue #821)
     /// v8: adds import_kwh and export_kwh — bidirectional metering totals
     ///     (Issue #990)
+    /// v9: adds configurable consumption caps and current-period tracking
     pub version: u32,
     pub owner: Address,
     pub active: bool,
@@ -512,6 +523,25 @@ pub struct Meter {
     pub import_kwh: u64,
     /// Cumulative energy exported to the grid, in milli-kWh (Issue #990).
     pub export_kwh: u64,
+    /// Maximum units permitted in the current period; 0 means unlimited.
+    pub consumption_limit: i128,
+    /// Period used by the consumption cap.
+    pub limit_period: LimitPeriod,
+    /// Units consumed since the beginning of the current limit period.
+    pub period_consumed: i128,
+    /// UTC timestamp at the beginning of the current limit period.
+    pub period_start: u64,
+}
+/// v8 layout before consumption limits were added.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LegacyMeterV8 {
+    pub version: u32, pub owner: Address, pub active: bool, pub units_used: u64,
+    pub plan: PaymentPlan, pub last_payment: u64, pub expires_at: u64,
+    pub daily_limit: i128, pub day_spent: i128, pub day_start: u64,
+    pub grace_expires_at: Option<u64>, pub emergency_contact: Option<Address>,
+    pub auto_deactivate: bool, pub installed_at: u64, pub max_capacity_watts: u32,
+    pub import_kwh: u64, pub export_kwh: u64,
 }
 /// v6 layout before capacity support, retained for migration.
 #[contracttype]
@@ -606,7 +636,7 @@ pub struct LegacyMeter {
 /// Migrate a v0 (legacy) meter entry to the current v8 schema.
 fn migrate_meter_v0(old: LegacyMeter) -> Meter {
     Meter {
-        version: 8,
+        version: 9,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -623,13 +653,17 @@ fn migrate_meter_v0(old: LegacyMeter) -> Meter {
         max_capacity_watts: 0,
         import_kwh: 0,
         export_kwh: 0,
+        consumption_limit: 0,
+        limit_period: LimitPeriod::Daily,
+        period_consumed: 0,
+        period_start: old.last_payment,
     }
 }
 
 /// Migrate a v1 meter entry to the current v8 schema.
 fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
     Meter {
-        version: 8,
+        version: 9,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -646,12 +680,16 @@ fn migrate_meter_v1(old: LegacyMeterV1) -> Meter {
         max_capacity_watts: 0,
         import_kwh: 0,
         export_kwh: 0,
+        consumption_limit: 0,
+        limit_period: LimitPeriod::Daily,
+        period_consumed: 0,
+        period_start: old.last_payment,
     }
 }
 
 fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
     Meter {
-        version: 8,
+        version: 9,
         owner: old.owner,
         active: old.active,
         units_used: old.units_used,
@@ -668,11 +706,15 @@ fn migrate_meter_v2(old: LegacyMeterV2) -> Meter {
         max_capacity_watts: 0,
         import_kwh: 0,
         export_kwh: 0,
+        consumption_limit: 0,
+        limit_period: LimitPeriod::Daily,
+        period_consumed: 0,
+        period_start: old.last_payment,
     }
 }
 
 fn migrate_meter_v5(old: LegacyMeterV5) -> Meter {
-    Meter { version: 8, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0 }
+    Meter { version: 9, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0, consumption_limit: 0, limit_period: LimitPeriod::Daily, period_consumed: 0, period_start: old.last_payment }
 }
 
 /// Returns the number of seconds a payment plan is valid for.
@@ -1133,6 +1175,22 @@ impl<'a> Drop for ReentrancyGuard<'a> {
 
 #[contract]
 pub struct SolarGridContract;
+
+enum UsageOutcome {
+    Applied { deactivated: bool },
+    ConsumptionLimitReached,
+}
+
+fn limit_period_start(period: &LimitPeriod, now: u64) -> u64 {
+    let duration = match period {
+        LimitPeriod::Daily => SECONDS_PER_DAY,
+        LimitPeriod::Weekly => SECONDS_PER_WEEK,
+        // A month is a deterministic 30-day accounting period, matching the
+        // contract's existing Monthly payment-plan semantics.
+        LimitPeriod::Monthly => 30 * SECONDS_PER_DAY,
+    };
+    (now / duration) * duration
+}
 
 #[contractimpl]
 impl SolarGridContract {
@@ -1609,7 +1667,7 @@ impl SolarGridContract {
         // ── EFFECTS — all state writes before any external observation ──────
         let now = env.ledger().timestamp();
         let meter = Meter {
-            version: 8,
+            version: 9,
             owner: owner.clone(),
             active: false,
             units_used: 0,
@@ -1626,12 +1684,16 @@ impl SolarGridContract {
             max_capacity_watts: max_capacity_watts.unwrap_or(0),
             import_kwh: 0,
             export_kwh: 0,
+            consumption_limit: 0,
+            limit_period: LimitPeriod::Daily,
+            period_consumed: 0,
+            period_start: now,
         };
         env.storage().persistent().set(&key, &meter);
         if !meter_metadata.is_empty() {
             env.storage().persistent().set(&DataKey::MeterMetadata(meter_id.clone()), &meter_metadata);
         }
-        env.storage().persistent().set(&DataKey::MeterSchemaVer(meter_id.clone()), &8u32);
+        env.storage().persistent().set(&DataKey::MeterSchemaVer(meter_id.clone()), &9u32);
 
         // Append meter_id to the owner's meter list
         let owner_key = DataKey::OwnerMeters(owner.clone());
@@ -1792,7 +1854,7 @@ impl SolarGridContract {
             seen.push_back(meter_id.clone());
 
             let meter = Meter {
-                version: 8,
+                version: 9,
                 owner: owner.clone(),
                 active: false,
                 units_used: 0,
@@ -1809,11 +1871,15 @@ impl SolarGridContract {
                 max_capacity_watts: 0,
                 import_kwh: 0,
                 export_kwh: 0,
+                consumption_limit: 0,
+                limit_period: LimitPeriod::Daily,
+                period_consumed: 0,
+                period_start: now,
             };
             env.storage().persistent().set(&key, &meter);
             env.storage()
                 .persistent()
-                .set(&DataKey::MeterSchemaVer(meter_id.clone()), &8u32);
+                .set(&DataKey::MeterSchemaVer(meter_id.clone()), &9u32);
 
             let owner_key = DataKey::OwnerMeters(owner.clone());
             let mut owner_list: Vec<String> = env
@@ -2590,7 +2656,7 @@ impl SolarGridContract {
         meter.last_payment = now;
         meter.expires_at = expires_at;
         meter.grace_expires_at = None;
-        meter.version = 8;
+        meter.version = 9;
         if meter.installed_at == 0 { meter.installed_at = now; }
         env.storage().persistent().set(&key, &meter);
 
@@ -3849,8 +3915,11 @@ impl SolarGridContract {
         // Daily spending limit: reset window if 24 h has elapsed, then enforce cap.
         // Active check is performed inside apply_usage.
         let now = env.ledger().timestamp();
-        let _deactivated = Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now)?;
+        let outcome = Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now)?;
         env.storage().persistent().set(&key, &meter);
+        if matches!(outcome, UsageOutcome::ConsumptionLimitReached) {
+            return Ok(());
+        }
 
         // Auto top-up is best-effort for meters that have not opted in. A
         // configured meter uses its token allowance when its post-usage
@@ -4050,9 +4119,6 @@ impl SolarGridContract {
         env.storage().persistent().has(&AlgoKey::Sub(algo_id, user))
     }
 
-    /// Migrate a meter from v1 (LegacyMeterV1) to v2 (Meter) schema. Admin-only.
-    pub fn migrate_meter_to_v2(env: Env, meter_id: String) -> Result<(), ContractError> {
-        Self::require_admin(&env)?;
     /// Get meter details.
     pub fn get_meter(env: Env, meter_id: String) -> Result<Meter, ContractError> {
         let key = DataKey::Meter(meter_id);
@@ -4904,8 +4970,23 @@ impl SolarGridContract {
         let has = |name: &str| fields.contains_key(Symbol::new(env, name));
         let decode_err = |_| ContractError::MeterNotFound;
 
-        if has("installed_at") {
+        if has("installed_at") && has("consumption_limit") {
             return Meter::try_from_val(env, &raw).map_err(decode_err);
+        }
+        if has("installed_at") {
+            let old = LegacyMeterV8::try_from_val(env, &raw).map_err(decode_err)?;
+            let migrated = Meter {
+                version: 9, owner: old.owner, active: old.active, units_used: old.units_used,
+                plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at,
+                daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start,
+                grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact,
+                auto_deactivate: old.auto_deactivate, installed_at: old.installed_at,
+                max_capacity_watts: old.max_capacity_watts, import_kwh: old.import_kwh,
+                export_kwh: old.export_kwh, consumption_limit: 0,
+                limit_period: LimitPeriod::Daily, period_consumed: 0, period_start: old.installed_at,
+            };
+            env.storage().persistent().set(key, &migrated);
+            return Ok(migrated);
         }
         let legacy_metadata = has("metadata");
         let migrated = if has("balance") {
@@ -4913,7 +4994,7 @@ impl SolarGridContract {
         } else if legacy_metadata {
             let old = LegacyMeterV4::try_from_val(env, &raw).map_err(decode_err)?;
             let metadata = old.metadata.clone();
-            let meter = Meter { version: 8, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0 };
+            let meter = Meter { version: 9, owner: old.owner, active: old.active, units_used: old.units_used, plan: old.plan, last_payment: old.last_payment, expires_at: old.expires_at, daily_limit: old.daily_limit, day_spent: old.day_spent, day_start: old.day_start, grace_expires_at: old.grace_expires_at, emergency_contact: old.emergency_contact, auto_deactivate: old.auto_deactivate, installed_at: old.last_payment, max_capacity_watts: 0, import_kwh: 0, export_kwh: 0, consumption_limit: 0, limit_period: LimitPeriod::Daily, period_consumed: 0, period_start: old.last_payment };
             if let DataKey::Meter(meter_id) = key {
                 env.storage().persistent().set(&DataKey::MeterMetadata(meter_id.clone()), &metadata);
             }
@@ -4949,7 +5030,7 @@ impl SolarGridContract {
         Self::require_admin(&env)?;
         if installed_at > env.ledger().timestamp() { return Err(ContractError::InvalidInstallationDate); }
         let key = DataKey::Meter(meter_id.clone()); let mut meter = Self::get_meter_or_error(&env, &key)?;
-        meter.installed_at = installed_at; meter.version = 8; env.storage().persistent().set(&key, &meter);
+        meter.installed_at = installed_at; meter.version = 9; env.storage().persistent().set(&key, &meter);
         env.events().publish((EVT_NS, symbol_short!("inst_date"), meter_id), installed_at); Ok(())
     }
     pub fn get_installed_at(env: Env, meter_id: String) -> Result<u64, ContractError> { Ok(Self::get_meter_or_error(&env, &DataKey::Meter(meter_id))?.installed_at) }
@@ -5240,10 +5321,22 @@ impl SolarGridContract {
                     .publish((symbol_short!("btch_skip"), EVT_NS, meter_id.clone()), ());
                 continue;
             }
-            let mut meter: Meter = env.storage().persistent().get(&key).unwrap();
+            let mut meter = match Self::get_meter_or_error(&env, &key) {
+                Ok(meter) => meter,
+                Err(_) => {
+                    failed.push_back(meter_id.clone());
+                    env.events()
+                        .publish((symbol_short!("btch_skip"), EVT_NS, meter_id.clone()), ());
+                    continue;
+                }
+            };
 
             match Self::apply_usage(&env, &meter_id, &mut meter, units, cost, now) {
-                Ok(_deactivated) => {
+                Ok(UsageOutcome::ConsumptionLimitReached) => {
+                    env.storage().persistent().set(&key, &meter);
+                    processed_count = processed_count.saturating_add(1);
+                }
+                Ok(UsageOutcome::Applied { .. }) => {
                     env.storage().persistent().set(&key, &meter);
                     processed_count = processed_count.saturating_add(1);
                     total_units = total_units.saturating_add(units);
@@ -5279,11 +5372,32 @@ impl SolarGridContract {
         units: u64,
         cost: i128,
         now: u64,
-    ) -> Result<bool, ContractError> {
+    ) -> Result<UsageOutcome, ContractError> {
         // Reject usage updates for inactive meters
         if !meter.active {
             return Err(ContractError::MeterNotActive);
         }
+
+        // Consumption caps are measured in milli-kWh units and reset at the
+        // deterministic UTC period boundary. A breached cap pauses the meter
+        // and commits the pause/event without recording the over-limit usage.
+        let period_start = limit_period_start(&meter.limit_period, now);
+        if period_start != meter.period_start {
+            meter.period_start = period_start;
+            meter.period_consumed = 0;
+        }
+        let projected_consumption = meter.period_consumed.saturating_add(units as i128);
+        if meter.consumption_limit > 0 && projected_consumption > meter.consumption_limit {
+            meter.active = false;
+            env.events().publish(
+                (EVT_NS, Symbol::new(env, "ConsumptionLimitReached"), meter_id.clone()),
+                (meter.consumption_limit, meter.period_consumed, units, meter.limit_period.clone(), now),
+            );
+            return Ok(UsageOutcome::ConsumptionLimitReached);
+        }
+        let consumption_limit_reached = meter.consumption_limit > 0
+            && projected_consumption >= meter.consumption_limit;
+        meter.period_consumed = projected_consumption;
 
         // Reset at UTC midnight (i.e. when the calendar-day index changes)
         // rather than a rolling 24h window from day_start, so the cap always
@@ -5358,7 +5472,44 @@ impl SolarGridContract {
                 },
             );
         }
-        Ok(deactivated)
+        if consumption_limit_reached {
+            meter.active = false;
+            env.events().publish(
+                (EVT_NS, Symbol::new(env, "ConsumptionLimitReached"), meter_id.clone()),
+                (meter.consumption_limit, meter.period_consumed, units, meter.limit_period.clone(), now),
+            );
+        }
+        Ok(UsageOutcome::Applied { deactivated: deactivated || consumption_limit_reached })
+    }
+
+    /// Configure a meter's maximum consumption for a daily, weekly, or
+    /// monthly accounting period. The meter owner or contract admin may call
+    /// this function. A zero limit disables the cap.
+    pub fn set_consumption_limit(
+        env: Env,
+        meter_id: String,
+        limit: i128,
+        period: LimitPeriod,
+    ) -> Result<(), ContractError> {
+        if limit < 0 {
+            return Err(ContractError::InvalidAmount);
+        }
+        let key = DataKey::Meter(meter_id.clone());
+        let mut meter = Self::get_meter_or_error(&env, &key)?;
+        let admin = Self::get_admin(&env)?;
+        if admin.try_require_auth().is_err() {
+            meter.owner.require_auth();
+        }
+        meter.consumption_limit = limit;
+        meter.limit_period = period;
+        meter.period_consumed = 0;
+        meter.period_start = limit_period_start(&meter.limit_period, env.ledger().timestamp());
+        env.storage().persistent().set(&key, &meter);
+        env.events().publish(
+            (EVT_NS, Symbol::new(&env, "ConsumptionLimitSet"), meter_id),
+            (limit, meter.limit_period.clone(), meter.period_start),
+        );
+        Ok(())
     }
 
     /// Set the daily spending limit for a meter. Admin-only.
@@ -10363,6 +10514,99 @@ mod tests {
             client.try_batch_register_meters(&batch),
             Err(Ok(ContractError::BatchTooLarge))
         );
+    }
+
+    /// Consumption limits are tracked in units and pause a meter at the cap.
+    #[test]
+    fn test_consumption_limit_pauses_at_limit_and_emits_event() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_PAUSE");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Daily);
+
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert!(!meter.active);
+        assert_eq!(meter.period_consumed, 100);
+        assert_eq!(meter.units_used, 100);
+        let found = events_as_tuples(&env, &env.events().all()).iter().any(|(_, topics, _)| {
+            topics.len() >= 3
+                && sym_eq(&env, &topics.get(0).unwrap(), EVT_NS)
+                && sym_eq(
+                    &env,
+                    &topics.get(1).unwrap(),
+                    Symbol::new(&env, "ConsumptionLimitReached"),
+                )
+                && String::try_from_val(&env, &topics.get(2).unwrap()).ok() == Some(meter_id.clone())
+        });
+        assert!(found, "ConsumptionLimitReached event not emitted");
+    }
+
+    #[test]
+    fn test_consumption_limit_resets_at_daily_boundary() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_RESET");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &10_000_i128);
+        client.make_payment(&meter_id, &user, &10_000_i128, &PaymentPlan::UsageBased, &None);
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Daily);
+        client.update_usage(&meter_id, &75_u64, &1_000_i128);
+        env.ledger().with_mut(|li| li.timestamp += SECONDS_PER_DAY);
+        client.update_usage(&meter_id, &50_u64, &1_000_i128);
+        let meter = client.get_meter(&meter_id);
+        assert!(meter.active);
+        assert_eq!(meter.period_consumed, 50);
+        assert_eq!(meter.period_start, SECONDS_PER_DAY);
+    }
+
+    #[test]
+    fn test_consumption_limit_resets_weekly_and_monthly() {
+        let (env, client, _admin, token_address) = setup_with_token();
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        setup_oracle(&env, &client);
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_PERIODS");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        token_admin_client.mint(&user, &100_000_i128);
+        client.make_payment(&meter_id, &user, &100_000_i128, &PaymentPlan::UsageBased, &None);
+
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Weekly);
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        assert!(!client.get_meter(&meter_id).active);
+        client.set_active(&meter_id, &true);
+        env.ledger().with_mut(|li| li.timestamp += SECONDS_PER_WEEK);
+        client.update_usage(&meter_id, &50_u64, &1_000_i128);
+        assert_eq!(client.get_meter(&meter_id).period_consumed, 50);
+
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Monthly);
+        client.update_usage(&meter_id, &100_u64, &1_000_i128);
+        assert!(!client.get_meter(&meter_id).active);
+        client.set_active(&meter_id, &true);
+        env.ledger().with_mut(|li| li.timestamp += 30 * SECONDS_PER_DAY);
+        client.update_usage(&meter_id, &25_u64, &1_000_i128);
+        assert_eq!(client.get_meter(&meter_id).period_consumed, 25);
+    }
+
+    #[test]
+    fn test_consumption_limit_owner_admin_and_validation() {
+        let (env, client, _admin, _token_address) = setup_with_token();
+        let user = Address::generate(&env);
+        let meter_id = String::from_str(&env, "CL_AUTH");
+        allowlist_and_register(&client, meter_id.clone(), &user);
+        assert_eq!(
+            client.try_set_consumption_limit(&meter_id, &-1_i128, &LimitPeriod::Weekly),
+            Err(Ok(ContractError::InvalidAmount))
+        );
+        client.set_consumption_limit(&meter_id, &100_i128, &LimitPeriod::Monthly);
+        assert_eq!(client.get_meter(&meter_id).limit_period, LimitPeriod::Monthly);
     }
 }
 
