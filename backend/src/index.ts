@@ -134,6 +134,8 @@ import { forecastDashboardRouter } from "./routes/forecastDashboard.js";
 // #1046: federated learning coordinator
 import { federatedRouter } from "./routes/federated.js";
 import { startFederatedCoordinator, stopFederatedCoordinator } from "./lib/federatedLearning.js";
+// Climate risk assessment
+import { climateRiskRouter } from "./routes/climateRisk.js";
 
 // â”€â”€ Rate-limit config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Closes #539: all env-var parsing lives in config/rateLimits.ts; this file
@@ -278,6 +280,8 @@ app.use("/api/forecast-dashboard", tieredRateLimiter, forecastDashboardRouter);
 // #1046: federated learning (local training + privacy-preserving aggregation)
 app.use("/api/federated", writeLimiter, federatedRouter);
 startFederatedCoordinator();
+// Climate risk assessment for solar infrastructure
+app.use("/api/climate-risk", readLimiter, climateRiskRouter);
 setRelaySender(sendRelayCommand);
 // Initialize heatmap system (#922)
 initPriceHeatmap();
