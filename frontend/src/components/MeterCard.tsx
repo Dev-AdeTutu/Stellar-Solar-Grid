@@ -47,7 +47,6 @@ function formatShare(shareBps: number): string {
 function shortenAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-6)}`;
 }
-=======
 
 const COMMON_EMOJIS = ["☀️", "🏠", "🏬", "⚡", "🔋", "🏭"];
 
@@ -111,7 +110,6 @@ export function MeterCard({
   const shareholders = shareholdersProp ?? fetchedShareholders ?? [];
   const isCoOwned = shareholders.length > 1;
   const totalShareBps = shareholders.reduce((sum, s) => sum + (s.shareBps || 0), 0);
-=======
 
   // Lifecycle tracking state
   const [lifecycle, setLifecycle] = useState<MeterLifecycle | null>(null);
@@ -389,7 +387,6 @@ export function MeterCard({
           </ul>
         </div>
       )}
-=======
 
       {/* Plan and Expiry */}
       <div className="grid grid-cols-2 gap-3 mb-4">
