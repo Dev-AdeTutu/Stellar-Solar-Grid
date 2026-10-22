@@ -42,6 +42,33 @@ export type AuditFilter = {
   offset?: number;
 };
 
+export type ForensicEventInput = {
+  /** Threat classification, e.g. "port_scan", "brute_force", "command_injection", "anomaly". */
+  threatType: string;
+  /** Severity of the detected threat. */
+  severity?: "low" | "medium" | "high" | "critical";
+  /** Originating IP address of the suspicious activity. */
+  sourceIp?: string | null;
+  /** Meter the event is associated with, if any. */
+  meterId?: string | null;
+  /** Raw payload or request body captured at detection time. */
+  payload?: unknown;
+  /** Additional structured context (headers, ports, counts, model scores, ...). */
+  context?: unknown;
+  /** Detector or component that raised the event. */
+  detector?: string | null;
+};
+
+export type ForensicEvent = AuditEntry & {
+  threat_type: string;
+  severity: string;
+  source_ip: string | null;
+  payload: string | null;
+  context: string | null;
+  detector: string | null;
+};
+=======
+
 const GENESIS = "0".repeat(64);
 
 const db = (() => {
@@ -70,6 +97,26 @@ const db = (() => {
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
     CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log
       BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+    -- Forensic security events, linked to the hash-chained audit log.
+    CREATE TABLE IF NOT EXISTS forensic_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      audit_id INTEGER NOT NULL REFERENCES audit_log (id),
+      timestamp TEXT NOT NULL,
+      threat_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      source_ip TEXT,
+      meter_id TEXT,
+      payload TEXT,
+      context TEXT,
+      detector TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_forensic_meter ON forensic_events (meter_id, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_forensic_threat ON forensic_events (threat_type, timestamp);
+    CREATE INDEX IF NOT EXISTS idx_forensic_ip ON forensic_events (source_ip, timestamp);
+    CREATE TRIGGER IF NOT EXISTS forensic_no_update BEFORE UPDATE ON forensic_events
+      BEGIN SELECT RAISE(ABORT, 'forensic_events is append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS forensic_no_delete BEFORE DELETE ON forensic_events
+      BEGIN SELECT RAISE(ABORT, 'forensic_events is append-only'); END;
   `);
   // Migration for pre-existing databases created before multi-tenancy.
   const cols = d.prepare("PRAGMA table_info(audit_log)").all() as { name: string }[];

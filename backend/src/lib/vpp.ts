@@ -18,6 +18,9 @@
  *     cannot back it, so members learn about conflicts before dispatch.
  */
 
+import { createDemandResponseEvent, type DemandResponseEvent } from "./demandResponse.js";
+import { sendPayment } from "./stellar.js";
+
 export type ResourceType = "solar" | "battery" | "ev" | "load" | "wind";
 
 export type VppResource = {
@@ -50,6 +53,10 @@ export type Vpp = {
   /** Diversity of member load, 0-1; lower means members peak together. */
   diversityFactor: number;
   status: "forming" | "active" | "suspended";
+  /** Geographic grouping for the portfolio, e.g. a grid region or postcode. */
+  location: string | null;
+  /** Capability grouping, e.g. "fast-frequency" or "thermal-storage". */
+  capability: string | null;
   createdAt: string;
 };
 
@@ -152,10 +159,61 @@ export type VppPerformance = {
   measuredAt: string;
 };
 
+/** A dispatch instruction received from a grid operator. */
+export type DispatchSignal = {
+  id: string;
+  vppId: string;
+  service: GridService;
+  /** Direction the operator wants the fleet moved. */
+  direction: "increase" | "decrease";
+  /** Target change in kW (positive magnitude). */
+  targetKw: number;
+  /** Duration of the dispatch event, in minutes. */
+  durationMinutes: number;
+  /** When the operator wants the response to begin. */
+  startsAt: string;
+  /** Operator-supplied reference, e.g. an event id in their system. */
+  externalRef: string | null;
+  status: "received" | "dispatched" | "completed" | "failed";
+  receivedAt: string;
+  /** Per-resource instructions issued when the signal was dispatched. */
+  instructions: DispatchInstruction[];
+  /** Why the signal could not be dispatched, when it failed. */
+  failureReason: string | null;
+};
+
+/** A single meter's coordinated response to a dispatch signal. */
+export type DispatchInstruction = {
+  resourceId: string;
+  ownerId: string;
+  /** Signed kW change: positive is more output / less load. */
+  deltaKw: number;
+  /** Action the meter should take. */
+  action: "charge" | "discharge" | "curtail" | "shed" | "hold";
+  /** Demand-response event created for this instruction, if any. */
+  demandResponseEventId: string | null;
+};
+
+/** A payout of settled revenue to a VPP participant. */
+export type EarningsPayout = {
+  id: string;
+  vppId: string;
+  settlementId: string;
+  memberId: string;
+  amountXlm: number;
+  /** Stellar transaction hash, when the payment was submitted. */
+  txHash: string | null;
+  status: "pending" | "paid" | "failed";
+  error: string | null;
+  createdAt: string;
+};
+
 const vpps = new Map<string, Vpp>();
 const resources = new Map<string, VppResource>();
 const bids = new Map<string, GridServiceBid>();
 const settlements = new Map<string, VppSettlement>();
+const dispatchSignals = new Map<string, DispatchSignal>();
+const payouts = new Map<string, EarningsPayout>();
 
 let idSeq = 1;
 function nextId(prefix: string): string {
@@ -186,6 +244,8 @@ export function createVpp(params: {
   operatorId: string;
   availabilityFactor?: number;
   diversityFactor?: number;
+  location?: string;
+  capability?: string;
 }): Vpp {
   if (!GRID_SERVICES.includes(params.service)) fail("Unsupported grid service", "VALIDATION_ERROR");
   if (!params.name?.trim()) fail("name is required", "VALIDATION_ERROR");
@@ -207,9 +267,45 @@ export function createVpp(params: {
     availabilityFactor,
     diversityFactor,
     status: "forming",
+    location: params.location?.trim() || null,
+    capability: params.capability?.trim() || null,
     createdAt: new Date().toISOString(),
   };
   vpps.set(vpp.id, vpp);
+  return vpp;
+}
+
+/**
+ * Group meters into VPP portfolios by location and/or capability.
+ *
+ * Resources are matched on their VPP's grouping attributes; a resource whose
+ * VPP has no location/capability set is only matched when the caller does not
+ * constrain that dimension.
+ */
+export function groupIntoPortfolios(params: {
+  name: string;
+  service: GridService;
+  operatorId: string;
+  location?: string;
+  capability?: string;
+  availabilityFactor?: number;
+  diversityFactor?: number;
+}): Vpp {
+  const vpp = createVpp(params);
+  const location = params.location?.trim();
+  const capability = params.capability?.trim();
+
+  for (const resource of resources.values()) {
+    const source = vpps.get(resource.vppId);
+    if (!source || source.id === vpp.id) continue;
+    if (location && source.location !== location) continue;
+    if (capability && source.capability !== capability) continue;
+    if (!location && !capability) continue;
+    // Re-home the resource into the new portfolio.
+    resource.vppId = vpp.id;
+    if (!vpp.members.includes(resource.ownerId)) vpp.members.push(resource.ownerId);
+  }
+  if (vpp.members.length > 0) vpp.status = "active";
   return vpp;
 }
 
@@ -555,6 +651,200 @@ export function getSettlement(settlementId: string): VppSettlement | undefined {
   return settlements.get(settlementId);
 }
 
+// ── Grid operator dispatch signals ───────────────────────────────────────────
+
+/**
+ * Receive a dispatch signal from a grid operator (webhook or polled feed).
+ *
+ * The signal is recorded immediately so the operator's request is auditable
+ * even if it cannot be dispatched; dispatch happens in `dispatchSignal`.
+ */
+export function receiveDispatchSignal(params: {
+  vppId: string;
+  service?: GridService;
+  direction: "increase" | "decrease";
+  targetKw: number;
+  durationMinutes?: number;
+  startsAt?: string;
+  externalRef?: string;
+  now?: Date;
+}): DispatchSignal {
+  const vpp = requireVpp(params.vppId);
+  if (vpp.status === "suspended") fail("VPP is suspended", "CONFLICT");
+  if (!Number.isFinite(params.targetKw) || params.targetKw <= 0) {
+    fail("targetKw must be a positive number", "VALIDATION_ERROR");
+  }
+  const durationMinutes = params.durationMinutes ?? 30;
+  if (!Number.isFinite(durationMinutes) || durationMinutes <= 0) {
+    fail("durationMinutes must be a positive number", "VALIDATION_ERROR");
+  }
+  const now = params.now ?? new Date();
+  const service = params.service ?? vpp.service;
+  if (!GRID_SERVICES.includes(service)) fail("Unsupported grid service", "VALIDATION_ERROR");
+
+  const signal: DispatchSignal = {
+    id: nextId("SIG"),
+    vppId: vpp.id,
+    service,
+    direction: params.direction,
+    targetKw: params.targetKw,
+    durationMinutes,
+    startsAt: params.startsAt ?? now.toISOString(),
+    externalRef: params.externalRef ?? null,
+    status: "received",
+    receivedAt: now.toISOString(),
+    instructions: [],
+    failureReason: null,
+  };
+  dispatchSignals.set(signal.id, signal);
+  return signal;
+}
+
+export function getDispatchSignal(signalId: string): DispatchSignal | undefined {
+  return dispatchSignals.get(signalId);
+}
+
+export function listDispatchSignals(vppId: string): DispatchSignal[] {
+  return [...dispatchSignals.values()]
+    .filter((signal) => signal.vppId === vppId)
+    .sort((a, b) => a.receivedAt.localeCompare(b.receivedAt));
+}
+
+/** Action a resource type takes to move in the requested direction. */
+function actionFor(resource: VppResource, direction: "increase" | "decrease"): DispatchInstruction["action"] {
+  if (resource.type === "battery" || resource.type === "ev") {
+    return direction === "increase" ? "discharge" : "charge";
+  }
+  if (resource.type === "solar" || resource.type === "wind") {
+    return direction === "increase" ? "hold" : "curtail";
+  }
+  return direction === "increase" ? "hold" : "shed";
+}
+
+/**
+ * Coordinate the fleet's response to a dispatch signal.
+ *
+ * Capacity is allocated pro-rata to each online resource's availability, and
+ * each instruction is mirrored into a demand-response event so the meter's
+ * response is tracked with the same machinery as other DR programs.
+ */
+export function dispatchSignal(params: { signalId: string; now?: Date }): DispatchSignal {
+  const signal = dispatchSignals.get(params.signalId);
+  if (!signal) fail("Dispatch signal not found", "NOT_FOUND");
+  if (signal.status !== "received") fail("Signal has already been processed", "CONFLICT");
+  const now = params.now ?? new Date();
+  const vpp = requireVpp(signal.vppId);
+
+  const fleet = listResources(vpp.id).filter((resource) => resource.status === "online");
+  const available = fleet.reduce((sum, resource) => sum + resource.availableKw, 0);
+  if (fleet.length === 0 || available <= 0) {
+    signal.status = "failed";
+    signal.failureReason = "No dispatchable resources are online";
+    return signal;
+  }
+
+  const deliverable = Math.min(signal.targetKw, available);
+  const instructions: DispatchInstruction[] = [];
+  for (const resource of fleet) {
+    const share = round2((resource.availableKw / available) * deliverable);
+    if (share <= 0) continue;
+    const action = actionFor(resource, signal.direction);
+    let event: DemandResponseEvent | null = null;
+    try {
+      event = createDemandResponseEvent({
+        programId: `vpp:${vpp.id}`,
+        participantId: resource.ownerId,
+        startAt: signal.startsAt,
+        endAt: new Date(new Date(signal.startsAt).getTime() + signal.durationMinutes * 60_000).toISOString(),
+        reductionKw: share,
+      });
+    } catch {
+      // DR tracking is best-effort; the dispatch instruction still stands.
+      event = null;
+    }
+    instructions.push({
+      resourceId: resource.id,
+      ownerId: resource.ownerId,
+      deltaKw: signal.direction === "increase" ? share : -share,
+      action,
+      demandResponseEventId: event?.id ?? null,
+    });
+  }
+
+  signal.instructions = instructions;
+  signal.status = instructions.length > 0 ? "dispatched" : "failed";
+  if (instructions.length === 0) signal.failureReason = "No capacity could be allocated";
+  return signal;
+}
+
+/** Mark a dispatched signal as completed once the response window closes. */
+export function completeDispatchSignal(signalId: string): DispatchSignal {
+  const signal = dispatchSignals.get(signalId);
+  if (!signal) fail("Dispatch signal not found", "NOT_FOUND");
+  if (signal.status !== "dispatched") fail("Only a dispatched signal can be completed", "CONFLICT");
+  signal.status = "completed";
+  return signal;
+}
+
+// ── Earnings distribution ────────────────────────────────────────────────────
+
+/**
+ * Distribute a settlement's revenue to participants via Stellar payments.
+ *
+ * Each member's share is paid out individually; a failed payment is recorded
+ * rather than aborting the batch, so one bad address cannot strand everyone
+ * else's earnings.
+ */
+export async function distributeEarnings(params: {
+  settlementId: string;
+  /** Destination Stellar account per member. */
+  destinationByMember: Record<string, string>;
+  now?: Date;
+}): Promise<EarningsPayout[]> {
+  const settlement = settlements.get(params.settlementId);
+  if (!settlement) fail("Settlement not found", "NOT_FOUND");
+  const now = params.now ?? new Date();
+
+  const results: EarningsPayout[] = [];
+  for (const share of settlement.shares) {
+    if (share.amountXlm <= 0) continue;
+    const payout: EarningsPayout = {
+      id: nextId("PAYOUT"),
+      vppId: settlement.vppId,
+      settlementId: settlement.id,
+      memberId: share.memberId,
+      amountXlm: share.amountXlm,
+      txHash: null,
+      status: "pending",
+      error: null,
+      createdAt: now.toISOString(),
+    };
+    const destination = params.destinationByMember[share.memberId];
+    if (!destination) {
+      payout.status = "failed";
+      payout.error = "No payout destination for member";
+    } else {
+      try {
+        const tx = await sendPayment({ destination, amount: share.amountXlm });
+        payout.txHash = tx.hash;
+        payout.status = "paid";
+      } catch (err) {
+        payout.status = "failed";
+        payout.error = err instanceof Error ? err.message : "Payment failed";
+      }
+    }
+    payouts.set(payout.id, payout);
+    results.push(payout);
+  }
+  return results;
+}
+
+export function listPayouts(vppId: string): EarningsPayout[] {
+  return [...payouts.values()]
+    .filter((payout) => payout.vppId === vppId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 export function listSettlements(vppId: string): VppSettlement[] {
   return [...settlements.values()]
     .filter((settlement) => settlement.vppId === vppId)
@@ -589,6 +879,29 @@ export function getPerformance(vppId: string): VppPerformance {
   };
 }
 
+/** Dispatch and payout activity for a VPP, for the management portal. */
+export function getVppActivity(vppId: string): {
+  vppId: string;
+  signals: DispatchSignal[];
+  payouts: EarningsPayout[];
+  paidXlm: number;
+  pendingXlm: number;
+} {
+  requireVpp(vppId);
+  const vppPayouts = listPayouts(vppId);
+  return {
+    vppId,
+    signals: listDispatchSignals(vppId),
+    payouts: vppPayouts,
+    paidXlm: round2(
+      vppPayouts.filter((p) => p.status === "paid").reduce((sum, p) => sum + p.amountXlm, 0),
+    ),
+    pendingXlm: round2(
+      vppPayouts.filter((p) => p.status === "pending").reduce((sum, p) => sum + p.amountXlm, 0),
+    ),
+  };
+}
+
 function round2(value: number): number {
   return Number(value.toFixed(2));
 }
@@ -599,5 +912,7 @@ export function resetVppsForTests(): void {
   resources.clear();
   bids.clear();
   settlements.clear();
+  dispatchSignals.clear();
+  payouts.clear();
   idSeq = 1;
 }

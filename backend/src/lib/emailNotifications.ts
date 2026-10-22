@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
 import { sendEmail, type EmailAttachment, type EmailResult } from "./mailer.js";
 
-export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "surveys", "nudges"] as const;
+export const EMAIL_EVENTS = ["trades", "low_balance", "price_alerts", "billing", "surveys", "nudges", "security_alerts"] as const;
 export type EmailEvent = (typeof EMAIL_EVENTS)[number];
 
 const DB_PATH = process.env.EMAIL_PREFERENCES_DB_PATH ?? path.resolve(process.cwd(), "data", "email-preferences.sqlite");
@@ -166,6 +166,106 @@ export async function sendCommitmentReminderEmail(input: {
     text: `Hi,\n\nYou pledged to ${input.pledgeDescription} (target: ${input.targetReductionPercent}% reduction).${deadline}\n\nYou're ${progress}% of the way to your goal. Staying on track protects the credits you've already earned.${action}`,
     html: `<h2>Keep your commitment</h2><p>You pledged to ${escapeHtml(input.pledgeDescription)} (target: ${input.targetReductionPercent}% reduction).${escapeHtml(deadline)}</p><p>You're <strong>${progress}%</strong> of the way to your goal. Staying on track protects the credits you've already earned.</p>${htmlAction}`,
   });
+}
+
+export type SecurityThreatSeverity = "low" | "medium" | "high" | "critical";
+
+export interface SecurityThreatAlert {
+  threatId: string;
+  threatType: string;
+  severity: SecurityThreatSeverity;
+  meterId: string;
+  detectedAt: string;
+  description: string;
+  sourceIp?: string;
+  actionTaken?: string;
+  details?: Record<string, unknown>;
+}
+
+const SEVERITY_COLORS: Record<SecurityThreatSeverity, string> = {
+  low: "#0ea5e9",
+  medium: "#f59e0b",
+  high: "#f97316",
+  critical: "#dc2626",
+};
+
+function renderSecurityThreatAlert(alert: SecurityThreatAlert): { text: string; html: string } {
+  const color = SEVERITY_COLORS[alert.severity] ?? SEVERITY_COLORS.medium;
+  const detailLines = Object.entries(alert.details ?? {})
+    .map(([key, value]) => `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`)
+    .join("\n");
+  const detailHtml = Object.entries(alert.details ?? {})
+    .map(([key, value]) => `<li><strong>${escapeHtml(key)}:</strong> ${escapeHtml(typeof value === "string" ? value : JSON.stringify(value))}</li>`)
+    .join("");
+  const text = [
+    `Security threat detected: ${alert.threatType}`,
+    `Severity: ${alert.severity.toUpperCase()}`,
+    `Threat ID: ${alert.threatId}`,
+    `Meter: ${alert.meterId}`,
+    `Detected at: ${alert.detectedAt}`,
+    alert.sourceIp ? `Source IP: ${alert.sourceIp}` : "",
+    alert.actionTaken ? `Action taken: ${alert.actionTaken}` : "",
+    "",
+    alert.description,
+    detailLines ? `\nDetails:\n${detailLines}` : "",
+  ].filter(Boolean).join("\n");
+  const html = `<h2 style="color:${color}">Security threat detected: ${escapeHtml(alert.threatType)}</h2>
+    <p><strong>Severity:</strong> <span style="color:${color};font-weight:bold">${escapeHtml(alert.severity.toUpperCase())}</span></p>
+    <ul>
+      <li><strong>Threat ID:</strong> ${escapeHtml(alert.threatId)}</li>
+      <li><strong>Meter:</strong> ${escapeHtml(alert.meterId)}</li>
+      <li><strong>Detected at:</strong> ${escapeHtml(alert.detectedAt)}</li>
+      ${alert.sourceIp ? `<li><strong>Source IP:</strong> ${escapeHtml(alert.sourceIp)}</li>` : ""}
+      ${alert.actionTaken ? `<li><strong>Action taken:</strong> ${escapeHtml(alert.actionTaken)}</li>` : ""}
+    </ul>
+    <p>${escapeHtml(alert.description)}</p>
+    ${detailHtml ? `<ul>${detailHtml}</ul>` : ""}`;
+  return { text, html };
+}
+
+export async function sendSecurityThreatAlertEmail(input: {
+  to: string | string[];
+  alert: SecurityThreatAlert;
+}): Promise<EmailResult> {
+  const recipients = (Array.isArray(input.to) ? input.to : [input.to]).map((email) => email.trim()).filter(Boolean);
+  if (recipients.length === 0) return { delivered: false, provider: "no-recipients" };
+  const rendered = renderSecurityThreatAlert(input.alert);
+  const results = await Promise.all(
+    recipients.map((to) =>
+      sendNotificationEmail({
+        to,
+        event: "security_alerts",
+        subject: `[${input.alert.severity.toUpperCase()}] Security threat: ${input.alert.threatType} (meter ${input.alert.meterId})`,
+        text: rendered.text,
+        html: rendered.html,
+      }),
+    ),
+  );
+  return results.find((result) => result.delivered) ?? results[0] ?? { delivered: false, provider: "no-recipients" };
+}
+
+export async function sendSecurityThreatDigestEmail(input: {
+  to: string | string[];
+  alerts: SecurityThreatAlert[];
+  periodLabel?: string;
+}): Promise<EmailResult> {
+  if (input.alerts.length === 0) return { delivered: false, provider: "no-alerts" };
+  const recipients = (Array.isArray(input.to) ? input.to : [input.to]).map((email) => email.trim()).filter(Boolean);
+  if (recipients.length === 0) return { delivered: false, provider: "no-recipients" };
+  const period = input.periodLabel?.trim() || "the last 24 hours";
+  const rendered = input.alerts.map(renderSecurityThreatAlert);
+  const results = await Promise.all(
+    recipients.map((to) =>
+      sendNotificationEmail({
+        to,
+        event: "security_alerts",
+        subject: `Security threat digest: ${input.alerts.length} alert(s) in ${period}`,
+        text: `Security threat digest for ${period}:\n\n${rendered.map((item) => item.text).join("\n\n---\n\n")}`,
+        html: `<h2>Security threat digest for ${escapeHtml(period)}</h2>${rendered.map((item) => `<section style="margin-bottom:24px">${item.html}</section>`).join("")}`,
+      }),
+    ),
+  );
+  return results.find((result) => result.delivered) ?? results[0] ?? { delivered: false, provider: "no-recipients" };
 }
 
 export async function sendSurveyEmail(input: {

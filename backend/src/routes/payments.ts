@@ -378,6 +378,221 @@ paymentsRouter.post(
   }),
 );
 
+// ── State channels (Issue #1045) ──────────────────────────────────────────────
+//
+// Off-chain micro-transactions between a payer and the contract, settled
+// on-chain periodically. See contracts/CHANNELS.md for the full lifecycle.
+
+const OpenChannelSchema = z.object({
+  payer: z.string().length(56),
+  meterId: z.string().min(1).max(64),
+  deposit: z.number().int().positive(),
+  // Optional channel lifetime in seconds; contract applies its own default.
+  ttlSecs: z.number().int().positive().optional(),
+});
+
+const ChannelUpdateSchema = z.object({
+  // Cumulative amount consumed off-chain so far (monotonically increasing).
+  cumulativeAmount: z.number().int().nonnegative(),
+  // Monotonic off-chain sequence number; must exceed the last applied one.
+  nonce: z.number().int().nonnegative(),
+  // Payer's signature over the off-chain state (base64).
+  signature: z.string().min(1),
+});
+
+const ChannelSettleSchema = z.object({
+  cumulativeAmount: z.number().int().nonnegative(),
+  nonce: z.number().int().nonnegative(),
+  signature: z.string().min(1),
+});
+
+const ChannelDisputeSchema = z.object({
+  // Reason code understood by the contract (e.g. "stale_state", "invalid_sig").
+  reason: z.string().min(1).max(64),
+  // Optional evidence: the disputed off-chain state, base64-encoded.
+  evidence: z.string().max(4096).optional(),
+});
+
+function parseChannelId(raw: unknown): number | null {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const id = Number(value);
+  return Number.isInteger(id) && id >= 0 ? id : null;
+}
+
+function channelErrorResponse(res: any, err: any, fallback: string) {
+  logger.error(fallback, err);
+  if (err?.code === "RPC_ERROR" || err?.isRpcError) {
+    return res.status(502).json({ error: err.message ?? "RPC request failed", code: "RPC_ERROR" });
+  }
+  return res.status(500).json({ error: err.message ?? fallback });
+}
+
+/**
+ * POST /api/payments/channels/open
+ *
+ * Opens a payment channel between a payer and the contract, locking the
+ * payer's deposit on-chain. Subsequent usage updates are exchanged off-chain.
+ */
+paymentsRouter.post(
+  "/channels/open",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const parsed = OpenChannelSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { payer, meterId, deposit, ttlSecs } = parsed.data;
+
+    try {
+      StellarSdk.StrKey.decodeEd25519PublicKey(payer);
+    } catch {
+      return res.status(400).json({ error: "Invalid Stellar address" });
+    }
+
+    try {
+      const hash = await adminInvoke("open_channel", [
+        StellarSdk.nativeToScVal(payer, { type: "address" }),
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+        StellarSdk.nativeToScVal(BigInt(deposit), { type: "i128" }),
+        ttlSecs === undefined
+          ? StellarSdk.xdr.ScVal.scvVoid()
+          : StellarSdk.nativeToScVal(ttlSecs, { type: "u64" }),
+      ]);
+
+      const channelId = await stellarService.query("get_payer_channel", [
+        StellarSdk.nativeToScVal(payer, { type: "address" }),
+        StellarSdk.nativeToScVal(meterId, { type: "symbol" }),
+      ]);
+
+      logger.info("Opened state channel", { payer, meterId, deposit, hash });
+      return res.json({ hash, channelId });
+    } catch (err: any) {
+      return channelErrorResponse(res, err, "Failed to open channel");
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/channels/:id/update
+ *
+ * Applies an off-chain usage update to a channel. No on-chain transaction is
+ * submitted; the contract only sees the latest signed state at settlement.
+ */
+paymentsRouter.post(
+  "/channels/:id/update",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const channelId = parseChannelId(req.params.id);
+    if (channelId === null) {
+      return res.status(400).json({ error: "Invalid channel id" });
+    }
+    const parsed = ChannelUpdateSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { cumulativeAmount, nonce, signature } = parsed.data;
+
+    try {
+      const state = await stellarService.query("apply_channel_update", [
+        StellarSdk.nativeToScVal(channelId, { type: "u32" }),
+        StellarSdk.nativeToScVal(BigInt(cumulativeAmount), { type: "i128" }),
+        StellarSdk.nativeToScVal(nonce, { type: "u64" }),
+        StellarSdk.nativeToScVal(signature, { type: "string" }),
+      ]);
+      logger.info("Applied off-chain channel update", { channelId, cumulativeAmount, nonce });
+      return res.json({ channelId, state });
+    } catch (err: any) {
+      return channelErrorResponse(res, err, "Failed to apply channel update");
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/channels/:id/settle
+ *
+ * Settles the channel on-chain using the latest signed off-chain state,
+ * releasing the consumed amount to the provider and refunding the remainder.
+ */
+paymentsRouter.post(
+  "/channels/:id/settle",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const channelId = parseChannelId(req.params.id);
+    if (channelId === null) {
+      return res.status(400).json({ error: "Invalid channel id" });
+    }
+    const parsed = ChannelSettleSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { cumulativeAmount, nonce, signature } = parsed.data;
+
+    try {
+      const hash = await adminInvoke("settle_channel", [
+        StellarSdk.nativeToScVal(channelId, { type: "u32" }),
+        StellarSdk.nativeToScVal(BigInt(cumulativeAmount), { type: "i128" }),
+        StellarSdk.nativeToScVal(nonce, { type: "u64" }),
+        StellarSdk.nativeToScVal(signature, { type: "string" }),
+      ]);
+      logger.info("Settled state channel", { channelId, cumulativeAmount, nonce, hash });
+      return res.json({ hash, channelId });
+    } catch (err: any) {
+      return channelErrorResponse(res, err, "Failed to settle channel");
+    }
+  }),
+);
+
+/**
+ * POST /api/payments/channels/:id/dispute
+ *
+ * Raises a dispute on a channel, freezing settlement until resolved on-chain.
+ */
+paymentsRouter.post(
+  "/channels/:id/dispute",
+  idempotency(),
+  asyncHandler(async (req, res) => {
+    const channelId = parseChannelId(req.params.id);
+    if (channelId === null) {
+      return res.status(400).json({ error: "Invalid channel id" });
+    }
+    const parsed = ChannelDisputeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid request",
+        code: "VALIDATION_ERROR",
+        details: parsed.error.flatten(),
+      });
+    }
+    const { reason, evidence } = parsed.data;
+
+    try {
+      const hash = await adminInvoke("dispute_channel", [
+        StellarSdk.nativeToScVal(channelId, { type: "u32" }),
+        StellarSdk.nativeToScVal(reason, { type: "string" }),
+        evidence === undefined
+          ? StellarSdk.xdr.ScVal.scvVoid()
+          : StellarSdk.nativeToScVal(evidence, { type: "string" }),
+      ]);
+      logger.info("Raised channel dispute", { channelId, reason, hash });
+      return res.json({ hash, channelId });
+    } catch (err: any) {
+      return channelErrorResponse(res, err, "Failed to dispute channel");
+    }
+  }),
+);
+
 const HORIZON_URL =
   NETWORK_PASSPHRASE === StellarSdk.Networks.PUBLIC
     ? "https://horizon.stellar.org"
