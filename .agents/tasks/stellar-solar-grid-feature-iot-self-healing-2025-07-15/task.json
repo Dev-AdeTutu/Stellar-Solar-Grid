@@ -1,0 +1,7 @@
+{
+  "task_id": "task-iot-self-healing",
+  "task_description": "Add self-healing capabilities to IoT smart meters with automated failure detection, recovery procedures, and escalation to technicians",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003"],
+  "blocked_reason": null
+}
