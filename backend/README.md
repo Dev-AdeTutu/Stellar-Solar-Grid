@@ -139,3 +139,20 @@ Real-time power outage detection engine and notification dispatcher. Implemented
 Meters publish physical tamper sensor events to `solargrid/meters/{meterId}/tamper` at QoS 2. A detected event is a JSON object such as `{ "tamper": true, "reason": "cover_open", "timestamp": "2026-01-01T00:00:00Z" }`. The bridge records the event timestamp in the tamper SQLite store, calls the Soroban `set_active(false)` operation, publishes an `OFF` command to the meter, and immediately POSTs `meter_tamper_detected` to provider webhooks (registered with provider id `provider`) and `PROVIDER_WEBHOOK_URL`. Optional `PROVIDER_WEBHOOK_SECRET` signs the direct provider request with `X-SolarGrid-Signature`.
 
 `GET /api/meters/:meterId/tamper-history?limit=100` returns the recorded events. The user dashboard displays a **Tamper alert** badge when history is non-empty. Configure `TAMPER_DB_PATH` to choose the persistent SQLite file; it defaults to `backend/data/tamper-events.sqlite`.
+
+## Meter Configuration Backup (#1055)
+
+Meters periodically `POST /api/meter-config/:meterId/backup` with `{ config }`. Each distinct
+config (compared by canonical SHA-256 hash) is stored as a new immutable version; up to
+`METER_CONFIG_MAX_VERSIONS` (default 50) are kept per meter.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /api/meter-config/:meterId/versions` | Version history |
+| `GET /api/meter-config/:meterId/versions/latest` | Latest config — replacement meters fetch this on boot |
+| `POST /api/meter-config/:meterId/restore` | `{ sourceMeterId, version? }` one-click restore onto a replacement meter (admin) |
+| `GET/POST /api/meter-config/templates` | Reusable templates for similar deployments (POST is admin) |
+| `POST /api/meter-config/:meterId/apply-template` | `{ name, overrides? }` (admin) |
+
+The frontend `MeterConfigManager` component lists versions and triggers restores.
+Tests: `tests/meter-config-pricing-anon.integration.test.ts`.

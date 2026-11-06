@@ -8,7 +8,23 @@ use soroban_sdk::{
 pub enum VotingMode {
     TokenWeighted,
     Quadratic,
+    /// Token weight boosted by hold duration and voluntary locks (#1056)
+    TimeWeighted,
 }
+
+/// Voluntary token lock that grants a voting boost until `unlock_at`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TokenLock {
+    pub amount: i128,
+    pub unlock_at: u64,
+    pub duration: u64,
+}
+
+/// Max hold-duration bonus (+100%) is reached after one year.
+pub const MAX_HOLD_SECONDS: u64 = 365 * 24 * 3600;
+/// Max lock bonus (+100%) is reached with a four-year lock.
+pub const MAX_LOCK_SECONDS: u64 = 4 * 365 * 24 * 3600;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +69,8 @@ pub enum DataKey {
     QuorumVotes,
     TreasuryBalance,
     PlatformParam(Symbol),
+    HoldSince(Address),
+    Lock(Address),
 }
 
 #[contract]
@@ -69,6 +87,9 @@ impl GovernanceDaoContract {
         timelock_delay: u64,
         quorum_votes: i128,
     ) {
+        env.storage()
+            .instance()
+            .set(&DataKey::HoldSince(initial_member.clone()), &env.ledger().timestamp());
         env.storage()
             .instance()
             .set(&DataKey::GovTokenBalance(initial_member), &initial_supply);
@@ -104,9 +125,26 @@ impl GovernanceDaoContract {
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
+        // Token-weighted average acquisition time: topping up an old balance
+        // dilutes its age, so freshly acquired tokens never inherit a bonus.
+        let now = env.ledger().timestamp();
+        let since: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::HoldSince(recipient.clone()))
+            .unwrap_or(now);
+        let new_total = current + amount;
+        let blended = if new_total > 0 {
+            ((since as i128 * current + now as i128 * amount) / new_total) as u64
+        } else {
+            now
+        };
         env.storage()
             .instance()
-            .set(&DataKey::GovTokenBalance(recipient), &(current + amount));
+            .set(&DataKey::HoldSince(recipient.clone()), &blended);
+        env.storage()
+            .instance()
+            .set(&DataKey::GovTokenBalance(recipient), &new_total);
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(total + amount));
@@ -230,9 +268,23 @@ impl GovernanceDaoContract {
             "Insufficient governance tokens"
         );
 
+        // Sybil resistance: in Quadratic/TimeWeighted modes only tokens held
+        // since before the proposal was created may vote, so splitting freshly
+        // acquired tokens across new addresses gains nothing.
+        if proposal.voting_mode != VotingMode::TokenWeighted {
+            let since = Self::hold_since(env.clone(), voter.clone());
+            assert!(
+                since <= proposal.created_at,
+                "Tokens acquired after proposal creation cannot vote"
+            );
+        }
+
         let weight = match proposal.voting_mode {
             VotingMode::TokenWeighted => token_amount,
             VotingMode::Quadratic => Self::integer_sqrt(token_amount),
+            VotingMode::TimeWeighted => {
+                Self::time_weighted_power(&env, &voter, token_amount, proposal.created_at)
+            }
         };
 
         if support {
@@ -348,6 +400,62 @@ impl GovernanceDaoContract {
             .instance()
             .get(&DataKey::PlatformParam(key))
             .unwrap_or(0)
+    }
+
+    /// Lock tokens for `duration` seconds to gain a voting boost (#1056).
+    /// Locks can only be extended, never shortened or reduced.
+    pub fn lock_tokens(env: Env, voter: Address, amount: i128, duration: u64) -> TokenLock {
+        voter.require_auth();
+        assert!(amount > 0, "Lock amount must be positive");
+        assert!(duration > 0 && duration <= MAX_LOCK_SECONDS, "Invalid lock duration");
+        assert!(
+            Self::token_balance(env.clone(), voter.clone()) >= amount,
+            "Insufficient governance tokens"
+        );
+        let unlock_at = env.ledger().timestamp() + duration;
+        if let Some(existing) = Self::get_lock(env.clone(), voter.clone()) {
+            assert!(amount >= existing.amount, "Cannot reduce locked amount");
+            assert!(unlock_at >= existing.unlock_at, "Cannot shorten lock");
+        }
+        let lock = TokenLock { amount, unlock_at, duration };
+        env.storage().instance().set(&DataKey::Lock(voter), &lock);
+        lock
+    }
+
+    pub fn get_lock(env: Env, voter: Address) -> Option<TokenLock> {
+        env.storage().instance().get(&DataKey::Lock(voter))
+    }
+
+    pub fn hold_since(env: Env, voter: Address) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::HoldSince(voter))
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Current time-weighted voting power for the voter's full balance.
+    pub fn voting_power(env: Env, voter: Address) -> i128 {
+        let balance = Self::token_balance(env.clone(), voter.clone());
+        let now = env.ledger().timestamp();
+        Self::time_weighted_power(&env, &voter, balance, now)
+    }
+
+    /// power = tokens * (100 + hold_bonus + lock_bonus) / 100, where each bonus
+    /// is linear and capped at 100 (so max power is 3x the token amount).
+    fn time_weighted_power(env: &Env, voter: &Address, tokens: i128, as_of: u64) -> i128 {
+        let since = Self::hold_since(env.clone(), voter.clone());
+        let held = as_of.saturating_sub(since).min(MAX_HOLD_SECONDS);
+        let hold_bonus = (held as i128 * 100) / MAX_HOLD_SECONDS as i128;
+
+        let mut weight = tokens * (100 + hold_bonus) / 100;
+        if let Some(lock) = Self::get_lock(env.clone(), voter.clone()) {
+            if lock.unlock_at > env.ledger().timestamp() {
+                let lock_bonus = (lock.duration as i128 * 100) / MAX_LOCK_SECONDS as i128;
+                let boosted = lock.amount.min(tokens);
+                weight += boosted * lock_bonus / 100;
+            }
+        }
+        weight
     }
 
     fn integer_sqrt(n: i128) -> i128 {
