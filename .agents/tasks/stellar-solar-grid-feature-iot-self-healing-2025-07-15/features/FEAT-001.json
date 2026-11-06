@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Self-healing service core: continuous health checks, failure mode detection (service crashes, memory leaks, network loss, cache corruption, MQTT broker unresponsive), and automated recovery actions (restart, clear cache, reconnect, flush state)",
+  "status": "pending",
+  "steps": [
+    "Create backend/src/lib/selfHealing.ts with the core SelfHealingService class. Include: configurable polling interval (SELF_HEALING_POLL_INTERVAL_MS env var, default 5 minutes), in-memory tracking of meter failure states (meter ID -> failure mode, attempt count, last action timestamp), failure detection functions for each mode (service crashes detected via missing heartbeats > threshold, memory leaks via growing response times + error rates, network loss via MQTT disconnect events from mqttClient.isMqttConnected(), cache corruption detection placeholder, MQTT broker unresponsive via connection state), recovery action functions (restartService via MQTT command to meter, clearCache via MQTT command, reconnectNetwork via MQTT command, flushCorruptedState via clearing meter's health state in meterHealth.ts), and a runHealthCheck method that iterates all meters, detects failures, executes recovery actions, and updates attempt counts.",
+    "Create backend/src/types/selfHealing.ts with TypeScript type definitions: FailureMode = 'service_crash' | 'memory_leak' | 'network_loss' | 'cache_corruption' | 'mqtt_broker_unresponsive'; RecoveryAction = 'restart_service' | 'clear_cache' | 'reconnect_network' | 'flush_state'; MeterFailureState = { meterId: string, failureMode: FailureMode, attemptCount: number, lastAttemptAt: number, lastAction: RecoveryAction | null, resolved: boolean }; SelfHealingConfig = { pollIntervalMs: number, maxRecoveryAttempts: number }.",
+    "Add recovery MQTT command publishing to backend/src/lib/selfHealing.ts. Extend publishCommand pattern from backend/src/iot/bridge.ts to publish recovery commands to topics: solargrid/meters/{meterId}/recovery with payloads { action: 'restart' | 'clear_cache' | 'reconnect' | 'flush_state', requestId: string, timestamp: number }. Import getMqttClient from backend/src/iot/mqttClient.ts and use it to publish commands with QoS 1.",
+    "Wire up failure detection in backend/src/lib/selfHealing.ts. Import getMeterHealth and getAllMeterHealth from backend/src/lib/meterHealth.ts. Use classify() logic to detect service_crash (red status = no heartbeat for 24h by default), memory_leak (yellow status + avgResponseTimeMs > threshold), network_loss (check isMqttConnected() from mqttClient). For cache_corruption and mqtt_broker_unresponsive, add placeholder detection that logs 'detection not yet implemented' and returns false.",
+    "Implement the recovery action dispatcher in backend/src/lib/selfHealing.ts. Create executeRecovery(meterId: string, failureMode: FailureMode): Promise<RecoveryAction> that maps each failure mode to its primary recovery action: service_crash -> restart_service, memory_leak -> clear_cache, network_loss -> reconnect_network, cache_corruption -> flush_state, mqtt_broker_unresponsive -> reconnect_network. Return the action taken.",
+    "Add the main health check loop in backend/src/lib/selfHealing.ts. Create startSelfHealingMonitor(config?: Partial<SelfHealingConfig>): void that starts a setInterval polling loop, calls runHealthCheck() each iteration, and logs summary statistics (meters checked, failures detected, actions taken). Include stopSelfHealingMonitor() for cleanup. Store the timer handle in a module-level variable and use unref() to allow graceful shutdown."
+  ],
+  "acceptance_criteria": [
+    "SelfHealingService detects service crashes (missing heartbeats), memory leaks (degraded performance), and network loss (MQTT disconnection)",
+    "Recovery actions (restart, clear cache, reconnect) are dispatched via MQTT commands with proper QoS 1 delivery",
+    "Polling loop runs at configurable interval (default 5 minutes) and does not block the event loop",
+    "Failure states are tracked per meter with attempt counts",
+    "Module exports startSelfHealingMonitor and stopSelfHealingMonitor for lifecycle management"
+  ],
+  "verification": [
+    "cd backend && npm run build -- compiles without errors",
+    "cd backend && npm run test -- all existing tests still pass",
+    "Manually inspect backend/src/lib/selfHealing.ts for correct import paths and type safety"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
