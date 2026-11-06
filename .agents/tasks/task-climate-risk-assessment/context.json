@@ -1,0 +1,27 @@
+{
+  "project_type": "Node.js TypeScript backend (Express) + Next.js/React frontend",
+  "language": "TypeScript (strict mode, no any)",
+  "build_system": "npm workspaces with tsc compilation for backend, next build for frontend",
+  "test_framework": "vitest v1.6.1 for backend (integration tests use *.integration.test.ts naming), jest for frontend",
+  "build_command": "cd backend && npm run build",
+  "test_command": "cd backend && npm run test",
+  "verification_instructions": "1. Build backend: cd backend && npm run build. 2. Run integration tests: cd backend && npm run test. 3. Check climate risk API endpoints respond correctly. 4. Verify frontend builds: cd frontend && npm run build. 5. No TypeScript errors, all tests pass.",
+  "snapshot_or_generated_files": "None - build outputs in dist/ folders are gitignored",
+  "environment_constraints": "Redis (ioredis v6.0) is optional - system must gracefully degrade to SQLite-only mode if Redis unavailable. Never restart dev server on :9001. Climate APIs (Open-Meteo, NASA NEO) are external free-tier services with rate limits (1 req/sec).",
+  "contribution_requirements": "Register climate risk database with databaseLifecycle.js for graceful shutdown. Use winston logger (backend/src/lib/logger.ts). Register routes in backend/src/index.ts. Use asyncHandler pattern for Express routes. All errors sanitized via errorSanitizer.js. Follow existing patterns for SQLite (better-sqlite3 with WAL mode). Integration tests must use *.integration.test.ts naming convention.",
+  "key_patterns": "Services in backend/src/lib/, routes in backend/src/routes/ with asyncHandler, SQLite databases in data/ directory with separate files per domain, Redis cache with graceful degradation, logger.warn/error/info for logging, frontend components in frontend/src/components/ with Tailwind CSS and Recharts for visualization, react-leaflet for maps",
+  "relevant_files": [
+    "backend/src/lib/weather.ts",
+    "backend/src/routes/weather.ts",
+    "backend/src/lib/deviceRegistry.ts",
+    "backend/src/lib/logger.ts",
+    "backend/src/lib/asyncHandler.ts",
+    "backend/src/lib/databaseLifecycle.ts",
+    "backend/src/index.ts",
+    "backend/tests/vpp.integration.test.ts",
+    "backend/package.json",
+    "frontend/package.json",
+    "frontend/src/components/SmartHomeDashboard.tsx"
+  ],
+  "directory_structure": "backend/src/lib/ (business logic services), backend/src/routes/ (Express routers), backend/tests/ (vitest integration tests), backend/data/ (SQLite databases), frontend/src/components/ (React components), docs/ (markdown documentation)"
+}

@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Backend API routes for climate risk endpoints - 6 Express routes with asyncHandler pattern, input validation, error handling, and integration tests",
+  "status": "pending",
+  "steps": [
+    "1. Create backend/src/routes/climateRisk.ts: Import Router from express, asyncHandler from ../lib/asyncHandler.js, logger from ../lib/logger.js, all functions and types from ../lib/climateRisk.js. Export climateRiskRouter = Router().",
+    "2. In climateRisk.ts implement GET /assess/:meterId route using asyncHandler: validate meterId (non-empty, max 32 chars, regex /^[A-Za-z0-9_-]{1,32}$/), call getMeterLocation(meterId), return 404 with 'Meter not registered in device inventory or location coordinates unavailable' if null, call assessMeterRisk(meterId, location), return JSON with meterId, location, scenario, overallRiskScore, breakdown (flood/heatwave/storm), insuranceTier, assessedAt, stale flag.",
+    "3. In climateRisk.ts implement GET /fleet route using asyncHandler: call assessFleetRisk(), return JSON FleetRiskSummary (totalMeters, riskDistribution, averageRiskScore, highRiskMeters, mitigationCoverage, assessedAt). Handle zero meters case (averageRiskScore and mitigationCoverage null).",
+    "4. In climateRisk.ts implement GET /scenarios/:meterId route using asyncHandler: validate meterId, call getScenarioBreakdown(meterId), return 404 if no assessments found, return JSON with meterId and scenarios array (scenario, projectionYear, overallRiskScore, breakdown).",
+    "5. In climateRisk.ts implement POST /refresh/:meterId route using asyncHandler: validate meterId, call getMeterLocation, return 404 if null, try refreshClimateData(meterId, location), return JSON {success: true, assessment}, catch errors and return 503 with 'Climate data unavailable, try again later'.",
+    "6. In climateRisk.ts implement GET /mitigation/:meterId route using asyncHandler: validate meterId, call getMitigationPlans(meterId), return JSON {meterId, plans: array of MitigationPlan objects}.",
+    "7. In climateRisk.ts implement PATCH /mitigation/:mitigationId route using asyncHandler: parse mitigationId as integer, validate status in request body is one of ['pending', 'planned', 'in_progress', 'completed'], return 400 if invalid, call updateMitigationStatus(mitigationId, status), return 404 if null, return updated MitigationPlan object.",
+    "8. Register climateRiskRouter in backend/src/index.ts: import { climateRiskRouter } from './routes/climateRisk.js', add app.use('/api/climate-risk', climateRiskRouter) after other route registrations (follow alphabetical order pattern).",
+    "9. Create backend/tests/climateRisk.integration.test.ts: Import vitest (describe, it, expect, beforeEach), import express app or create test server with climateRiskRouter, import functions from climateRisk.js and deviceRegistry.js. Test: register device with location, GET /assess/:meterId returns 200 with valid structure. Test: GET /fleet with zero devices returns empty summary. Test: PATCH /mitigation/:id updates status and returns updated object. Test: GET /assess/:meterId for unregistered meter returns 404. Test: POST /refresh/:meterId forces fresh assessment (check timestamp updated)."
+  ],
+  "acceptance_criteria": [
+    "All 6 routes implemented with asyncHandler pattern and input validation",
+    "Routes return correct HTTP status codes (200, 404, 400, 503) per design error handling section",
+    "Meter ID validation rejects invalid formats with 400 error",
+    "Routes registered in backend/src/index.ts and accessible at /api/climate-risk/* paths",
+    "Integration tests cover happy path, error cases (404, invalid input), and edge cases (zero meters)",
+    "All integration tests pass: cd backend && npm run test"
+  ],
+  "verification": [
+    "cd backend && npm run build - compiles without errors",
+    "cd backend && npm run test - all integration tests pass",
+    "Check backend/src/index.ts includes app.use('/api/climate-risk', climateRiskRouter)",
+    "Manually curl backend: curl http://localhost:3001/api/climate-risk/fleet (requires backend running) - returns JSON fleet summary"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

@@ -1,0 +1,37 @@
+{
+  "id": "FEAT-004",
+  "type": "docs",
+  "description": "Comprehensive documentation in docs/CLIMATE_RISK.md covering system overview, architecture, API reference, risk methodology, climate data sources, frontend usage, troubleshooting, deployment, and testing",
+  "status": "pending",
+  "steps": [
+    "1. Create docs/CLIMATE_RISK.md with Overview section: explain what the climate risk assessment system does (assesses flood/heatwave/storm risks for solar meters), why it matters (insurance planning, mitigation recommendations), key capabilities (4 climate scenarios, insurance tier assignment, resilience planning).",
+    "2. Add Architecture section: describe module responsibilities (climateData.ts fetches and caches, climateRisk.ts calculates scores, climateRisk routes expose API, frontend dashboard visualizes), include mermaid diagram showing data flow from climate APIs → cache → risk engine → API → frontend, mention separate SQLite database and Redis cache with graceful degradation.",
+    "3. Add API Reference section: document all 6 endpoints (GET /assess/:meterId, GET /fleet, GET /scenarios/:meterId, POST /refresh/:meterId, GET /mitigation/:meterId, PATCH /mitigation/:mitigationId) with HTTP method, path, query/body parameters, response schemas (JSON examples from design), error codes (400/404/503), curl examples.",
+    "4. Add Risk Scoring Methodology section: explain exposure score formulas for each hazard type (flood: precipitation + elevation penalty, heatwave: temp anomaly scaled, storm: wind speed or precipitation fallback), show overall risk score calculation (weighted average), document insurance tier thresholds (low <30, moderate <55, high <75, critical ≥75), explain worst-case scenario selection (highest score across RCP4.5/RCP8.5/SSP2/SSP5).",
+    "5. Add Mitigation Recommendations section: create table mapping hazard type to recommendations (flood→elevation/flood_barrier, heatwave→cooling_system/shading, storm→hardening/storm_shutters), include priority thresholds, cost estimates, implementation timelines from design.",
+    "6. Add Climate Data Sources section: list primary (Open-Meteo Climate API), secondary (NASA NEO), tertiary (NOAA CDO - optional), document rate limits (1 req/sec), cache strategy (Redis 24h TTL, SQLite fallback), API endpoint URLs, required/optional parameters, data completeness scenarios (minimum viable: temp+precip, full: +elevation+wind).",
+    "7. Add Frontend Usage Guide section: describe how to access dashboard (URL path), interpret risk distribution chart, read map marker colors (insurance tier color coding), open meter detail modal, view scenario comparison, update mitigation status, screenshots or ASCII diagrams of key UI views, explain stale data indicator and retry button.",
+    "8. Add Troubleshooting section: document common errors (meter location unavailable→register device with lat/lon coordinates in JSON or CSV format, API unavailable→system serves stale cache with warning banner, cache stale→click refresh button, Redis connection failed→system auto-degrades to SQLite-only mode), include example error messages and solutions, log file locations (logs/error.log, logs/combined.log).",
+    "9. Add Deployment section: list required environment variables (REDIS_HOST, REDIS_PORT, REDIS_PASSWORD all optional with defaults, NOAA_API_KEY optional), optional CLIMATE_RISK_DB_PATH for custom database location, explain Redis is optional (graceful degradation), document meter location format requirements (operators must provide numeric coordinates, not text addresses), database auto-initialization on first run.",
+    "10. Add Testing section: document how to run unit tests (cd backend && npm run test), integration tests (npm run test runs *.integration.test.ts files), describe test fixtures location (backend/tests/fixtures/), explain mock data setup for climate API responses, document manual testing steps (register device, assess risk, verify response structure)."
+  ],
+  "acceptance_criteria": [
+    "docs/CLIMATE_RISK.md exists and covers all 10 required sections from design",
+    "API reference includes curl examples and JSON response schemas for all 6 endpoints",
+    "Risk scoring formulas documented with exact weights and thresholds",
+    "Climate data sources listed with rate limits and cache strategy explained",
+    "Troubleshooting section addresses all common error scenarios from design error handling section",
+    "Deployment section documents all environment variables and their defaults",
+    "Testing section provides complete instructions for running and writing tests",
+    "Markdown formatting is correct (headers, code blocks, tables, lists), renders properly in GitHub"
+  ],
+  "verification": [
+    "Check docs/CLIMATE_RISK.md exists at project root",
+    "Verify all section headers present: Overview, Architecture, API Reference, Risk Scoring Methodology, Mitigation Recommendations, Climate Data Sources, Frontend Usage Guide, Troubleshooting, Deployment, Testing",
+    "Count endpoint documentation entries - should be 6 endpoints with curl examples",
+    "Check markdown linting: npx markdownlint docs/CLIMATE_RISK.md (if available) or manual review",
+    "Render in markdown viewer to check formatting, tables, code blocks display correctly"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

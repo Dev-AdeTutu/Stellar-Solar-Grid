@@ -1,0 +1,35 @@
+{
+  "id": "FEAT-003",
+  "type": "feat",
+  "description": "Frontend climate risk dashboard with React/Next.js components, Leaflet map visualization, Recharts graphs, mitigation checklist, and error handling with retry",
+  "status": "pending",
+  "steps": [
+    "1. Create frontend/src/components/ClimateRiskDashboard.tsx: Import React hooks (useState, useEffect), FleetRiskMap, RiskDistributionChart, MeterRiskDetail. Define DashboardState type (fleetSummary, selectedMeterId, loading, error, retryCount). Implement component that fetches from /api/climate-risk/fleet on mount, handles loading/error states with retry button (increments retryCount), displays error banner with bg-red-100 border-red-400, renders metrics summary cards, RiskDistributionChart, FleetRiskMap with onMeterSelect callback, conditionally renders MeterRiskDetail modal when selectedMeterId is set.",
+    "2. Create frontend/src/components/FleetRiskMap.tsx: Import react-leaflet (MapContainer, TileLayer, Marker, Popup), leaflet types. Define FleetRiskMapProps type. Implement component that renders Leaflet map centered on fleet centroid, creates markers for each meter color-coded by insuranceTier (low=green, moderate=yellow, high=orange, critical=red), adds click handler that calls onMeterSelect(meterId), shows meter ID and risk score in popup.",
+    "3. Create frontend/src/components/RiskDistributionChart.tsx: Import Recharts (PieChart, Pie, Cell, Tooltip, Legend). Define props type with riskDistribution object. Implement component that renders pie chart with 4 slices (low, moderate, high, critical) using Recharts, colors match map marker colors, tooltip shows count and percentage, legend displays tier names.",
+    "4. Create frontend/src/components/MeterRiskDetail.tsx: Import React hooks, ScenarioComparisonChart, MitigationList, InsuranceTierBadge. Define props (meterId, onClose). Implement modal overlay with semi-transparent backdrop (bg-black bg-opacity-50), modal content with white bg and rounded corners, close button (X) in top-right, ESC key handler, backdrop click handler. On mount fetch /api/climate-risk/assess/:meterId and /api/climate-risk/scenarios/:meterId, display loading spinner, show error if fetch fails, render meter ID, InsuranceTierBadge, overall risk score, ScenarioComparisonChart, MitigationList.",
+    "5. Create frontend/src/components/ScenarioComparisonChart.tsx: Import Recharts (BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid). Define props with scenarios array. Implement component that renders grouped bar chart with X-axis=scenario name, Y-axis=risk score (0-100), three bars per scenario (flood=blue, heatwave=red, storm=purple), tooltip shows exact values, responsive container.",
+    "6. Create frontend/src/components/MitigationList.tsx: Import React hooks. Define props (plans array, onUpdate callback). Implement component that sorts plans by priority (critical>high>medium>low), renders each as list item with priority badge (critical=red, high=orange, medium=yellow, low=gray), hazard icon (🌊 flood, 🌡️ heatwave, ⛈️ storm), recommendation text, cost estimate (format as USD), status dropdown (pending/planned/in_progress/completed) that calls onUpdate on change. Show completed items collapsed by default with expand button.",
+    "7. Create frontend/src/components/InsuranceTierBadge.tsx: Define props (tier: string). Implement component that renders styled span badge with tier text, color-coded background (low=green-100/text-green-800, moderate=yellow-100/text-yellow-800, high=orange-100/text-orange-800, critical=red-100/text-red-800), rounded padding, bold font.",
+    "8. Update MeterRiskDetail.tsx to implement PATCH /api/climate-risk/mitigation/:mitigationId when user changes status in MitigationList, handle API errors with toast notification or inline error message, optimistic UI update then revert on error.",
+    "9. Add ClimateRiskDashboard to main frontend navigation or create new page in frontend/src/app/climate-risk/page.tsx (Next.js 14 app directory) that renders <ClimateRiskDashboard />. Ensure leaflet CSS imported ('leaflet/dist/leaflet.css') in layout or page."
+  ],
+  "acceptance_criteria": [
+    "ClimateRiskDashboard component fetches fleet data, displays loading/error states with retry functionality",
+    "FleetRiskMap renders Leaflet map with color-coded meter markers by insurance tier",
+    "Clicking meter marker opens MeterRiskDetail modal with scenario comparison chart and mitigation list",
+    "ScenarioComparisonChart uses Recharts to visualize flood/heatwave/storm scores per scenario",
+    "MitigationList allows status updates via dropdown, sends PATCH request to backend",
+    "Modal closes on ESC key, backdrop click, or X button click",
+    "All components use Tailwind CSS classes for styling consistent with existing frontend",
+    "Frontend builds without errors: cd frontend && npm run build"
+  ],
+  "verification": [
+    "cd frontend && npm run build - compiles without errors",
+    "Check frontend/src/components/ contains all 7 new component files",
+    "Manually test in dev mode: npm run dev, navigate to climate risk dashboard, verify map renders, click meter marker opens modal",
+    "Verify error handling: disconnect backend, click retry button, check error banner displays"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

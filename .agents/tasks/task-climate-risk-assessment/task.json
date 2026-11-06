@@ -1,0 +1,7 @@
+{
+  "task_id": "task-climate-risk-assessment",
+  "task_description": "Implement climate risk assessment system for solar infrastructure with backend climate data integration, risk modeling, API endpoints, frontend dashboard, and documentation",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002", "FEAT-003", "FEAT-004"],
+  "blocked_reason": null
+}
