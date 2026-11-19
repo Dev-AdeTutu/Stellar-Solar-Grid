@@ -60,7 +60,12 @@ export function MeterSearchBar({
             ref={inputRef}
             type="text"
             value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              // Treat empty or whitespace-only input as "no filter" so the
+              // parent resets to the full unfiltered meter list.
+              onSearchChange(value.trim() === "" ? "" : value);
+            }}
             placeholder="Search meters by ID, nickname, location, or status... (Ctrl+K)"
             className="w-full rounded-lg border border-white/15 bg-solar-dark py-2 pl-9 pr-16 text-sm text-white placeholder-gray-500 focus:border-solar-yellow focus:outline-none focus:ring-1 focus:ring-solar-yellow transition"
             aria-label="Search meters"
@@ -106,7 +111,7 @@ export function MeterSearchBar({
       </div>
 
       {/* Filter Stats Bar */}
-      {(searchQuery || statusFilter !== "all") && (
+      {(searchQuery.trim() !== "" || statusFilter !== "all") && (
         <div className="flex items-center justify-between text-xs text-gray-400 pt-1 border-t border-white/5">
           <span>
             Showing <strong className="text-solar-yellow">{filteredCount}</strong> of{" "}
