@@ -274,19 +274,33 @@ function UserManagementPanel() {
   const [page, setPage] = useState(1);
   const [statusFilter, setStatusFilter] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
   const load = useCallback(async () => {
     const params = new URLSearchParams({ page: String(page), per_page: "10" });
     if (statusFilter) params.set("status", statusFilter);
-    const res = await fetch(`${API}/api/admin/dashboard/users?${params}`, { headers: authHeaders() });
-    if (!res.ok) return;
-    const data = await res.json();
-    setUsers(data.users ?? []);
-    setTotal(data.total ?? 0);
+    try {
+      const res = await fetch(`${API}/api/admin/dashboard/users?${params}`, { headers: authHeaders() });
+      if (!res.ok) return;
+      const data = await res.json();
+      setUsers(data.users ?? []);
+      setTotal(data.total ?? 0);
+    } finally {
+      setLoading(false);
+    }
   }, [page, statusFilter]);
 
   useEffect(() => { load(); }, [load]);
+
+  function handleStatusFilterChange(value: string) {
+    // Clear stale results and show the skeleton instantly, before the fetch runs.
+    setUsers([]);
+    setTotal(0);
+    setLoading(true);
+    setPage(1);
+    setStatusFilter(value);
+  }
 
   async function handleSuspend(userId: string) {
     setBusy(true);
@@ -333,7 +347,7 @@ function UserManagementPanel() {
         <h2 className="text-lg font-semibold">User Management</h2>
         <select
           value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+          onChange={(e) => handleStatusFilterChange(e.target.value)}
           className="rounded-lg border border-white/10 bg-transparent px-3 py-1 text-xs"
         >
           <option value="">All statuses</option>
@@ -355,10 +369,21 @@ function UserManagementPanel() {
             </tr>
           </thead>
           <tbody>
-            {users.length === 0 && (
+            {loading && (
+              Array.from({ length: 5 }).map((_, i) => (
+                <tr key={`skeleton-${i}`} className="border-t border-white/5">
+                  {Array.from({ length: 6 }).map((__, j) => (
+                    <td key={j} className="px-3 py-2">
+                      <div className="h-3 w-full animate-pulse rounded bg-white/10" />
+                    </td>
+                  ))}
+                </tr>
+              ))
+            )}
+            {!loading && users.length === 0 && (
               <tr><td colSpan={6} className="px-3 py-4 text-center opacity-60">No users found.</td></tr>
             )}
-            {users.map((u) => (
+            {!loading && users.map((u) => (
               <tr key={u.id} className="border-t border-white/5 hover:bg-white/5">
                 <td className="px-3 py-2 font-mono text-xs opacity-70">{u.id}</td>
                 <td className="px-3 py-2 font-mono text-xs">{u.walletAddress.slice(0, 12)}…</td>
@@ -394,9 +419,9 @@ function UserManagementPanel() {
       <div className="flex items-center justify-between mt-3 text-xs opacity-60">
         <span>{total} total users</span>
         <div className="flex gap-2">
-          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="px-2 py-0.5 border border-white/10 rounded disabled:opacity-30">←</button>
+          <button onClick={() => { setLoading(true); setPage((p) => Math.max(1, p - 1)); }} disabled={page === 1 || loading} className="px-2 py-0.5 border border-white/10 rounded disabled:opacity-30">←</button>
           <span>Page {page}</span>
-          <button onClick={() => setPage((p) => p + 1)} disabled={users.length < 10} className="px-2 py-0.5 border border-white/10 rounded disabled:opacity-30">→</button>
+          <button onClick={() => { setLoading(true); setPage((p) => p + 1); }} disabled={users.length < 10 || loading} className="px-2 py-0.5 border border-white/10 rounded disabled:opacity-30">→</button>
         </div>
       </div>
     </div>

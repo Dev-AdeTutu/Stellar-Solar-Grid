@@ -1,6 +1,39 @@
 import React, { useState } from 'react';
+import { keccak256 } from 'ethers';
 
 export type SupportedChain = 'Stellar' | 'Ethereum' | 'Polygon' | 'Arbitrum';
+
+/**
+ * Validates an Ethereum address against the EIP-55 mixed-case checksum.
+ * Returns an error message string, or null when the address is valid.
+ */
+export const validateEthereumAddress = (address: string): string | null => {
+  const trimmed = address.trim();
+  if (!trimmed) return 'Ethereum address is required.';
+  if (!/^0x[0-9a-fA-F]{40}$/.test(trimmed)) {
+    return 'Ethereum address must be 42 characters: 0x followed by 40 hex digits.';
+  }
+
+  const body = trimmed.slice(2);
+  // All-lowercase / all-uppercase inputs carry no checksum information.
+  if (body === body.toLowerCase() || body === body.toUpperCase()) {
+    return 'Address must use EIP-55 mixed-case checksum.';
+  }
+
+  const hash = keccak256(new TextEncoder().encode(body.toLowerCase())).slice(2);
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (/[0-9]/.test(char)) continue;
+    const shouldBeUpper = parseInt(hash[i], 16) >= 8;
+    if (shouldBeUpper && char !== char.toUpperCase()) {
+      return 'Invalid EIP-55 checksum. Please verify the address.';
+    }
+    if (!shouldBeUpper && char !== char.toLowerCase()) {
+      return 'Invalid EIP-55 checksum. Please verify the address.';
+    }
+  }
+  return null;
+};
 
 export const CrossChainBridgePortal: React.FC = () => {
   const [selectedChain, setSelectedChain] = useState<SupportedChain>('Polygon');
@@ -12,6 +45,8 @@ export const CrossChainBridgePortal: React.FC = () => {
   });
   const [amount, setAmount] = useState<number>(100);
   const [meterId, setMeterId] = useState<string>('MTR-SOLAR-8821');
+  const [ethereumAddress, setEthereumAddress] = useState<string>('');
+  const [addressError, setAddressError] = useState<string | null>(null);
   const [txHistory, setTxHistory] = useState<string[]>([
     'Wrapped 300 SOLAR -> Polygon (wSOLAR)',
     'Cross-Chain Payment: 85 wSOLAR from Ethereum to MTR-SOLAR-4410',
@@ -19,7 +54,22 @@ export const CrossChainBridgePortal: React.FC = () => {
 
   const unifiedBalance = Object.values(balances).reduce((acc, v) => acc + v, 0);
 
+  const requiresEthereumAddress = selectedChain === 'Ethereum';
+
+  const isAddressValid = (): boolean => {
+    if (!requiresEthereumAddress) return true;
+    const error = validateEthereumAddress(ethereumAddress);
+    setAddressError(error);
+    return error === null;
+  };
+
+  const handleAddressBlur = () => {
+    if (!requiresEthereumAddress) return;
+    setAddressError(validateEthereumAddress(ethereumAddress));
+  };
+
   const handleWrap = () => {
+    if (!isAddressValid()) return;
     if (balances.Stellar < amount || amount <= 0) return;
     setBalances((prev) => ({
       ...prev,
@@ -30,6 +80,7 @@ export const CrossChainBridgePortal: React.FC = () => {
   };
 
   const handleUnwrap = () => {
+    if (!isAddressValid()) return;
     if (balances[selectedChain] < amount || amount <= 0) return;
     setBalances((prev) => ({
       ...prev,
@@ -40,6 +91,7 @@ export const CrossChainBridgePortal: React.FC = () => {
   };
 
   const handleCrossChainPayment = () => {
+    if (!isAddressValid()) return;
     if (balances[selectedChain] < amount || amount <= 0) return;
     setBalances((prev) => ({
       ...prev,
@@ -98,6 +150,30 @@ export const CrossChainBridgePortal: React.FC = () => {
             </select>
           </div>
           <div>
+            <label className="block text-xs font-medium mb-1">Ethereum Address (EIP-55)</label>
+            <input
+              value={ethereumAddress}
+              onChange={(e) => {
+                setEthereumAddress(e.target.value);
+                if (addressError) setAddressError(null);
+              }}
+              onBlur={handleAddressBlur}
+              placeholder="0x..."
+              aria-invalid={addressError !== null}
+              className={`w-full border rounded px-2 py-1.5 text-sm font-mono ${
+                addressError ? 'border-red-500' : ''
+              }`}
+            />
+            {addressError && (
+              <p className="text-xs text-red-600 mt-1" role="alert">
+                {addressError}
+              </p>
+            )}
+            {requiresEthereumAddress && !addressError && ethereumAddress && (
+              <p className="text-xs text-emerald-600 mt-1">Valid EIP-55 checksum.</p>
+            )}
+          </div>
+          <div>
             <label className="block text-xs font-medium mb-1">Amount (SOLAR)</label>
             <input
               type="number"
@@ -110,13 +186,15 @@ export const CrossChainBridgePortal: React.FC = () => {
           <div className="flex gap-2">
             <button
               onClick={handleWrap}
-              className="flex-1 bg-indigo-600 text-white rounded py-2 text-xs font-semibold"
+              disabled={requiresEthereumAddress && validateEthereumAddress(ethereumAddress) !== null}
+              className="flex-1 bg-indigo-600 text-white rounded py-2 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Wrap Stellar → {selectedChain}
             </button>
             <button
               onClick={handleUnwrap}
-              className="flex-1 bg-gray-800 text-white rounded py-2 text-xs font-semibold"
+              disabled={requiresEthereumAddress && validateEthereumAddress(ethereumAddress) !== null}
+              className="flex-1 bg-gray-800 text-white rounded py-2 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Unwrap {selectedChain} → Stellar
             </button>
@@ -139,7 +217,8 @@ export const CrossChainBridgePortal: React.FC = () => {
           </p>
           <button
             onClick={handleCrossChainPayment}
-            className="w-full bg-emerald-600 text-white rounded py-2 text-xs font-semibold"
+            disabled={requiresEthereumAddress && validateEthereumAddress(ethereumAddress) !== null}
+            className="w-full bg-emerald-600 text-white rounded py-2 text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Pay {amount} wSOLAR from {selectedChain}
           </button>
