@@ -7,6 +7,30 @@ import { isContractPaused } from "@/lib/contract";
 const POLL_INTERVAL_MS = 30_000;
 
 /**
+ * Event name emitted whenever the contract pause state is observed to change
+ * (e.g. via a WebSocket subscription or another component's poll). The detail
+ * carries the latest paused value.
+ */
+export const CONTRACT_PAUSE_STATE_EVENT = "contract:pause-state";
+
+export interface ContractPauseStateDetail {
+  paused: boolean;
+}
+
+/**
+ * Broadcasts the latest contract pause state to any listeners (such as the
+ * pause banner) so the UI can react without waiting for the next poll.
+ */
+export function emitContractPauseState(paused: boolean) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<ContractPauseStateDetail>(CONTRACT_PAUSE_STATE_EVENT, {
+      detail: { paused },
+    }),
+  );
+}
+
+/**
  * Shows a global warning while the on-chain contract pause is active.
  *
  * The initial query and polling are deliberately best-effort: a temporary RPC
@@ -32,12 +56,21 @@ export function ContractPauseBanner() {
       }
     };
 
+    const handlePauseStateEvent = (event: Event) => {
+      const detail = (event as CustomEvent<ContractPauseStateDetail>).detail;
+      if (!mounted || !detail || typeof detail.paused !== "boolean") return;
+      setPaused(detail.paused);
+      setChecked(true);
+    };
+
     void checkPauseState();
     const interval = window.setInterval(() => void checkPauseState(), POLL_INTERVAL_MS);
+    window.addEventListener(CONTRACT_PAUSE_STATE_EVENT, handlePauseStateEvent);
 
     return () => {
       mounted = false;
       window.clearInterval(interval);
+      window.removeEventListener(CONTRACT_PAUSE_STATE_EVENT, handlePauseStateEvent);
     };
   }, []);
 

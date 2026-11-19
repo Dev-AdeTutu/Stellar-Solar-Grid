@@ -15,14 +15,42 @@ const SOURCES = [
   { key: "unknown", label: "Unreported", color: "#9ca3af" },
 ] as const;
 
+// Largest-remainder rounding: displayed shares (in tenths of a percent) sum to exactly 1000.
+export function roundPercentagesToHundred(
+  percentages: Record<"solar" | "grid" | "battery" | "unknown", number>,
+): Record<"solar" | "grid" | "battery" | "unknown", number> {
+  const entries = SOURCES.map(source => {
+    const scaled = (percentages[source.key] ?? 0) * 10;
+    const floored = Math.floor(scaled);
+    return { key: source.key, floored, remainder: scaled - floored };
+  });
+  const totalTenths = entries.reduce((sum, entry) => sum + entry.floored, 0);
+  let remaining = 1000 - totalTenths;
+  const byRemainder = [...entries].sort((a, b) => b.remainder - a.remainder);
+  const tenths: Record<string, number> = {};
+  for (const entry of entries) tenths[entry.key] = entry.floored;
+  for (let i = 0; remaining > 0 && byRemainder.length > 0; i = (i + 1) % byRemainder.length) {
+    tenths[byRemainder[i].key] += 1;
+    remaining -= 1;
+  }
+  return {
+    solar: tenths.solar / 10,
+    grid: tenths.grid / 10,
+    battery: tenths.battery / 10,
+    unknown: tenths.unknown / 10,
+  };
+}
+
 export function EnergyMixChart({ mix }: { mix: EnergyMix }) {
+  const shares = roundPercentagesToHundred(mix.percentages);
   let start = 0;
   const gradient = SOURCES.map(source => {
-    const end = start + mix.percentages[source.key];
+    const end = start + shares[source.key];
     const segment = `${source.color} ${start}% ${end}%`;
     start = end;
     return segment;
   }).join(",");
+=======
   if (!mix.hasData) return <p>No energy readings available. No source percentages can be inferred.</p>;
   return <figure className="flex flex-wrap gap-6 items-center">
     <div role="img" aria-label={`Energy source pie chart for ${mix.meterId}; exact values in source breakdown table`} className="w-40 h-40 rounded-full shrink-0" style={{ background: `conic-gradient(${gradient})` }} />
@@ -31,7 +59,7 @@ export function EnergyMixChart({ mix }: { mix: EnergyMix }) {
       <thead><tr><th scope="col" className="pr-6">Source</th><th scope="col" className="pr-6">Energy (kWh)</th><th scope="col">Share</th></tr></thead>
       <tbody>{SOURCES.map(source => <tr key={source.key}>
         <th scope="row" className="pr-6 py-1"><span aria-hidden="true" style={{ backgroundColor: source.color }} className="inline-block w-3 h-3 mr-2" />{source.label}</th>
-        <td className="pr-6">{(mix.units[source.key] / 1000).toFixed(3)}</td><td>{mix.percentages[source.key].toFixed(2)}%</td>
+        <td className="pr-6">{(mix.units[source.key] / 1000).toFixed(3)}</td><td>{shares[source.key].toFixed(1)}%</td>
       </tr>)}</tbody>
     </table>
     <figcaption className="w-full text-sm text-gray-400">{mix.readings} locally received readings. Pending billing is included; this is device-reported attribution, not verified renewable certification.</figcaption>
