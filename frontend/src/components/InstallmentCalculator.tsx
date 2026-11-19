@@ -80,9 +80,17 @@ const InstallmentCalculator: React.FC<InstallmentCalculatorProps> = ({
     installments >= MIN_INSTALLMENTS &&
     installments <= MAX_INSTALLMENTS;
 
-  const perInstallment = useMemo(() => {
-    if (!isValid) return 0;
-    return total / installments;
+  const { perInstallment, finalInstallment } = useMemo(() => {
+    if (!isValid) return { perInstallment: 0, finalInstallment: 0 };
+    const totalInCents = Math.round(total * 100);
+    const regularInCents = Math.round(totalInCents / installments);
+    const finalInCents = Math.round(
+      totalInCents - regularInCents * (installments - 1)
+    );
+    return {
+      perInstallment: regularInCents / 100,
+      finalInstallment: finalInCents / 100,
+    };
   }, [isValid, total, installments]);
 
   const schedule = useMemo<ScheduleEntry[]>(() => {
@@ -95,11 +103,11 @@ const InstallmentCalculator: React.FC<InstallmentCalculatorProps> = ({
       entries.push({
         index: i + 1,
         dueDate,
-        amount: perInstallment,
+        amount: i === installments - 1 ? finalInstallment : perInstallment,
       });
     }
     return entries;
-  }, [isValid, installments, perInstallment]);
+  }, [isValid, installments, perInstallment, finalInstallment]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -211,6 +219,14 @@ const InstallmentCalculator: React.FC<InstallmentCalculatorProps> = ({
             </span>
             <span className="installment-calculator__value">
               {isValid ? formatCurrency(perInstallment) : '—'}
+            </span>
+          </div>
+          <div>
+            <span className="installment-calculator__label">
+              Final installment
+            </span>
+            <span className="installment-calculator__value">
+              {isValid ? formatCurrency(finalInstallment) : '—'}
             </span>
           </div>
           <div>
