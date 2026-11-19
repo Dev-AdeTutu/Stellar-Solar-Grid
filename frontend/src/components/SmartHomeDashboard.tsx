@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 interface CircuitItem {
   circuitId: string;
@@ -61,10 +61,18 @@ export const SmartHomeDashboard: React.FC = () => {
   const [drLoading, setDrLoading] = useState(true);
   const [drError, setDrError] = useState<string | null>(null);
 
+  const circuitToggleInFlight = useRef<Set<string>>(new Set());
+
   const toggleCircuit = (id: string) => {
+    // Ignore duplicate/rapid events for the same circuit in the same turn.
+    if (circuitToggleInFlight.current.has(id)) return;
+    circuitToggleInFlight.current.add(id);
     setCircuits((prev) =>
       prev.map((c) => (c.circuitId === id ? { ...c, isOn: !c.isOn } : c))
     );
+    setTimeout(() => {
+      circuitToggleInFlight.current.delete(id);
+    }, 0);
   };
 
   const loadDemandResponse = useCallback(async () => {
@@ -194,6 +202,7 @@ export const SmartHomeDashboard: React.FC = () => {
                 </p>
               </div>
               <button
+                type="button"
                 onClick={() => toggleCircuit(c.circuitId)}
                 className={`px-4 py-1.5 rounded text-xs font-semibold ${
                   c.isOn ? 'bg-green-600 text-white' : 'bg-gray-200 text-gray-700'

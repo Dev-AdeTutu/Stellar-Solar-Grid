@@ -3,6 +3,20 @@
 import { useEffect, useState } from "react";
 import { useWalletStore } from "@/store/walletStore";
 
+const DISMISSAL_KEY_PREFIX = "network-mismatch-dismissed:";
+
+const dismissalKey = (message: string) => `${DISMISSAL_KEY_PREFIX}${message}`;
+
+// Guard both SSR and environments where localStorage is blocked/unavailable.
+const wasDismissed = (message?: string | null): boolean => {
+  if (!message || typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(dismissalKey(message)) === "true";
+  } catch {
+    return false;
+  }
+};
+
 /**
  * NetworkMismatchBanner (#575)
  *
@@ -22,13 +36,24 @@ export function NetworkMismatchBanner() {
   const address = useWalletStore((s) => s.address);
   const kit = useWalletStore((s) => s.kit);
   const networkError = useWalletStore((s) => s.networkError);
-  const [dismissed, setDismissed] = useState(false);
+  const [dismissed, setDismissed] = useState(() => wasDismissed(networkError));
 
-  // Reset dismissed state whenever the mismatch message changes so a new
-  // mismatch after a re-connect surfaces again.
+  // Reset the in-memory flag whenever the mismatch message changes, while
+  // still honouring a stored dismissal for that specific message. A different
+  // mismatch has no stored flag, so it surfaces again after a re-connect.
   useEffect(() => {
-    setDismissed(false);
+    setDismissed(wasDismissed(networkError));
   }, [networkError]);
+
+  const dismiss = () => {
+    setDismissed(true);
+    if (!networkError || typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(dismissalKey(networkError), "true");
+    } catch {
+      // In-memory dismissal still applies when storage is unavailable.
+    }
+  };
 
   // Subscribe to wallet-kit network/account-change events so the banner
   // dismisses automatically when the user switches to the expected network.
@@ -87,7 +112,7 @@ export function NetworkMismatchBanner() {
         </span>
       </span>
       <button
-        onClick={() => setDismissed(true)}
+        onClick={dismiss}
         aria-label="Dismiss network mismatch warning"
         className="shrink-0 text-yellow-400 hover:text-white transition"
       >

@@ -37,8 +37,15 @@ const formatCurrency = (value: number): string => {
   if (!Number.isFinite(value)) return '—';
   return value.toLocaleString(undefined, {
     minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 6,
   });
+};
+
+// Decimal-safe parsing: fractional prices such as 0.001 must keep their
+// fractional part, and invalid input must stay non-finite for validation.
+const parseDecimal = (value: string | number): number => {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 };
 
 const CarbonMarketplace: React.FC<CarbonMarketplaceProps> = ({
@@ -135,8 +142,8 @@ const CarbonMarketplace: React.FC<CarbonMarketplaceProps> = ({
       return;
     }
 
-    const amount = Number(listAmount);
-    const pricePerCredit = Number(listPrice);
+    const amount = parseDecimal(listAmount);
+    const pricePerCredit = parseDecimal(listPrice);
 
     if (!Number.isFinite(amount) || amount <= 0) {
       setStatus({ type: 'error', text: 'Enter a valid credit amount greater than zero.' });
@@ -199,8 +206,8 @@ const CarbonMarketplace: React.FC<CarbonMarketplaceProps> = ({
       return;
     }
 
-    const amount = Number(bidAmount);
-    const pricePerCredit = Number(bidPrice);
+    const amount = parseDecimal(bidAmount);
+    const pricePerCredit = parseDecimal(bidPrice);
 
     if (!Number.isFinite(amount) || amount <= 0) {
       setStatus({ type: 'error', text: 'Enter a valid bid amount greater than zero.' });
@@ -244,7 +251,8 @@ const CarbonMarketplace: React.FC<CarbonMarketplaceProps> = ({
     }
   };
 
-  const handlePurchase = async (listing: CarbonListing, amount: number) => {
+  const handlePurchase = async (listing: CarbonListing, requestedAmount: number) => {
+    const amount = parseDecimal(requestedAmount);
     resetStatus();
 
     if (!isConnected) {
@@ -598,7 +606,7 @@ const ListingRow: React.FC<ListingRowProps> = ({
     setAmount(String(listing.amount));
   }, [listing.amount]);
 
-  const parsedAmount = Number(amount);
+  const parsedAmount = parseDecimal(amount);
   const total =
     Number.isFinite(parsedAmount) && parsedAmount > 0
       ? parsedAmount * listing.pricePerCredit
