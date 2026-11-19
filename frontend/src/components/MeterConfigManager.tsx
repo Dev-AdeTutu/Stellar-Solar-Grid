@@ -17,6 +17,7 @@ export function MeterConfigManager({ meterId, adminKey }: { meterId: string; adm
   const [versions, setVersions] = useState<ConfigVersion[]>([]);
   const [target, setTarget] = useState("");
   const [message, setMessage] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch(`${BACKEND_URL}/api/meter-config/${encodeURIComponent(meterId)}/versions`);
@@ -26,7 +27,11 @@ export function MeterConfigManager({ meterId, adminKey }: { meterId: string; adm
   useEffect(() => { load(); }, [load]);
 
   async function restore(version: number) {
-    if (!target) return setMessage("Enter a replacement meter ID");
+    if (!target.trim()) {
+      setValidationError("Replacement meter ID is required");
+      return;
+    }
+    setValidationError(null);
     const res = await fetch(`${BACKEND_URL}/api/meter-config/${encodeURIComponent(target)}/restore`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(adminKey ? { "X-Admin-Key": adminKey } : {}) },
@@ -40,8 +45,17 @@ export function MeterConfigManager({ meterId, adminKey }: { meterId: string; adm
       <h3>Configuration backups — {meterId}</h3>
       <label>
         Replacement meter ID{" "}
-        <input value={target} onChange={(e) => setTarget(e.target.value)} placeholder="METER-002" />
+        <input
+          value={target}
+          onChange={(e) => {
+            setTarget(e.target.value);
+            if (e.target.value.trim()) setValidationError(null);
+          }}
+          placeholder="METER-002"
+          aria-invalid={validationError ? true : undefined}
+        />
       </label>
+      {validationError && <p role="alert">{validationError}</p>}
       {message && <p role="status">{message}</p>}
       {versions.length === 0 ? (
         <p>No backups yet.</p>
