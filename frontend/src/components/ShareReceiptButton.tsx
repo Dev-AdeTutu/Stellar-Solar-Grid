@@ -8,6 +8,7 @@ import {
   downloadPaymentReceipt,
   getReceiptImageBlob,
   getReceiptPdfBlob,
+  getReceiptPermalink,
   receiptFilenameStem,
 } from "@/lib/receipt";
 import type { PaymentRecord } from "@/services/paymentService";
@@ -77,6 +78,7 @@ export default function ShareReceiptButton({ record, explorerUrl, className }: P
 
   const canNativeShare = typeof navigator !== "undefined" && typeof navigator.share === "function";
   const shareText = `Payment receipt — ${record.amountXlm.toFixed(4)} XLM for meter ${record.meterId}`;
+  const permalink = getReceiptPermalink(record.id);
 
   useEffect(() => {
     if (!open) return;
@@ -111,7 +113,7 @@ export default function ShareReceiptButton({ record, explorerUrl, className }: P
   async function shareNative() {
     await withBusy("native", async () => {
       if (navigator.share) {
-        await navigator.share({ title: "SolarGrid Payment Receipt", text: shareText, url: explorerUrl });
+        await navigator.share({ title: "SolarGrid Payment Receipt", text: shareText, url: permalink });
       }
       setOpen(false);
     });
@@ -145,11 +147,11 @@ export default function ShareReceiptButton({ record, explorerUrl, className }: P
 
   async function copyLink() {
     await withBusy("copy", async () => {
-      const ok = await copyText(explorerUrl);
+      const ok = await copyText(permalink);
       showToast(
         ok
           ? { variant: "success", title: "Receipt link copied" }
-          : { variant: "error", title: "Could not copy link", description: explorerUrl },
+          : { variant: "error", title: "Could not copy link", description: permalink },
       );
       setOpen(false);
     });
@@ -190,20 +192,20 @@ export default function ShareReceiptButton({ record, explorerUrl, className }: P
           <MenuItem onClick={copyLink} busy={busyAction === "copy"} label="Copy receipt link" />
           <MenuItem
             onClick={() =>
-              openExternalShare(`https://wa.me/?text=${encodeURIComponent(`${shareText} ${explorerUrl}`)}`)
+              openExternalShare(`https://wa.me/?text=${encodeURIComponent(`${shareText} ${permalink}`)}`)
             }
             label="Share via WhatsApp"
           />
           <MenuItem
             onClick={() =>
               openExternalShare(
-                `mailto:?subject=${encodeURIComponent("SolarGrid Payment Receipt")}&body=${encodeURIComponent(`${shareText}\n\n${explorerUrl}`)}`,
+                `mailto:?subject=${encodeURIComponent("SolarGrid Payment Receipt")}&body=${encodeURIComponent(`${shareText}\n\n${permalink}`)}`,
               )
             }
             label="Share via email"
           />
           <MenuItem
-            onClick={() => openExternalShare(`sms:?body=${encodeURIComponent(`${shareText} ${explorerUrl}`)}`)}
+            onClick={() => openExternalShare(`sms:?body=${encodeURIComponent(`${shareText} ${permalink}`)}`)}
             label="Share via SMS"
           />
           <MenuItem
@@ -233,9 +235,9 @@ export default function ShareReceiptButton({ record, explorerUrl, className }: P
               Scan to view receipt
             </h2>
             <div className="inline-flex items-center justify-center rounded-lg bg-white p-3">
-              <QRCodeCanvas value={explorerUrl} size={176} />
+              <QRCodeCanvas value={permalink} size={176} />
             </div>
-            <p className="mt-3 text-xs text-gray-400 break-all">{explorerUrl}</p>
+            <p className="mt-3 text-xs text-gray-400 break-all">{permalink}</p>
             <button
               onClick={() => setQrOpen(false)}
               className="mt-4 w-full rounded-lg border border-white/10 py-2 text-sm text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
