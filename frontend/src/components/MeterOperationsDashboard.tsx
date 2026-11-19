@@ -44,7 +44,7 @@ export function SlaReports({ meters, alerts }: { meters: SlaMeter[]; alerts: Sla
           <dt>Mean uptime between failures</dt><dd>{meter.report.metrics.mtbfMs === null ? "Insufficient data (no failures)" : `${(meter.report.metrics.mtbfMs / 3_600_000).toFixed(2)} hours`}</dd>
         </dl>
         <ul className="text-sm mt-2">{Object.entries(meter.report.compliance).map(([metric, state]) => <li key={metric}>{metric}: <strong>{state.replaceAll("_", " ")}</strong></li>)}</ul>
-      </>}
+      </>
       <details className="mt-3"><summary>Historical hourly compliance reports ({meter.trends.length})</summary>
         <table className="text-sm text-left w-full"><caption>Uptime trend (first snapshot in each hour)</caption><thead><tr><th scope="col">Report time</th><th scope="col">Uptime</th></tr></thead>
           <tbody>{meter.trends.map((trend, index) => trend.report && <tr key={index}><td>{new Date(trend.report.until).toISOString()}</td><td>{trend.report.metrics.uptimePct.toFixed(2)}%</td></tr>)}</tbody>
@@ -83,6 +83,12 @@ export default function MeterOperationsDashboard() {
     } catch (err) { setError(err instanceof Error ? err.message : "Report failed"); setStatus(""); }
   }, [request]);
   useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      void refresh();
+    }, 60000); // Refresh every 60 seconds
+    return () => clearInterval(interval);
+  }, [refresh]);
   async function save(kind: "rule" | "sla") {
     setError(null);
     try {
@@ -108,8 +114,8 @@ export default function MeterOperationsDashboard() {
     </section>
     <section className="border border-white/10 rounded-xl p-5 space-y-4"><h2 className="text-xl font-bold">Meter SLA dashboard</h2><SlaReports meters={meters} alerts={alerts} />
       <details><summary>Configure SLA targets</summary><form onSubmit={e => { e.preventDefault(); void save("sla"); }} className="space-y-3 mt-3">
-        <label className="block">Meter ID<input required value={meterId} onChange={e => setMeterId(e.target.value)} className="block bg-solar-dark border p-2 w-full" /></label>
-        <label className="block">SLA target JSON<textarea required rows={5} value={targetJson} onChange={e => setTargetJson(e.target.value)} className="block bg-solar-dark border p-2 w-full font-mono" /></label>
+        <label className="text-sm">Meter ID<input required value={meterId} onChange={e => setMeterId(e.target.value)} className="block bg-solar-dark border p-2 w-full" /></label>
+        <label className="text-sm">SLA target JSON<textarea required rows={5} value={targetJson} onChange={e => setTargetJson(e.target.value)} className="block bg-solar-dark border p-2 w-full font-mono" /></label>
         <p className="text-sm">Saving starts a new measurement epoch. SLA_PING/PONG firmware support is needed for response targets. See docs/SLA.md.</p>
         <button className="underline" type="submit">Save SLA targets</button>
       </form></details>
