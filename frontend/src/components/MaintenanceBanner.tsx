@@ -31,12 +31,7 @@ function formatDateTime(value: string): string {
   });
 }
 
-function formatRelative(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  const diffMs = date.getTime() - Date.now();
+function formatRemaining(diffMs: number): string {
   const diffMinutes = Math.round(diffMs / 60_000);
   if (diffMinutes <= 0) {
     return 'now';
@@ -52,6 +47,11 @@ function formatRelative(value: string): string {
   return `in ${diffDays} day${diffDays === 1 ? '' : 's'}`;
 }
 
+function parseTimestamp(value: string): number | null {
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
 export default function MaintenanceBanner({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 }: MaintenanceBannerProps) {
@@ -60,6 +60,7 @@ export default function MaintenanceBanner({
   const [dismissedActiveId, setDismissedActiveId] = useState<string | null>(null);
   const [dismissedUpcomingId, setDismissedUpcomingId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
 
   const fetchMaintenance = useCallback(async () => {
     try {
@@ -107,6 +108,38 @@ export default function MaintenanceBanner({
     }
   }, []);
 
+  // Recompute the current time from absolute timestamps on each tick so the
+  // countdown stays accurate even when the browser throttles timers in the
+  // background. Also refresh immediately when the tab becomes visible/focused.
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+
+    const interval = setInterval(tick, 1_000);
+
+    const handleVisibility = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+        tick();
+      }
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibility);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('focus', tick);
+    }
+
+    return () => {
+      clearInterval(interval);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibility);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('focus', tick);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -149,7 +182,15 @@ export default function MaintenanceBanner({
               <p className="mt-1 text-sm text-amber-800">{activeWindow.description}</p>
             )}
             <p className="mt-1 text-xs text-amber-700">
-              Expected to end {formatDateTime(activeWindow.endTime)}.
+              Expected to end {formatDateTime(activeWindow.endTime)}
+              {(() => {
+                const endTs = parseTimestamp(activeWindow.endTime);
+                if (endTs === null) {
+                  return null;
+                }
+                return ` (${formatRemaining(endTs - now)})`;
+              })()}
+              .
             </p>
             <Link
               href="/maintenance"
@@ -184,7 +225,15 @@ export default function MaintenanceBanner({
           <div className="flex-1">
             <p className="text-xs font-medium">
               Upcoming maintenance: {upcomingWindow.title} — starts{' '}
-              {formatDateTime(upcomingWindow.startTime)} ({formatRelative(upcomingWindow.startTime)}).
+              {formatDateTime(upcomingWindow.startTime)}
+              {(() => {
+                const startTs = parseTimestamp(upcomingWindow.startTime);
+                if (startTs === null) {
+                  return null;
+                }
+                return ` (${formatRemaining(startTs - now)})`;
+              })()}
+              .
             </p>
             <Link
               href="/maintenance"
