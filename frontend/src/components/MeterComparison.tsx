@@ -262,8 +262,8 @@ export function MeterComparison({ meters, isLoading = false }: MeterComparisonPr
               <div key={meter.meter_id} className="rounded-xl border border-white/10 bg-solar-accent p-4 space-y-3">
                 <div className="flex items-start justify-between">
                   <div>
-                    <p className="font-mono text-sm text-solar-yellow">{meter.meter_id || "—"}</p>
-                    <p className="text-xs text-gray-500 truncate">{meter.owner}</p>
+                    <p className="font-mono text-sm text-solar-yellow" title={meter.meter_id || "—"}>{meter.meter_id || "—"}</p>
+                    <p className="text-xs text-gray-500 truncate" title={meter.owner}>{meter.owner}</p>
                   </div>
                   <span className={`px-2 py-1 rounded text-xs font-medium ${meter.active ? "bg-green-900/30 text-green-300" : "bg-red-900/30 text-red-300"}`}>
                     {meter.active ? "Active" : "Inactive"}
