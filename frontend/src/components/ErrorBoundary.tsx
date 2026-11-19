@@ -44,11 +44,14 @@ function reportError(error: Error, componentStack: string) {
         url: typeof window !== "undefined" ? window.location.href : undefined,
         userAgent: typeof navigator !== "undefined" ? navigator.userAgent : undefined,
       }),
-    }).catch(() => {
-      // Best-effort — a failed report shouldn't affect the fallback UI.
+    }).catch((reportFailure) => {
+      // Best-effort — a failed report shouldn't affect the fallback UI, but
+      // keep a console trace in every environment so the error isn't lost.
+      console.error("[ErrorBoundary] Failed to report error to backend:", reportFailure);
     });
-  } catch {
-    // ignore — e.g. fetch unavailable in this environment
+  } catch (reportFailure) {
+    // e.g. fetch unavailable in this environment — still log in all environments.
+    console.error("[ErrorBoundary] Failed to report error to backend:", reportFailure);
   }
 }
 

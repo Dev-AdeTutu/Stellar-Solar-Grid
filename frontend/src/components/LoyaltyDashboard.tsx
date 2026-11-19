@@ -44,13 +44,19 @@ export default function LoyaltyDashboard() {
     if (account.tier === "Gold") return 100;
     if (account.tier === "Silver") {
       // 500 to 2000
-      const progress = ((account.points - 500) / 1500) * 100;
+      const target = 1500;
+      if (target <= 0) return 100;
+      const progress = ((account.points - 500) / target) * 100;
       return Math.min(Math.max(progress, 0), 100);
     }
     // Bronze: 0 to 500
-    const progress = (account.points / 500) * 100;
+    const target = 500;
+    if (target <= 0) return 100;
+    const progress = (account.points / target) * 100;
     return Math.min(Math.max(progress, 0), 100);
   };
+
+  const progressPercent = Math.min(100, Math.max(0, getProgressToNextTier()));
 
   const handleRedeem = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -158,13 +164,13 @@ export default function LoyaltyDashboard() {
             Tier Status & Progress
           </span>
           <span className="text-xs text-emerald-400 font-medium">
-            {Math.round(getProgressToNextTier())}% complete
+            {Math.round(progressPercent)}% complete
           </span>
         </div>
         <div className="w-full bg-slate-800 h-3 rounded-full overflow-hidden">
           <div
             className="bg-emerald-500 h-full transition-all duration-500"
-            style={{ width: `${getProgressToNextTier()}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
         <div className="flex justify-between text-xs text-slate-400 mt-3">

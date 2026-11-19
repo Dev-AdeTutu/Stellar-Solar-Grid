@@ -40,6 +40,13 @@ const STORAGE_KEY = "sg_locale";
 const SUPPORTED_LOCALES: Locale[] = LOCALE_OPTIONS.map(({ value }) => value);
 const DEFAULT_LOCALE: Locale = "en";
 
+/** Normalise a BCP-47 tag (e.g. "fr-FR") to a supported base locale, or null. */
+function normalizeLocale(tag: string | null | undefined): Locale | null {
+  if (!tag) return null;
+  const base = tag.split("-")[0].toLowerCase();
+  return SUPPORTED_LOCALES.includes(base as Locale) ? (base as Locale) : null;
+}
+
 type Messages = { [key: string]: string | Messages };
 
 /** Deep-merge a locale over English so any missing key falls back to English. */
@@ -118,9 +125,12 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   // Read persisted preference on first client render
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const stored = localStorage.getItem(STORAGE_KEY) as Locale | null;
-    if (stored && SUPPORTED_LOCALES.includes(stored)) {
+    const stored = normalizeLocale(localStorage.getItem(STORAGE_KEY));
+    if (stored) {
       setLocaleState(stored);
+    } else {
+      const detected = normalizeLocale(navigator.language);
+      if (detected) setLocaleState(detected);
     }
     setMounted(true);
   }, []);
