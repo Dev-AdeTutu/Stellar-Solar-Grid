@@ -45,6 +45,9 @@ export const ProviderBrandingPortal: React.FC<{ defaultProviderId?: string }> = 
     }
   };
 
+  // Compute preview URL for the logo
+  const previewLogoUrl = providerId && form.logoUrl ? `/api/providers/${providerId}/logo` : "";
+
   return (
     <div className="p-6 bg-slate-900 text-white rounded-xl border border-slate-800 space-y-6">
       <div>
@@ -84,6 +87,18 @@ export const ProviderBrandingPortal: React.FC<{ defaultProviderId?: string }> = 
             className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2"
           />
         </label>
+
+        {/* Logo preview using the new endpoint */}
+        {previewLogoUrl && (
+          <div className="mt-2">
+            <label className="block text-xs font-medium">Logo Preview</label>
+            <img
+              src={previewLogoUrl}
+              alt="Logo preview"
+              className="w-full max-h-32 object-contain border rounded"
+            />
+          </div>
+        )}
 
         <label className="block text-sm space-y-1">
           <span className="text-slate-300">Custom Domain</span>
