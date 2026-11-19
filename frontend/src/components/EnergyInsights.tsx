@@ -115,6 +115,12 @@ function StatTile({ label, value, sub }: { label: string; value: React.ReactNode
     );
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Normalise the insights API response (single object or array) to an array. */
+const normalise = (data: unknown): MeterInsights[] =>
+    Array.isArray(data) ? data : data ? [data as MeterInsights] : [];
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function EnergyInsights({ meterId }: Props) {
@@ -131,8 +137,9 @@ export default function EnergyInsights({ meterId }: Props) {
                 const url = `${API}/api/meters/${encodeURIComponent(meterId)}/insights${refresh ? "?refresh=true" : ""}`;
                 const res = await fetch(url);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const data: MeterInsights = await res.json();
-                setInsights(data);
+                const data: unknown = await res.json();
+                const list = normalise(data);
+                setInsights(list[0] ?? null);
             } catch (err: unknown) {
                 setError(err instanceof Error ? err.message : "Failed to load insights");
             } finally {
@@ -216,9 +223,9 @@ export default function EnergyInsights({ meterId }: Props) {
                         </div>
 
                         {/* ── Recommendation banner ── */}
-                        {insights.recommendations.length > 0 && (
+                        {(Array.isArray(insights.recommendations) ? insights.recommendations : []).length > 0 && (
                             <div className="rounded-lg border border-solar-yellow/20 bg-solar-yellow/5 p-3 space-y-1.5">
-                                {insights.recommendations.map((tip, i) => (
+                                {(Array.isArray(insights.recommendations) ? insights.recommendations : []).map((tip, i) => (
                                     <p key={i} className="text-xs text-gray-300 flex gap-2">
                                         <span className="text-solar-yellow flex-shrink-0" aria-hidden="true">→</span>
                                         {tip}
@@ -240,7 +247,7 @@ export default function EnergyInsights({ meterId }: Props) {
                                             </span>
                                         )}
                                     </p>
-                                    <HourlyProfileChart profile={insights.hourlyProfile} />
+                                    <HourlyProfileChart profile={Array.isArray(insights.hourlyProfile) ? insights.hourlyProfile : []} />
                                     <div className="flex justify-between text-[9px] text-gray-600">
                                         <span>00:00</span><span>06:00</span>
                                         <span>12:00</span><span>18:00</span>
@@ -252,7 +259,7 @@ export default function EnergyInsights({ meterId }: Props) {
                                 <div className="space-y-1.5">
                                     <p className="text-[10px] uppercase tracking-wider text-gray-500">Achievements</p>
                                     <div className="flex flex-wrap gap-2">
-                                        {insights.badges.map((badge) => (
+                                        {(Array.isArray(insights.badges) ? insights.badges : []).map((badge) => (
                                             <div
                                                 key={badge.id}
                                                 title={badge.description}
