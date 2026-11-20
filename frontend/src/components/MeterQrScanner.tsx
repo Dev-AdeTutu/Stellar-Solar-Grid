@@ -27,8 +27,10 @@ export default function MeterQrScanner({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [payload, setPayload] = useState<MeterQrPayload | null>(null);
   const [manual, setManual] = useState("");
+  const [manualMeterId, setManualMeterId] = useState("");
   const [error, setError] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
 
   useEffect(() => {
     if (!scanning || !videoRef.current || !("BarcodeDetector" in window)) return;
@@ -37,6 +39,7 @@ export default function MeterQrScanner({
     const run = async () => {
       try {
         stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        setPermissionDenied(false);
         if (!videoRef.current) return;
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
@@ -53,7 +56,21 @@ export default function MeterQrScanner({
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to access the camera");
+        const denied =
+          typeof err === "object" &&
+          err !== null &&
+          "name" in err &&
+          ((err as { name?: string }).name === "NotAllowedError" ||
+            (err as { name?: string }).name === "PermissionDeniedError");
+        setPermissionDenied(denied);
+        setScanning(false);
+        setError(
+          denied
+            ? "Camera access denied. Enter meter ID manually."
+            : err instanceof Error
+              ? err.message
+              : "Unable to access the camera",
+        );
       }
     };
     void run();
@@ -72,6 +89,16 @@ export default function MeterQrScanner({
     }
   }
 
+  function applyManualMeterId() {
+    const meterId = manualMeterId.trim();
+    if (!meterId) {
+      setError("Enter a meter ID to continue");
+      return;
+    }
+    setError("");
+    onRegistered?.(meterId);
+  }
+
   return (
     <section className="mx-auto max-w-xl space-y-5 rounded-2xl border border-white/10 bg-solar-accent p-6">
       <div>
@@ -79,7 +106,7 @@ export default function MeterQrScanner({
         <p className="mt-1 text-sm text-gray-400">Scan the technician QR code to validate and fill the registration form.</p>
       </div>
       <video ref={videoRef} className="aspect-video w-full rounded-xl bg-black object-cover" muted playsInline aria-label="QR scanner camera" />
-      <button type="button" onClick={() => { setError(""); setScanning(true); }} className="w-full rounded-lg bg-solar-yellow px-4 py-3 font-semibold text-solar-dark">
+      <button type="button" onClick={() => { setError(""); setPermissionDenied(false); setScanning(true); }} className="w-full rounded-lg bg-solar-yellow px-4 py-3 font-semibold text-solar-dark">
         {scanning ? "Scanning…" : "Start camera scanner"}
       </button>
       <div className="border-t border-white/10 pt-4">
@@ -88,6 +115,26 @@ export default function MeterQrScanner({
         <button type="button" onClick={applyManual} className="mt-2 rounded-lg border border-white/20 px-4 py-2 text-sm text-white">Validate code</button>
       </div>
       {error && <p role="alert" className="rounded-lg bg-red-500/10 p-3 text-sm text-red-300">{error}</p>}
+      {permissionDenied && (
+        <div className="space-y-2 rounded-xl border border-red-500/30 bg-red-500/5 p-4">
+          <label className="block text-sm text-gray-300">
+            Meter ID
+            <input
+              value={manualMeterId}
+              onChange={(event) => setManualMeterId(event.target.value)}
+              className="mt-1 w-full rounded border border-white/10 bg-solar-dark p-2 text-white"
+              placeholder="Enter meter ID"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={applyManualMeterId}
+            className="rounded-lg border border-white/20 px-4 py-2 text-sm text-white"
+          >
+            Use meter ID
+          </button>
+        </div>
+      )}
       {payload && (
         <form className="space-y-3 rounded-xl border border-green-500/30 bg-green-500/5 p-4" onSubmit={(event) => event.preventDefault()}>
           <h2 className="font-semibold text-green-300">Registration details validated</h2>
