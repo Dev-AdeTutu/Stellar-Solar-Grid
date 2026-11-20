@@ -178,3 +178,19 @@ export function getUTCDateRange(startDate: string, endDate: string): { start: nu
   
   return { start, end };
 }
+
+/**
+ * Get the number of days in a given year (UTC), accounting for leap years.
+ * 
+ * @param year The calendar year (e.g., 2024)
+ * @returns 366 for leap years, 365 otherwise
+ * 
+ * @example
+ * daysInYear(2024) // Returns 366
+ * daysInYear(2025) // Returns 365
+ */
+export function daysInYear(year: number): number {
+  // A year is a leap year if divisible by 4, except centuries not divisible by 400
+  const isLeapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  return isLeapYear ? 366 : 365;
+}

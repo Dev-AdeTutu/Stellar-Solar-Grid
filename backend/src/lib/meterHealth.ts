@@ -14,7 +14,7 @@ import { logger } from "./logger.js";
 import { getDb } from "./db.js";
 import { publishCommand } from "./mqttBridge.js";
 
-export type HealthStatus = "green" | "yellow" | "red";
+export type HealthStatus = "green" | "yellow" | "red" | "stale";
 
 /**
  * Edge runtime status reported by a meter running the edge computing runtime
@@ -75,12 +75,22 @@ export type MeterHealth = {
   avgResponseTimeMs: number | null;
   uptimePercent: number;
   edge: EdgeRuntimeHealth | null;
+  staleAfterMs: number;
 };
 
 const YELLOW_AFTER_MS = Number(process.env.HEALTH_YELLOW_AFTER_MS ?? 60 * 60 * 1000);
 const RED_AFTER_MS = Number(process.env.HEALTH_RED_AFTER_MS ?? 24 * 60 * 60 * 1000);
 const HEARTBEAT_INTERVAL_MS = Number(process.env.HEARTBEAT_INTERVAL_MS ?? 5 * 60 * 1000);
 const ERROR_RATE_WARN = 0.1;
+
+/**
+ * #1166 — a meter whose last reading/heartbeat is older than this threshold is
+ * considered stale (no longer reporting). Configurable via METER_STALE_AFTER_MS,
+ * defaults to 48 hours.
+ */
+export const STALE_AFTER_MS = Number(
+  process.env.METER_STALE_AFTER_MS ?? 48 * 60 * 60 * 1000,
+);
 
 const meters = new Map<string, MeterHealthState>();
 
@@ -165,6 +175,9 @@ export function handleHeartbeatMessage(meterId: string | undefined, payload: Buf
 
 export function classify(state: MeterHealthState, now = Date.now()): HealthStatus {
   const age = now - state.lastHeartbeat;
+  // #1166 — a meter that has not reported within the staleness threshold is
+  // stale regardless of any earlier (now outdated) readings.
+  if (age > STALE_AFTER_MS) return "stale";
   if (age >= RED_AFTER_MS) return "red";
   const errorRate = state.heartbeatCount ? state.errorCount / state.heartbeatCount : 0;
   if (age >= YELLOW_AFTER_MS || errorRate >= ERROR_RATE_WARN) return "yellow";
@@ -200,6 +213,7 @@ function toHealth(state: MeterHealthState, now = Date.now()): MeterHealth {
       : null,
     uptimePercent: Math.min(100, (state.heartbeatCount / expected) * 100),
     edge: state.edge ? toEdgeHealth(state.edge, now) : null,
+    staleAfterMs: STALE_AFTER_MS,
   };
 }
 
@@ -210,7 +224,7 @@ export function getMeterHealth(meterId: string, now = Date.now()): MeterHealth |
 
 export function getAllMeterHealth(now = Date.now()) {
   const all = [...meters.values()].map((s) => toHealth(s, now));
-  const summary = { green: 0, yellow: 0, red: 0 } as Record<HealthStatus, number>;
+  const summary = { green: 0, yellow: 0, red: 0, stale: 0 } as Record<HealthStatus, number>;
   for (const m of all) summary[m.status] += 1;
   const edge = {
     withEdge: 0,
@@ -226,16 +240,28 @@ export function getAllMeterHealth(now = Date.now()) {
   return { summary, edge, meters: all };
 }
 
-/** Raise (log) an alert once per meter that has been silent for 24h. Returns alerted IDs. */
+/**
+ * Raise (log) an alert once per meter that has been silent for 24h. Returns
+ * alerted IDs. Meters that have crossed the staleness threshold (#1166) are
+ * also surfaced in the alert log so operators know they stopped reporting.
+ */
 export function checkStaleMeters(now = Date.now()): string[] {
   const alerted: string[] = [];
   for (const state of meters.values()) {
     if (!state.alerted && now - state.lastHeartbeat >= RED_AFTER_MS) {
       state.alerted = true;
       alerted.push(state.meterId);
+      const stale = now - state.lastHeartbeat > STALE_AFTER_MS;
       logger.warn(
-        { meterId: state.meterId, lastHeartbeat: new Date(state.lastHeartbeat).toISOString() },
-        "ALERT: meter has not reported a heartbeat in 24 hours",
+        {
+          meterId: state.meterId,
+          lastHeartbeat: new Date(state.lastHeartbeat).toISOString(),
+          stale,
+          staleAfterMs: STALE_AFTER_MS,
+        },
+        stale
+          ? "ALERT: meter is stale — last reading exceeds staleness threshold"
+          : "ALERT: meter has not reported a heartbeat in 24 hours",
       );
 
       // #1000 — notify the meter owner's emergency contacts on an extended

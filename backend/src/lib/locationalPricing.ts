@@ -11,6 +11,7 @@
 import { getZoneState } from "./congestionPricing.js";
 import { sendPushToOwner } from "./pushNotifications.js";
 import { logger } from "./logger.js";
+import { getZoneCurrency } from "./zoneCurrency.js";
 
 export const PRICING_INTERVAL_MS = Number(process.env.PRICING_INTERVAL_MS ?? 5 * 60_000);
 export const NOTIFY_DELTA_PCT = Number(process.env.PRICING_NOTIFY_DELTA_PCT ?? 5);
@@ -23,6 +24,7 @@ export type RegionPrice = {
   congestion: number;
   loss: number;
   price: number;
+  currency: string;
   utilization: number;
   lat?: number;
   lng?: number;
@@ -48,9 +50,10 @@ export function upsertRegion(region: Region): void {
 export function computeRegionPrice(region: Region, now = new Date()): RegionPrice {
   const zone = getZoneState(region.zone);
   const multiplier = zone?.multiplier ?? 1;
-  const energy = basePrice;
-  const congestion = basePrice * (multiplier - 1);
-  const loss = basePrice * region.lossFactor;
+  const { currency, rate } = getZoneCurrency(region.zone);
+  const energy = basePrice * rate;
+  const congestion = basePrice * (multiplier - 1) * rate;
+  const loss = basePrice * region.lossFactor * rate;
   return {
     region: region.region,
     zone: region.zone,
@@ -58,6 +61,7 @@ export function computeRegionPrice(region: Region, now = new Date()): RegionPric
     congestion: round(congestion),
     loss: round(loss),
     price: round(energy + congestion + loss),
+    currency,
     utilization: zone?.utilization ?? 0,
     lat: region.lat,
     lng: region.lng,
@@ -86,7 +90,7 @@ function notify(p: RegionPrice, pct: number): void {
   for (const owner of subscribers.get(p.region) ?? []) {
     sendPushToOwner(owner, {
       title: "Grid price change",
-      body: `Price in ${p.region} ${direction} ${Math.abs(pct).toFixed(1)}% to ${p.price} XLM/kWh.`,
+      body: `Price in ${p.region} ${direction} ${Math.abs(pct).toFixed(1)}% to ${p.price} ${p.currency}/kWh.`,
       tag: `lmp-${p.region}`,
     }).catch((err) => logger.warn({ err }, "LMP notification failed"));
   }
