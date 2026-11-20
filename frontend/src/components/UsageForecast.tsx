@@ -52,7 +52,9 @@ const CHART_HEIGHT = 180;
 const PADDING = { top: 12, right: 12, bottom: 28, left: 36 };
 
 function buildPath(points: Array<{ x: number; y: number }>): string {
-  return points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ");
+  return points
+    .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${p.y.toFixed(2)}`)
+    .join(" ");
 }
 
 export default function UsageForecast({
@@ -236,7 +238,9 @@ export default function UsageForecast({
           role="alert"
           className="rounded-lg border border-red-500/50 bg-red-900/30 px-3 py-2 text-sm text-red-200 flex items-start gap-2"
         >
-          <span aria-hidden="true" className="text-base leading-none">⚠️</span>
+          <span aria-hidden="true" className="text-base leading-none">
+            ⚠️
+          </span>
           <div>
             <p className="font-semibold">Predicted to run out of credit</p>
             <p className="text-xs text-red-300 mt-0.5">
@@ -268,6 +272,17 @@ export default function UsageForecast({
             viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
             className="w-full h-auto"
           >
+            <text
+              x={10}
+              y={CHART_HEIGHT / 2}
+              textAnchor="middle"
+              className="fill-gray-400"
+              fontSize={10}
+              transform={`rotate(-90 10 ${CHART_HEIGHT / 2})`}
+            >
+              kWh
+            </text>
+
             {/* Confidence band */}
             <path d={chart.bandPath} fill="rgba(250, 204, 21, 0.15)" stroke="none" />
 
@@ -321,7 +336,10 @@ export default function UsageForecast({
               Predicted usage
             </span>
             <span className="inline-flex items-center gap-1">
-              <span className="inline-block w-3 h-2 bg-solar-yellow/20 border border-solar-yellow/30" aria-hidden="true" />
+              <span
+                className="inline-block w-3 h-2 bg-solar-yellow/20 border border-solar-yellow/30"
+                aria-hidden="true"
+              />
               Confidence band
             </span>
             <span className="inline-flex items-center gap-1">
@@ -398,8 +416,8 @@ export default function UsageForecast({
                       fallback.isLow ? "text-red-400" : "text-solar-yellow"
                     }`}
                   >
-                    ~{fallback.roundedDays} {fallback.roundedDays === 1 ? "day" : "days"} remaining at
-                    current usage
+                    ~{fallback.roundedDays} {fallback.roundedDays === 1 ? "day" : "days"} remaining
+                    at current usage
                   </p>
                   <p className="text-xs text-gray-400">
                     Confidence: ±1 day based on 7-day average daily burn
@@ -410,7 +428,9 @@ export default function UsageForecast({
               {fallback.isLow && (
                 <div className="rounded-lg border border-red-500/30 bg-red-900/20 px-2.5 py-1.5 text-xs text-red-300 flex items-center gap-1.5 mt-2">
                   <span aria-hidden="true">⚠️</span>
-                  <span>Less than 2 days remaining. Top up soon to prevent service interruption.</span>
+                  <span>
+                    Less than 2 days remaining. Top up soon to prevent service interruption.
+                  </span>
                 </div>
               )}
             </div>
