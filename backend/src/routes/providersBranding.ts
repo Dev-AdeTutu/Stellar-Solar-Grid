@@ -1,11 +1,8 @@
 import { Router, Request, Response } from "express";
-import {
-  generateWhiteLabelMobileConfig,
-  getProviderBranding,
-  getProviderBrandingByDomain,
-  renderBrandedEmailTemplate,
-  upsertProviderBranding,
-} from "../lib/providerBranding.js";
+import { getProviderBranding } from "../lib/providerBranding.js";
+import { getBrandingDb } from "../lib/providerBranding.js";
+import fs from "fs";
+import path from "path";
 
 export const providersBrandingRouter = Router();
 
@@ -66,4 +63,32 @@ providersBrandingRouter.post("/:id/branding/email-preview", (req: Request, res: 
   const bodyHtml = req.body?.bodyHtml || "<p>Your meter balance has been updated.</p>";
   const html = renderBrandedEmailTemplate(branding, subject, bodyHtml);
   res.json({ subject, html });
+});
+
+// New route to serve logo files with correct Content-Type
+providersBrandingRouter.get("/:id/logo", (req: Request, res: Response) => {
+  const providerId = req.params.id;
+  const db = getBrandingDb();
+  const branding = db.prepare("SELECT logo_url FROM provider_branding WHERE provider_id = ?").get(providerId);
+  if (!branding) {
+    return res.status(404).json({ error: "Logo not found" });
+  }
+  const relativePath = branding.logo_url?.replace(/^\/+/, ""); // strip leading slash
+  if (!relativePath) {
+    return res.status(404).json({ error: "No logo URL configured" });
+  }
+  const absolutePath = path.resolve(process.cwd(), "public", relativePath);
+  try {
+    const data = fs.readFileSync(absolutePath);
+    const ext = path.extname(relativePath).toLowerCase();
+    let contentType = "application/octet-stream";
+    if (ext === ".svg") contentType = "image/svg+xml";
+    else if (ext === ".png") contentType = "image/png";
+    else if (ext === ".jpg" || ext === ".jpeg") contentType = "image/jpeg";
+    res.setHeader("Content-Type", contentType);
+    res.send(data);
+  } catch (e) {
+    console.error("Error serving logo:", e);
+    res.status(404).json({ error: "Logo file not found" });
+  }
 });
