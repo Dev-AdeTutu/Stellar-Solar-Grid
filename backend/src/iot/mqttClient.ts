@@ -19,6 +19,21 @@ let reconnectAttempts = 0;
 let connected = false;
 const reconnectCallbacks: Array<() => void> = [];
 
+// Issue #1171: track topics we have already subscribed to so reconnects do
+// not re-subscribe (and re-log) for every topic on every connection event.
+const subscribedTopics = new Set<string>();
+
+function subscribeOnce(topic: string, qos: 0 | 1 | 2 = 1): void {
+  if (subscribedTopics.has(topic)) return;
+  client?.subscribe(topic, { qos }, (err) => {
+    if (err) {
+      logger.error('Failed to subscribe to MQTT topic', { topic, err });
+    } else {
+      subscribedTopics.add(topic);
+    }
+  });
+}
+
 // Issue #1041: island mode detection. Grid telemetry (frequency/voltage) is
 // published by the bridge/grid sensors on a dedicated topic. We track the
 // latest sample and expose callbacks so gridResilience.ts can decide when the
@@ -238,14 +253,12 @@ export function getMqttClient(): MqttClient {
     client.on('connect', () => {
       resetReconnectAttempts();
       connected = true;
+      // Issue #1171: log a single connected entry per connection event.
       logger.info('MQTT client connected to broker', { broker: BROKER });
       // Issue #1041: subscribe to grid telemetry so island mode detection can
       // observe frequency/voltage and detect main grid disconnection.
-      client?.subscribe(GRID_TELEMETRY_TOPIC, { qos: 1 }, (err) => {
-        if (err) {
-          logger.error('Failed to subscribe to grid telemetry', { err });
-        }
-      });
+      // Issue #1171: subscription is idempotent across reconnects.
+      subscribeOnce(GRID_TELEMETRY_TOPIC, 1);
       // Issue #1042: notify threat detection of the new connection.
       emitThreatEvent({ kind: 'connect', timestamp: Date.now() });
       client?.publish(

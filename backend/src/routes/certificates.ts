@@ -54,6 +54,37 @@ const MintSchema = z
 
 const u64 = (value: string | number | bigint) => StellarSdk.nativeToScVal(BigInt(value), { type: "u64" });
 
+/**
+ * Account creation timestamp (unix seconds) for a Stellar account, or null when
+ * the account does not exist / the network lookup fails. Used to reject
+ * backdated certificate validity windows (#1173).
+ */
+async function fetchAccountCreatedAt(account: string): Promise<number | null> {
+  try {
+    const server = stellarService.server;
+    const record = await server.accounts().accountId(account).call();
+    const createdAt = (record as { created_at?: string }).created_at;
+    if (!createdAt) return null;
+    const seconds = Math.floor(new Date(createdAt).getTime() / 1000);
+    return Number.isFinite(seconds) ? seconds : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Rejects a certificate validity window that starts before the account was
+ * created. Returns an error message when invalid, otherwise null.
+ */
+async function checkNotBackdated(account: string, validFrom: number): Promise<string | null> {
+  const createdAt = await fetchAccountCreatedAt(account);
+  if (createdAt === null) return null;
+  if (validFrom < createdAt) {
+    return `validFrom (${validFrom}) cannot precede the account creation date (${createdAt})`;
+  }
+  return null;
+}
+
 /** International standards the certificate authority can attest compliance against. */
 export const SUPPORTED_STANDARDS = [
   { id: "I-REC", name: "International REC Standard", scope: "global" },
@@ -231,6 +262,10 @@ certificatesRouter.post(
       return res.status(400).json({ error: "Invalid request", code: "VALIDATION_ERROR", details: parsed.error.flatten() });
     }
     const reading = parsed.data;
+    const backdated = await checkNotBackdated(stellarService.adminKeypair.publicKey(), reading.periodStart);
+    if (backdated) {
+      return res.status(400).json({ error: backdated, code: "VALIDATION_ERROR" });
+    }
     const hash = readingHash(reading);
     // The backend signs as the contract admin, which the contract accepts as
     // a certificate issuer alongside the registered oracle.
@@ -255,6 +290,10 @@ certificatesRouter.post(
       return res.status(400).json({ error: "Invalid request", code: "VALIDATION_ERROR", details: parsed.error.flatten() });
     }
     const generation = parsed.data;
+    const backdated = await checkNotBackdated(stellarService.adminKeypair.publicKey(), generation.periodStart);
+    if (backdated) {
+      return res.status(400).json({ error: backdated, code: "VALIDATION_ERROR" });
+    }
     // Prefer the caller-supplied generation hash (proving the verified source
     // data) but fall back to hashing the reading payload.
     const hash = generation.generationHash?.toLowerCase() ?? readingHash(generation);

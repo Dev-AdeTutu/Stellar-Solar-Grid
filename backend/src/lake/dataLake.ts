@@ -23,7 +23,13 @@ export type TelemetryRow = {
   on_chain_tx_hash: string | null;
 };
 
-export type LakeQuery = { from?: string; to?: string; meterId?: string };
+export type LakeQuery = {
+  from?: string;
+  to?: string;
+  meterId?: string;
+  /** Opaque continuation cursor: skip rows up to and including this id. */
+  cursor?: string;
+};
 
 export type LakeSummary = {
   meterId: string;
@@ -101,9 +107,15 @@ export class DataLake {
       .sort();
   }
 
-  /** Scan only partitions within [from, to] (partition pruning). */
+  /**
+   * Scan only partitions within [from, to] (partition pruning).
+   *
+   * Rows are returned in a stable order (ascending `id`). When `cursor` is set,
+   * rows with `id <= cursor` are skipped so callers can page through results.
+   */
   query(q: LakeQuery = {}): TelemetryRow[] {
     const out: TelemetryRow[] = [];
+    const cursor = q.cursor !== undefined && q.cursor !== "" ? Number(q.cursor) : undefined;
     for (const dt of this.listPartitions()) {
       if (q.from && dt < q.from.slice(0, 10)) continue;
       if (q.to && dt > q.to.slice(0, 10)) continue;
@@ -115,10 +127,12 @@ export class DataLake {
           if (q.meterId && row.meter_id !== q.meterId) continue;
           if (q.from && row.received_at < q.from) continue;
           if (q.to && row.received_at.slice(0, q.to.length) > q.to) continue;
+          if (cursor !== undefined && !Number.isNaN(cursor) && row.id <= cursor) continue;
           out.push(row);
         }
       }
     }
+    out.sort((a, b) => a.id - b.id);
     return out;
   }
 
