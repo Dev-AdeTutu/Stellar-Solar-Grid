@@ -75,6 +75,8 @@ const CONNECTION_STATE_LABELS: Record<GridConnectionState, string> = {
   transitioning: "Transitioning",
 };
 
+const SVG_EXPORT_VIEWBOX = { x: -120, y: -48, width: 1040, height: 576 };
+
 const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
   nodes: [
     {
@@ -83,7 +85,12 @@ const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
       type: "grid",
       status: "active",
       parentId: null,
-      metadata: { capacityKw: 5000, currentLoadKw: 3120, voltage: 33000, location: "Central Substation A" },
+      metadata: {
+        capacityKw: 5000,
+        currentLoadKw: 3120,
+        voltage: 33000,
+        location: "Central Substation A",
+      },
     },
     {
       id: "tx-north-1",
@@ -91,7 +98,12 @@ const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
       type: "transformer",
       status: "active",
       parentId: "grid-main-1",
-      metadata: { capacityKw: 1500, currentLoadKw: 980, voltage: 11000, location: "North District" },
+      metadata: {
+        capacityKw: 1500,
+        currentLoadKw: 980,
+        voltage: 11000,
+        location: "North District",
+      },
     },
     {
       id: "tx-south-1",
@@ -99,7 +111,12 @@ const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
       type: "transformer",
       status: "active",
       parentId: "grid-main-1",
-      metadata: { capacityKw: 1500, currentLoadKw: 1140, voltage: 11000, location: "South District" },
+      metadata: {
+        capacityKw: 1500,
+        currentLoadKw: 1140,
+        voltage: 11000,
+        location: "South District",
+      },
     },
     {
       id: "tx-east-1",
@@ -107,7 +124,12 @@ const DEFAULT_FALLBACK_GRAPH: NetworkTopologyGraph = {
       type: "transformer",
       status: "fault",
       parentId: "grid-main-1",
-      metadata: { capacityKw: 2000, currentLoadKw: 1000, voltage: 11000, location: "East Industrial Zone" },
+      metadata: {
+        capacityKw: 2000,
+        currentLoadKw: 1000,
+        voltage: 11000,
+        location: "East Industrial Zone",
+      },
     },
     {
       id: "meter-101",
@@ -172,6 +194,7 @@ export const NetworkTopologyMap: React.FC = () => {
   const [scale, setScale] = useState<number>(1);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [showIslands, setShowIslands] = useState<boolean>(true);
+  const svgRef = useRef<SVGSVGElement>(null);
   const isDraggingRef = useRef(false);
   const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
@@ -189,7 +212,8 @@ export const NetworkTopologyMap: React.FC = () => {
             ...DEFAULT_FALLBACK_GRAPH,
             nodes: filtered,
             links: DEFAULT_FALLBACK_GRAPH.links.filter(
-              (l) => filtered.some((n) => n.id === l.source) && filtered.some((n) => n.id === l.target)
+              (l) =>
+                filtered.some((n) => n.id === l.source) && filtered.some((n) => n.id === l.target),
             ),
           });
         }
@@ -257,6 +281,25 @@ export const NetworkTopologyMap: React.FC = () => {
   const handleResetView = () => {
     setScale(1);
     setPan({ x: 0, y: 0 });
+  };
+
+  const handleExportSvg = () => {
+    if (!svgRef.current) return;
+    const svg = svgRef.current.cloneNode(true) as SVGSVGElement;
+    svg.setAttribute(
+      "viewBox",
+      `${SVG_EXPORT_VIEWBOX.x} ${SVG_EXPORT_VIEWBOX.y} ${SVG_EXPORT_VIEWBOX.width} ${SVG_EXPORT_VIEWBOX.height}`,
+    );
+    svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    const blob = new Blob([new XMLSerializer().serializeToString(svg)], {
+      type: "image/svg+xml;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "network-topology.svg";
+    link.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -352,13 +395,21 @@ export const NetworkTopologyMap: React.FC = () => {
           >
             Reset View
           </button>
+          <button
+            type="button"
+            onClick={handleExportSvg}
+            className="px-3 py-1.5 bg-solar-yellow text-slate-950 hover:bg-yellow-300 rounded text-sm font-semibold"
+          >
+            Export SVG
+          </button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-slate-950 rounded-lg border border-slate-800 overflow-hidden relative">
           <svg
-            viewBox="0 0 800 480"
+            ref={svgRef}
+            viewBox={`${SVG_EXPORT_VIEWBOX.x} ${SVG_EXPORT_VIEWBOX.y} ${SVG_EXPORT_VIEWBOX.width} ${SVG_EXPORT_VIEWBOX.height}`}
             className="w-full h-[460px] cursor-grab active:cursor-grabbing"
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
@@ -466,9 +517,7 @@ export const NetworkTopologyMap: React.FC = () => {
         </div>
 
         <div className="bg-slate-950 rounded-lg border border-slate-800 p-4 space-y-4">
-          <h3 className="font-semibold text-base border-b border-slate-800 pb-2">
-            Node Details
-          </h3>
+          <h3 className="font-semibold text-base border-b border-slate-800 pb-2">Node Details</h3>
           {selectedNode ? (
             <div className="space-y-2 text-sm" data-testid="node-details-panel">
               <div>
@@ -502,8 +551,8 @@ export const NetworkTopologyMap: React.FC = () => {
               )}
               {selectedNode.metadata.currentLoadKw !== undefined && (
                 <div>
-                  <span className="text-slate-400">Load:</span> {selectedNode.metadata.currentLoadKw} /{" "}
-                  {selectedNode.metadata.capacityKw} kW
+                  <span className="text-slate-400">Load:</span>{" "}
+                  {selectedNode.metadata.currentLoadKw} / {selectedNode.metadata.capacityKw} kW
                 </div>
               )}
               {islandByNodeId.get(selectedNode.id) && (
@@ -513,7 +562,8 @@ export const NetworkTopologyMap: React.FC = () => {
                   <span
                     className="px-2 py-0.5 rounded text-xs font-semibold"
                     style={{
-                      backgroundColor: CONNECTION_STATE_COLORS[islandByNodeId.get(selectedNode.id)!.state],
+                      backgroundColor:
+                        CONNECTION_STATE_COLORS[islandByNodeId.get(selectedNode.id)!.state],
                       color: "#0f172a",
                     }}
                   >
@@ -529,7 +579,10 @@ export const NetworkTopologyMap: React.FC = () => {
           )}
 
           {islands.length > 0 && (
-            <div className="space-y-2 text-sm border-t border-slate-800 pt-3" data-testid="island-summary">
+            <div
+              className="space-y-2 text-sm border-t border-slate-800 pt-3"
+              data-testid="island-summary"
+            >
               <h4 className="font-semibold text-slate-300">Islands</h4>
               {islands.map((island) => (
                 <div key={island.id} className="flex items-center justify-between gap-2">
@@ -543,7 +596,8 @@ export const NetworkTopologyMap: React.FC = () => {
                   </span>
                   <span className="text-xs text-slate-400">
                     {island.nodeIds.length} nodes
-                    {island.localGenerationKw !== undefined && ` · ${island.localGenerationKw} kW gen`}
+                    {island.localGenerationKw !== undefined &&
+                      ` · ${island.localGenerationKw} kW gen`}
                   </span>
                 </div>
               ))}

@@ -86,10 +86,7 @@ function intervalDays(frequency: FrequencyUnit, customDays: number): number {
   }
 }
 
-function nextDateFromNow(
-  frequency: FrequencyUnit,
-  customDays: number,
-): string {
+function nextDateFromNow(frequency: FrequencyUnit, customDays: number): string {
   const d = new Date();
   d.setDate(d.getDate() + intervalDays(frequency, customDays));
   return d.toISOString();
@@ -107,16 +104,29 @@ function formatDate(iso: string): string {
   }
 }
 
+function isDateOnOrBeforeToday(iso: string): boolean {
+  const date = new Date(iso);
+  const today = new Date();
+  date.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return date <= today;
+}
+
+function isDateBeforeToday(iso: string): boolean {
+  const date = new Date(iso);
+  const today = new Date();
+  date.setHours(0, 0, 0, 0);
+  today.setHours(0, 0, 0, 0);
+  return date < today;
+}
+
 // ── Notification helper ───────────────────────────────────────────────────────
 
 /**
  * Request notification permission and fire a reminder if the next payment
  * date is today or in the past. The notification links back to the pay page.
  */
-async function maybeFireReminder(
-  meterId: string,
-  config: PaymentScheduleConfig,
-): Promise<void> {
+async function maybeFireReminder(meterId: string, config: PaymentScheduleConfig): Promise<void> {
   if (!config.enabled) return;
   if (typeof window === "undefined" || !("Notification" in window)) return;
 
@@ -173,6 +183,7 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
   const [config, setConfig] = useState<PaymentScheduleConfig>(defaultConfig);
   const [saved, setSaved] = useState(false);
   const [isDue, setIsDue] = useState(false);
+  const [isOverdue, setIsOverdue] = useState(false);
 
   // Load persisted schedule on mount
   useEffect(() => {
@@ -181,9 +192,8 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
       setConfig(persisted);
       // Check if today's reminder should fire
       maybeFireReminder(meterId, persisted).catch(() => {});
-      const next = new Date(persisted.nextPaymentDate);
-      const today = new Date();
-      setIsDue(persisted.enabled && next.setHours(0, 0, 0, 0) <= today.setHours(0, 0, 0, 0));
+      setIsDue(persisted.enabled && isDateOnOrBeforeToday(persisted.nextPaymentDate));
+      setIsOverdue(persisted.enabled && isDateBeforeToday(persisted.nextPaymentDate));
     }
   }, [meterId]);
 
@@ -200,15 +210,15 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
 
     // Fire reminder check after saving
     maybeFireReminder(meterId, updated).catch(() => {});
-    const next = new Date(updated.nextPaymentDate);
-    const today = new Date();
-    setIsDue(updated.enabled && next.setHours(0, 0, 0, 0) <= today.setHours(0, 0, 0, 0));
+    setIsDue(updated.enabled && isDateOnOrBeforeToday(updated.nextPaymentDate));
+    setIsOverdue(updated.enabled && isDateBeforeToday(updated.nextPaymentDate));
   }, [config, meterId]);
 
   const handleCancel = useCallback(() => {
     clearSchedule(meterId);
     setConfig(defaultConfig());
     setIsDue(false);
+    setIsOverdue(false);
   }, [meterId]);
 
   const handleChange = <K extends keyof PaymentScheduleConfig>(
@@ -235,12 +245,18 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
       {isDue && (
         <div
           role="alert"
-          className="rounded-lg border border-yellow-500/40 bg-yellow-900/20 p-3 flex items-start justify-between gap-3"
+          className={`rounded-lg p-3 flex items-start justify-between gap-3 ${
+            isOverdue
+              ? "border border-red-500/60 bg-red-900/25"
+              : "border border-yellow-500/40 bg-yellow-900/20"
+          }`}
         >
-          <p className="text-xs text-yellow-300">
-            <span className="font-semibold">Payment due today</span> — your scheduled{" "}
-            {config.amount} XLM payment is ready. You must approve the transaction in your
-            wallet.
+          <p className={`text-xs ${isOverdue ? "text-red-300" : "text-yellow-300"}`}>
+            <span className="font-semibold">
+              {isOverdue ? "Payment overdue" : "Payment due today"}
+            </span>{" "}
+            — your scheduled {config.amount} XLM payment is ready. You must approve the transaction
+            in your wallet.
           </p>
           {onPayNow ? (
             <button
@@ -278,18 +294,13 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
         <div className="space-y-3">
           {/* Frequency */}
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={`frequency-${meterId}`}
-              className="text-xs font-medium text-gray-400"
-            >
+            <label htmlFor={`frequency-${meterId}`} className="text-xs font-medium text-gray-400">
               Frequency
             </label>
             <select
               id={`frequency-${meterId}`}
               value={config.frequency}
-              onChange={(e) =>
-                handleChange("frequency", e.target.value as FrequencyUnit)
-              }
+              onChange={(e) => handleChange("frequency", e.target.value as FrequencyUnit)}
               className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white focus:border-solar-yellow focus:outline-none"
             >
               <option value="daily">Daily</option>
@@ -302,10 +313,7 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
           {/* Custom interval */}
           {config.frequency === "custom" && (
             <div className="flex flex-col gap-1">
-              <label
-                htmlFor={`interval-${meterId}`}
-                className="text-xs font-medium text-gray-400"
-              >
+              <label htmlFor={`interval-${meterId}`} className="text-xs font-medium text-gray-400">
                 Interval (days)
               </label>
               <input
@@ -315,10 +323,7 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
                 max={365}
                 value={config.customIntervalDays}
                 onChange={(e) =>
-                  handleChange(
-                    "customIntervalDays",
-                    Math.max(1, Number(e.target.value) || 1),
-                  )
+                  handleChange("customIntervalDays", Math.max(1, Number(e.target.value) || 1))
                 }
                 className="w-28 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white focus:border-solar-yellow focus:outline-none"
                 aria-label="Custom interval in days"
@@ -328,10 +333,7 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
 
           {/* Amount */}
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={`amount-${meterId}`}
-              className="text-xs font-medium text-gray-400"
-            >
+            <label htmlFor={`amount-${meterId}`} className="text-xs font-medium text-gray-400">
               Amount (XLM)
             </label>
             <input
@@ -348,18 +350,13 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
 
           {/* Plan */}
           <div className="flex flex-col gap-1">
-            <label
-              htmlFor={`plan-${meterId}`}
-              className="text-xs font-medium text-gray-400"
-            >
+            <label htmlFor={`plan-${meterId}`} className="text-xs font-medium text-gray-400">
               Plan
             </label>
             <select
               id={`plan-${meterId}`}
               value={config.plan}
-              onChange={(e) =>
-                handleChange("plan", e.target.value as "Daily" | "Weekly" | "Usage")
-              }
+              onChange={(e) => handleChange("plan", e.target.value as "Daily" | "Weekly" | "Usage")}
               className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm text-white focus:border-solar-yellow focus:outline-none"
             >
               <option value="Daily">Daily</option>
@@ -372,9 +369,7 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
           <p className="text-xs text-gray-500">
             Next reminder:{" "}
             <span className="text-gray-300">
-              {formatDate(
-                nextDateFromNow(config.frequency, config.customIntervalDays),
-              )}
+              {formatDate(nextDateFromNow(config.frequency, config.customIntervalDays))}
             </span>
           </p>
         </div>
@@ -400,8 +395,8 @@ export default function PaymentSchedule({ meterId, onPayNow }: Props) {
 
       {/* Disclaimer */}
       <p className="text-xs text-gray-600">
-        Reminders are stored locally in your browser. Each payment requires your wallet
-        signature — no funds are moved automatically.
+        Reminders are stored locally in your browser. Each payment requires your wallet signature —
+        no funds are moved automatically.
       </p>
     </section>
   );

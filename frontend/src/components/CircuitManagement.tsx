@@ -27,7 +27,10 @@ export default function CircuitManagement() {
   const getPriorityBadge = (priority: CircuitItem["priority"]) => {
     switch (priority) {
       case 1:
-        return { label: "P1 · Essential", color: "bg-emerald-950 text-emerald-300 border-emerald-800" };
+        return {
+          label: "P1 · Essential",
+          color: "bg-emerald-950 text-emerald-300 border-emerald-800",
+        };
       case 2:
         return { label: "P2 · High", color: "bg-blue-950 text-blue-300 border-blue-800" };
       case 3:
@@ -37,24 +40,35 @@ export default function CircuitManagement() {
     }
   };
 
+  const getStatusBadge = (isShed: boolean) =>
+    isShed
+      ? {
+          label: "TRIPPED (OFF)",
+          color: "bg-rose-950 text-rose-300 border border-rose-800",
+        }
+      : {
+          label: "HEALTHY (ON)",
+          color: "bg-emerald-950 text-emerald-300 border border-emerald-800",
+        };
+
   const handleToggleCircuit = (circuitId: number) => {
     setCircuits((prev) =>
       prev.map((c) => {
         if (c.id === circuitId) {
           const nextShed = !c.isShed;
           setStatusMessage(
-            `Circuit ${c.name} manually ${nextShed ? "SHED (powered down)" : "RESTORED (powered on)"}.`
+            `Circuit ${c.name} manually ${nextShed ? "SHED (powered down)" : "RESTORED (powered on)"}.`,
           );
           return { ...c, isShed: nextShed };
         }
         return c;
-      })
+      }),
     );
   };
 
   const handlePriorityChange = (circuitId: number, newPriority: 1 | 2 | 3 | 4) => {
     setCircuits((prev) =>
-      prev.map((c) => (c.id === circuitId ? { ...c, priority: newPriority } : c))
+      prev.map((c) => (c.id === circuitId ? { ...c, priority: newPriority } : c)),
     );
     setStatusMessage("Circuit priority updated.");
   };
@@ -105,7 +119,9 @@ export default function CircuitManagement() {
               {autoShedEnabled ? "ENABLED" : "DISABLED"}
             </span>
           </div>
-          <div className="text-xs text-slate-500 mt-1">Triggers when balance &lt; {thresholdXlm} XLM</div>
+          <div className="text-xs text-slate-500 mt-1">
+            Triggers when balance &lt; {thresholdXlm} XLM
+          </div>
         </div>
       </div>
 
@@ -121,7 +137,8 @@ export default function CircuitManagement() {
           <div>
             <h2 className="text-lg font-bold text-white">Circuit Priority & Load Control</h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Control individual home and facility circuits. Priority 1 (Essential) is never shed automatically.
+              Control individual home and facility circuits. Priority 1 (Essential) is never shed
+              automatically.
             </p>
           </div>
         </div>
@@ -140,6 +157,7 @@ export default function CircuitManagement() {
             <tbody className="divide-y divide-slate-800 text-slate-300">
               {circuits.map((c) => {
                 const badge = getPriorityBadge(c.priority);
+                const statusBadge = getStatusBadge(c.isShed);
                 return (
                   <tr key={c.id} className="hover:bg-slate-950/50 transition-colors">
                     <td className="py-3.5 px-4 font-semibold text-white">{c.name}</td>
@@ -164,13 +182,9 @@ export default function CircuitManagement() {
                     </td>
                     <td className="py-3.5 px-4">
                       <span
-                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${
-                          c.isShed
-                            ? "bg-rose-950 text-rose-300 border border-rose-800"
-                            : "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                        }`}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-semibold ${statusBadge.color}`}
                       >
-                        {c.isShed ? "SHED (OFF)" : "ACTIVE (ON)"}
+                        {statusBadge.label}
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-right">
