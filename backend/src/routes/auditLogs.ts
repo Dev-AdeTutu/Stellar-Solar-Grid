@@ -30,6 +30,44 @@ import {
 export const auditLogsRouter = Router();
 
 /**
+ * Normalize an audit log timestamp to UTC ISO 8601 with an explicit "Z" suffix.
+ *
+ * Audit entries may be persisted as naive datetime strings (no offset), which
+ * are ambiguous during DST transitions. We treat naive values as UTC and always
+ * emit a trailing "Z" so two distinct events can never look identical.
+ */
+export function toUtcIsoString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+
+  if (value instanceof Date) {
+    return isNaN(value.getTime()) ? null : value.toISOString();
+  }
+
+  if (typeof value === "number") {
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  // Naive datetime (no timezone designator) — interpret as UTC.
+  const hasZone = /(?:[zZ]|[+-]\d{2}:?\d{2})$/.test(raw);
+  const normalized = hasZone ? raw : `${raw.replace(" ", "T")}Z`;
+
+  const d = new Date(normalized);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** Return a copy of an audit entry with created_at normalized to UTC ISO 8601. */
+function normalizeEntry<T extends Record<string, any>>(entry: T): T {
+  if (!entry || typeof entry !== "object") return entry;
+  const normalized = toUtcIsoString(entry.created_at);
+  if (normalized === null) return entry;
+  return { ...entry, created_at: normalized };
+}
+
+/**
  * GET /api/admin/audit-logs
  *
  * Query audit log entries with optional filters.
@@ -68,7 +106,12 @@ auditLogsRouter.get(
     const opts: AuditQueryOptions = { start, end, eventType, limit, offset };
     const { entries, total } = await queryAuditLog(opts);
 
-    return res.json({ entries, total, limit, offset });
+    return res.json({
+      entries: entries.map(normalizeEntry),
+      total,
+      limit,
+      offset,
+    });
   }),
 );
 
@@ -117,14 +160,16 @@ auditLogsRouter.get(
       offset: 0,
     });
 
+    const normalizedEntries = entries.map(normalizeEntry);
+
     if (format === "json") {
       res.setHeader("Content-Disposition", "attachment; filename=audit-log.json");
       res.setHeader("Content-Type", "application/json");
-      return res.json(entries);
+      return res.json(normalizedEntries);
     }
 
     // CSV export
-    const csv = auditEntriesToCsv(entries);
+    const csv = auditEntriesToCsv(normalizedEntries);
     res.setHeader("Content-Disposition", "attachment; filename=audit-log.csv");
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     return res.send(csv);
