@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 
 export type VotingMode = 'TokenWeighted' | 'Quadratic';
 export type ProposalStatus = 'Active' | 'Approved' | 'Rejected' | 'Queued' | 'Executed';
@@ -62,6 +62,8 @@ export const GovernancePortal: React.FC = () => {
   const [treasuryAmount, setTreasuryAmount] = useState<number>(0);
   const [votingMode, setVotingMode] = useState<VotingMode>('Quadratic');
   const [tokenCommit, setTokenCommit] = useState<number>(100);
+  const [confirmingIds, setConfirmingIds] = useState<number[]>([]);
+  const votesInFlight = useRef<Set<number>>(new Set());
 
   const computeVotingPower = (tokens: number, mode: VotingMode) => {
     if (mode === 'Quadratic') {
@@ -91,11 +93,19 @@ export const GovernancePortal: React.FC = () => {
     setDescription('');
   };
 
-  const handleVote = (id: number, support: boolean) => {
+  const handleVote = async (id: number, support: boolean) => {
+    const target = proposals.find((p) => p.id === id);
+    if (!target || target.status !== 'Active' || votesInFlight.current.has(id)) {
+      return;
+    }
+
+    votesInFlight.current.add(id);
+    const weight = computeVotingPower(tokenCommit, target.votingMode);
+
+    // Show the vote immediately, then reconcile it with the server in the background.
     setProposals((prev) =>
       prev.map((p) => {
         if (p.id !== id || p.status !== 'Active') return p;
-        const weight = computeVotingPower(tokenCommit, p.votingMode);
         return {
           ...p,
           votesFor: support ? p.votesFor + weight : p.votesFor,
@@ -103,6 +113,35 @@ export const GovernancePortal: React.FC = () => {
         };
       })
     );
+    setConfirmingIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+
+    try {
+      const response = await fetch(`/api/governance/proposals/${id}`);
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const votesFor = data?.votesFor ?? data?.proposal?.votesFor;
+      const votesAgainst = data?.votesAgainst ?? data?.proposal?.votesAgainst;
+      if (typeof votesFor === 'number' || typeof votesAgainst === 'number') {
+        setProposals((prev) =>
+          prev.map((p) =>
+            p.id === id
+              ? {
+                  ...p,
+                  votesFor: typeof votesFor === 'number' ? votesFor : p.votesFor,
+                  votesAgainst:
+                    typeof votesAgainst === 'number' ? votesAgainst : p.votesAgainst,
+                }
+              : p
+          )
+        );
+      }
+    } catch {
+      // Keep the optimistic counts if the confirmation request fails.
+    } finally {
+      votesInFlight.current.delete(id);
+      setConfirmingIds((prev) => prev.filter((voteId) => voteId !== id));
+    }
   };
 
   const handleExecute = (id: number) => {
@@ -257,19 +296,24 @@ export const GovernancePortal: React.FC = () => {
                 <div className="text-xs space-x-4">
                   <span className="text-green-700 font-semibold">For: {prop.votesFor}</span>
                   <span className="text-red-700 font-semibold">Against: {prop.votesAgainst}</span>
+                  {confirmingIds.includes(prop.id) && (
+                    <span className="text-gray-500">Confirming vote…</span>
+                  )}
                 </div>
                 <div className="space-x-2">
                   {prop.status === 'Active' && (
                     <>
                       <button
                         onClick={() => handleVote(prop.id, true)}
-                        className="px-3 py-1 bg-green-600 text-white rounded text-xs"
+                        disabled={confirmingIds.includes(prop.id)}
+                        className="px-3 py-1 bg-green-600 text-white rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Vote For
                       </button>
                       <button
                         onClick={() => handleVote(prop.id, false)}
-                        className="px-3 py-1 bg-red-600 text-white rounded text-xs"
+                        disabled={confirmingIds.includes(prop.id)}
+                        className="px-3 py-1 bg-red-600 text-white rounded text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         Vote Against
                       </button>

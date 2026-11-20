@@ -37,6 +37,9 @@ interface PriceHeatmapProps {
   updateInterval?: number;
 }
 
+// Shared by the legend and the zone popup so both describe the same colours.
+const PRICE_COLOR_STEPS = 7;
+
 /**
  * Get color for price based on range
  */
@@ -61,15 +64,21 @@ function getPriceColor(price: number, min: number, max: number): string {
 }
 
 /**
+ * Shared colour scale used by both the legend and the zone popup.
+ */
+function getPriceScale(min: number, max: number) {
+  return Array.from({ length: PRICE_COLOR_STEPS }, (_, i) => {
+    const value = min + (max - min) * (i / (PRICE_COLOR_STEPS - 1));
+    const color = getPriceColor(value, min, max);
+    return { value, color, percent: (i / (PRICE_COLOR_STEPS - 1)) * 100 };
+  });
+}
+
+/**
  * Legend component
  */
 const PriceLegend: React.FC<{ min: number; max: number }> = ({ min, max }) => {
-  const steps = 10;
-  const gradientStops = Array.from({ length: steps }, (_, i) => {
-    const value = min + (max - min) * (i / (steps - 1));
-    const color = getPriceColor(value, min, max);
-    return { value, color, percent: (i / (steps - 1)) * 100 };
-  });
+  const gradientStops = getPriceScale(min, max);
 
   return (
     <div className="absolute bottom-8 left-8 bg-white p-4 rounded-lg shadow-lg z-[1000]">
@@ -83,6 +92,13 @@ const PriceLegend: React.FC<{ min: number; max: number }> = ({ min, max }) => {
           }}
         />
         <span className="text-xs">${max.toFixed(3)}</span>
+      </div>
+      <div className="flex justify-between mt-1 w-48">
+        {gradientStops.map((stop) => (
+          <span key={stop.percent} className="text-[8px] text-gray-500">
+            ${stop.value.toFixed(3)}
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -366,8 +382,14 @@ export const PriceHeatmap: React.FC<PriceHeatmapProps> = ({
                   <h3 className="font-bold text-lg">{zone.name}</h3>
                   <p className="text-sm text-gray-600">{zone.region}</p>
                   <div className="mt-2 space-y-1">
-                    <p className="text-sm">
-                      <span className="font-semibold">Price:</span> ${zone.price.toFixed(4)}/kWh
+                    <p className="text-sm flex items-center gap-2">
+                      <span className="font-semibold">Price:</span>
+                      <span
+                        className="inline-block w-3 h-3 rounded-sm border border-black/10"
+                        style={{ backgroundColor: color }}
+                        aria-hidden="true"
+                      />
+                      <span>${zone.price.toFixed(4)}/kWh</span>
                     </p>
                     <p className="text-sm">
                       <span className="font-semibold">Location:</span> {zone.lat.toFixed(4)}, {zone.lon.toFixed(4)}

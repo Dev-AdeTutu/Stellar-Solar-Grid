@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useModalA11y } from "@/hooks/useModalA11y";
 import { useOffline } from "@/hooks/useOffline";
 import { env } from "@/lib/env";
@@ -33,6 +33,12 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
   const [copied, setCopied] = useState(false);
   const panelRef = useModalA11y<HTMLDivElement>(onClose);
   const [copyFailed, setCopyFailed] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [paymentMessage, setPaymentMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+  const submittingRef = useRef(false);
   const [smsConfig, setSmsConfig] = useState<SmsProviderConfig | null>(() => {
     if (typeof window === "undefined") return null;
     try {
@@ -67,6 +73,37 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
         // Network failure — keep whatever cached/fallback shortcode is already shown.
       });
   }, [isOffline, region]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isOffline || submittingRef.current) return;
+
+    // Ref guard blocks rapid double-clicks before React re-renders the button.
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    setPaymentMessage(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/offline-payments/sms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meterId, region, shortcode: smsShortcode }),
+      });
+      if (!response.ok) throw new Error("Payment request failed");
+      setPaymentMessage({
+        type: "success",
+        text: "SMS payment requested. Check your phone for confirmation.",
+      });
+    } catch {
+      setPaymentMessage({
+        type: "error",
+        text: "Could not start the payment. Please retry or use the SMS steps above.",
+      });
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+    }
+  }
 
   async function copyToClipboard(text: string) {
     try {
@@ -268,27 +305,39 @@ export default function OfflinePaymentModal({ meterId, region, onClose }: Props)
         </div>
 
         {/* Footer */}
-        <div className="px-5 py-4 border-t border-white/10 space-y-2">
+        <form
+          onSubmit={handleSubmit}
+          className="px-5 py-4 border-t border-white/10 space-y-2"
+        >
           <button
             type="submit"
-            disabled={isOffline}
-            aria-disabled={isOffline}
+            disabled={isOffline || isSubmitting}
+            aria-disabled={isOffline || isSubmitting}
             title={isOffline ? "Blockchain payments unavailable while offline. Use QR or SMS above." : undefined}
             className={`w-full rounded-lg py-3 text-sm font-semibold transition ${
-              isOffline
+              isOffline || isSubmitting
                 ? "bg-solar-yellow/30 text-solar-dark/50 cursor-not-allowed"
                 : "bg-solar-yellow text-solar-dark hover:opacity-90"
             }`}
           >
-            {isOffline ? "Offline — use QR" : "Pay"}
+            {isOffline ? "Offline — use QR" : isSubmitting ? "Sending…" : "Pay"}
           </button>
+          {paymentMessage && (
+            <p
+              role={paymentMessage.type === "error" ? "alert" : "status"}
+              className={`text-xs ${paymentMessage.type === "error" ? "text-red-400" : "text-green-400"}`}
+            >
+              {paymentMessage.text}
+            </p>
+          )}
           <button
+            type="button"
             onClick={onClose}
             className="w-full rounded-lg border border-white/10 py-3 text-sm text-gray-300 hover:border-solar-yellow hover:text-solar-yellow transition"
           >
             Close
           </button>
-        </div>
+        </form>
       </div>
     </div>
   );
