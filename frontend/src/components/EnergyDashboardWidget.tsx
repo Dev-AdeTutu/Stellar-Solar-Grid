@@ -187,6 +187,17 @@ export function formatEnergyTick(timestamp: string, range: EnergyRange): string 
   return date.toLocaleTimeString(undefined, { hour: "numeric", ...(range === "5m" ? { minute: "2-digit" } : {}) });
 }
 
+function formatEnergyValue(kwh: number): string {
+  if (kwh >= 1_000_000_000) return `${(kwh / 1_000_000_000).toFixed(1)}B`;
+  if (kwh >= 1_000_000) return `${(kwh / 1_000_000).toFixed(1)}M`;
+  if (kwh >= 1_000) return `${(kwh / 1_000).toFixed(1)}K`;
+  return kwh.toFixed(1);
+}
+  const date = new Date(timestamp);
+  if (range === "daily") return date.toLocaleDateString(undefined, { weekday: "short" });
+  return date.toLocaleTimeString(undefined, { hour: "numeric", ...(range === "5m" ? { minute: "2-digit" } : {}) });
+}
+
 const DISPATCH_LABELS: Record<VppDispatch["signal"], string> = {
   charge: "Charge",
   discharge: "Discharge",
