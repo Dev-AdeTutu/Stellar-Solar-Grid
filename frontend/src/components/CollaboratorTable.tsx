@@ -7,11 +7,13 @@ import { Skeleton } from "@/components/Skeleton";
 export interface Collaborator {
   address: string;
   basisPoints: number; // 100 = 1%
+  email?: string;
 }
 
 interface Props {
   collaborators: Collaborator[];
   loading?: boolean;
+  isAdmin?: boolean;
   onAdd: (address: string, basisPoints: number) => Promise<void>;
   onRemove: (address: string) => Promise<void>;
   onRefresh?: () => Promise<void>;
@@ -27,7 +29,14 @@ interface TotalSharesResponse {
   remaining: number;
 }
 
-export default function CollaboratorTable({ collaborators, loading, onAdd, onRemove, onRefresh }: Props) {
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain) return "•••";
+  const visible = local.slice(0, 1);
+  return `${visible}${"•".repeat(Math.max(local.length - 1, 3))}@${domain}`;
+}
+
+export default function CollaboratorTable({ collaborators, loading, isAdmin = false, onAdd, onRemove, onRefresh }: Props) {
   const { showToast } = useToast();
   const [copied, setCopied] = useState<string | null>(null);
   const [newAddress, setNewAddress] = useState("");
@@ -238,6 +247,14 @@ export default function CollaboratorTable({ collaborators, loading, onAdd, onRem
                       {copied === c.address ? "✓" : "⧉"}
                     </button>
                   </div>
+                  {c.email && (
+                    <div
+                      className="text-xs text-gray-500 mt-0.5"
+                      title={isAdmin ? c.email : undefined}
+                    >
+                      {isAdmin ? c.email : maskEmail(c.email)}
+                    </div>
+                  )}
                 </td>
                 <td className={styles.shareCell}>
                   <span className={styles.shareLabel}>
