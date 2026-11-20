@@ -4,6 +4,14 @@ import * as StellarSdk from "@stellar/stellar-sdk";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { StellarService } from "../lib/stellar.js";
 
+function getPublicBaseUrl(): string {
+  const raw = process.env.PUBLIC_BASE_URL?.trim();
+  if (raw) {
+    return raw.replace(/\/+$/, "");
+  }
+  return "http://localhost:3000";
+}
+
 export function createMeterQrRouter(stellar: StellarService) {
   const router = Router();
   router.get("/:meterId/qr", asyncHandler(async (req, res) => {
@@ -18,11 +26,13 @@ export function createMeterQrRouter(stellar: StellarService) {
       return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
     }
     if (!meter) return res.status(404).json({ error: "Meter not found", code: "METER_NOT_FOUND" });
+    const baseUrl = getPublicBaseUrl();
     const payload = {
       version: 1,
       type: "stellar-solar-grid-meter",
       meter_id: meterId,
       owner: String(meter.owner),
+      url: `${baseUrl}/meters/${encodeURIComponent(meterId)}`,
       metadata: {
         active: Boolean(meter.active),
         plan: String(meter.plan ?? "Unknown"),
