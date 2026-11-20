@@ -15,6 +15,19 @@ export interface ImpactRecord {
   incomeAfter: number;
   kwhDelivered: number;
   investmentUsd: number;
+  /**
+   * Identity of the physical asset this record measures. Records that share an
+   * assetId describe the same physical asset (e.g. a solar array shared between
+   * communities) and must not have their generation counted more than once.
+   * Defaults to projectId when omitted.
+   */
+  assetId?: string;
+  /**
+   * This community's ownership/share weight in the asset, in [0, 1]. When
+   * several records reference the same asset, kwhDelivered is attributed once
+   * and split proportionally by these weights. Defaults to 1.
+   */
+  share?: number;
 }
 
 export interface Story {
@@ -60,10 +73,50 @@ export function resetImpact(): void {
   stories.length = 0;
 }
 
+function assetKey(r: ImpactRecord): string {
+  return r.assetId ?? r.projectId;
+}
+
+/**
+ * Attribute each asset's generation once across the records that reference it.
+ * Returns a map from record projectId to the kwhDelivered attributable to that
+ * record. For an asset referenced by a single record the full generation is
+ * attributed; for an asset shared by several records the generation is split
+ * proportionally by share weight so the combined total equals the asset's
+ * actual generation rather than the sum over all referencing communities.
+ */
+function attributedKwh(list: ImpactRecord[]): Map<string, number> {
+  const byAsset = new Map<string, ImpactRecord[]>();
+  for (const r of list) {
+    const key = assetKey(r);
+    const group = byAsset.get(key);
+    if (group) group.push(r);
+    else byAsset.set(key, [r]);
+  }
+  const result = new Map<string, number>();
+  for (const group of byAsset.values()) {
+    if (group.length === 1) {
+      result.set(group[0].projectId, group[0].kwhDelivered);
+      continue;
+    }
+    // Shared asset: count its generation once, split by ownership weight.
+    const totalWeight = group.reduce((s, r) => s + Math.max(0, r.share ?? 1), 0);
+    const assetKwh = Math.max(...group.map((r) => r.kwhDelivered));
+    for (const r of group) {
+      const weight = Math.max(0, r.share ?? 1);
+      const share = totalWeight > 0 ? weight / totalWeight : 1 / group.length;
+      result.set(r.projectId, assetKwh * share);
+    }
+  }
+  return result;
+}
+
 export function totals(projectId?: string) {
   const list = projectId ? [records.get(projectId)].filter((r): r is ImpactRecord => !!r) : [...records.values()];
   const households = list.reduce((s, r) => s + r.householdsElectrified, 0);
   const incomeGain = list.reduce((s, r) => s + (r.incomeAfter - r.incomeBefore) * 12 * r.householdsElectrified, 0);
+  const kwhByProject = attributedKwh(list);
+  const kwhDelivered = list.reduce((s, r) => s + (kwhByProject.get(r.projectId) ?? 0), 0);
   return {
     projects: list.length,
     householdsElectrified: households,
@@ -72,8 +125,8 @@ export function totals(projectId?: string) {
     avgIncomeImprovementPct: round2(
       households > 0 ? (list.reduce((s, r) => s + pct(r) * r.householdsElectrified, 0) / households) : 0,
     ),
-    kwhDelivered: list.reduce((s, r) => s + r.kwhDelivered, 0),
-    co2AvoidedTonnes: round2(list.reduce((s, r) => s + r.kwhDelivered * PROXIES.co2PerKwh, 0)),
+    kwhDelivered: round2(kwhDelivered),
+    co2AvoidedTonnes: round2(kwhDelivered * PROXIES.co2PerKwh),
     investmentUsd: list.reduce((s, r) => s + r.investmentUsd, 0),
   };
 }

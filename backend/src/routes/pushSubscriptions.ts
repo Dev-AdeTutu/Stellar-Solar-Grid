@@ -7,7 +7,11 @@ import {
   upsertPushSubscription,
   upsertNativePushSubscription,
 } from "../lib/pushSubscriptions.js";
-import { getVapidPublicKey, isPushConfigured } from "../lib/pushNotifications.js";
+import {
+  getVapidPublicKey,
+  isPushConfigured,
+  sendBatchPushNotifications,
+} from "../lib/pushNotifications.js";
 
 const pushSubscriptionsRouter = Router();
 
@@ -37,6 +41,15 @@ const NativeSubscriptionSchema = z.object({
 
 const NativeUnsubscribeSchema = z.object({
   token: z.string().min(20).max(256).regex(/^ExponentPushToken\[[A-Za-z0-9_-]+\]$/),
+});
+
+const BatchSendSchema = z.object({
+  tokens: z.array(
+    z.string().min(20).max(256).regex(/^ExponentPushToken\[[A-Za-z0-9_-]+\]$/, "Invalid Expo push token"),
+  ),
+  title: z.string().min(1),
+  body: z.string().min(1),
+  data: z.record(z.unknown()).optional(),
 });
 
 pushSubscriptionsRouter.get(
@@ -103,5 +116,27 @@ pushSubscriptionsRouter.post("/native/unsubscribe", (req, res) => {
   deleteNativePushSubscription(parsed.data.token);
   return res.json({ ok: true });
 });
+
+pushSubscriptionsRouter.post(
+  "/native/batch-send",
+  asyncHandler(async (req, res) => {
+    const parsed = BatchSendSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: "Invalid batch push payload",
+        details: parsed.error.flatten().fieldErrors,
+      });
+    }
+
+    const { tokens, title, body, data } = parsed.data;
+    if (tokens.length === 0) {
+      console.warn("no tokens to notify");
+      return res.status(400).json({ error: "no tokens to notify" });
+    }
+
+    const result = await sendBatchPushNotifications(tokens, { title, body, data });
+    return res.json({ ok: true, ...result });
+  }),
+);
 
 export { pushSubscriptionsRouter };
