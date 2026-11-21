@@ -171,7 +171,7 @@ vppRouter.post(
     const body = DispatchBody.safeParse(req.body);
     if (!body.success) return validationError(res, body.error);
     try {
-      res.status(202).json(dispatchSignal(body.data));
+      res.status(202).json(await dispatchSignal(body.data));
     } catch (err) {
       return domainError(res, err);
     }

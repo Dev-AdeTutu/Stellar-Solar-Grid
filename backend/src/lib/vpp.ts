@@ -21,6 +21,12 @@
 import { createDemandResponseEvent, type DemandResponseEvent } from "./demandResponse.js";
 import { sendPayment } from "./stellar.js";
 
+/** Resources handled per event-loop turn during a dispatch fan-out. */
+export const DISPATCH_CHUNK_SIZE = 500;
+
+/** Lets pending I/O and timers run: a macrotask, not a microtask, so the loop really turns. */
+const yieldToEventLoop = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 export type ResourceType = "solar" | "battery" | "ev" | "load" | "wind";
 
 export type VppResource = {
@@ -174,7 +180,7 @@ export type DispatchSignal = {
   startsAt: string;
   /** Operator-supplied reference, e.g. an event id in their system. */
   externalRef: string | null;
-  status: "received" | "dispatched" | "completed" | "failed";
+  status: "received" | "dispatching" | "dispatched" | "completed" | "failed";
   receivedAt: string;
   /** Per-resource instructions issued when the signal was dispatched. */
   instructions: DispatchInstruction[];
@@ -728,12 +734,18 @@ function actionFor(resource: VppResource, direction: "increase" | "decrease"): D
  * each instruction is mirrored into a demand-response event so the meter's
  * response is tracked with the same machinery as other DR programs.
  */
-export function dispatchSignal(params: { signalId: string; now?: Date }): DispatchSignal {
+export async function dispatchSignal(params: {
+  signalId: string;
+  now?: Date;
+  /** Resources processed per event-loop turn. Defaults to `DISPATCH_CHUNK_SIZE`. */
+  chunkSize?: number;
+}): Promise<DispatchSignal> {
   const signal = dispatchSignals.get(params.signalId);
   if (!signal) fail("Dispatch signal not found", "NOT_FOUND");
   if (signal.status !== "received") fail("Signal has already been processed", "CONFLICT");
   const now = params.now ?? new Date();
   const vpp = requireVpp(signal.vppId);
+  const chunkSize = Math.max(1, Math.floor(params.chunkSize ?? DISPATCH_CHUNK_SIZE));
 
   const fleet = listResources(vpp.id).filter((resource) => resource.status === "online");
   const available = fleet.reduce((sum, resource) => sum + resource.availableKw, 0);
@@ -743,32 +755,51 @@ export function dispatchSignal(params: { signalId: string; now?: Date }): Dispat
     return signal;
   }
 
+  // Claimed before the first yield, so a second dispatch of the same signal is refused instead of
+  // fanning out twice while this one is between chunks.
+  signal.status = "dispatching";
+
   const deliverable = Math.min(signal.targetKw, available);
+  const endAt = new Date(new Date(signal.startsAt).getTime() + signal.durationMinutes * 60_000).toISOString();
   const instructions: DispatchInstruction[] = [];
-  for (const resource of fleet) {
-    const share = round2((resource.availableKw / available) * deliverable);
-    if (share <= 0) continue;
-    const action = actionFor(resource, signal.direction);
-    let event: DemandResponseEvent | null = null;
-    try {
-      event = createDemandResponseEvent({
-        programId: `vpp:${vpp.id}`,
-        participantId: resource.ownerId,
-        startAt: signal.startsAt,
-        endAt: new Date(new Date(signal.startsAt).getTime() + signal.durationMinutes * 60_000).toISOString(),
-        reductionKw: share,
-      });
-    } catch {
-      // DR tracking is best-effort; the dispatch instruction still stands.
-      event = null;
+
+  try {
+    // The fleet and its shares are fixed at the start: a resource that goes offline mid-dispatch
+    // still receives the instruction it was allocated, and one that comes online waits for the next
+    // signal. The loop yields to the event loop between chunks so a large fleet does not stall
+    // every other request for the whole fan-out.
+    for (let offset = 0; offset < fleet.length; offset += chunkSize) {
+      for (const resource of fleet.slice(offset, offset + chunkSize)) {
+        const share = round2((resource.availableKw / available) * deliverable);
+        if (share <= 0) continue;
+        const action = actionFor(resource, signal.direction);
+        let event: DemandResponseEvent | null = null;
+        try {
+          event = createDemandResponseEvent({
+            programId: `vpp:${vpp.id}`,
+            participantId: resource.ownerId,
+            startAt: signal.startsAt,
+            endAt,
+            reductionKw: share,
+          });
+        } catch {
+          // DR tracking is best-effort; the dispatch instruction still stands.
+          event = null;
+        }
+        instructions.push({
+          resourceId: resource.id,
+          ownerId: resource.ownerId,
+          deltaKw: signal.direction === "increase" ? share : -share,
+          action,
+          demandResponseEventId: event?.id ?? null,
+        });
+      }
+      if (offset + chunkSize < fleet.length) await yieldToEventLoop();
     }
-    instructions.push({
-      resourceId: resource.id,
-      ownerId: resource.ownerId,
-      deltaKw: signal.direction === "increase" ? share : -share,
-      action,
-      demandResponseEventId: event?.id ?? null,
-    });
+  } catch (err) {
+    signal.status = "failed";
+    signal.failureReason = err instanceof Error ? err.message : "Dispatch failed";
+    throw err;
   }
 
   signal.instructions = instructions;
