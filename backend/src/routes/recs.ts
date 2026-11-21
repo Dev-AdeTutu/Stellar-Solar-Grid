@@ -154,7 +154,9 @@ recsRouter.post(
     if (!body.success) return validationError(res, body.error);
     try {
       const executed = executeTrade(body.data.buyerId, order.data, body.data.feeBps ?? DEFAULT_REC_FEE_BPS);
-      res.json({ trades: executed, count: executed.length });
+      // Settlement updates the buyer's holding index synchronously. Return the
+      // refreshed holdings so clients do not need to wait for a re-index job.
+      res.json({ trades: executed, count: executed.length, holdings: getHoldings(body.data.buyerId) });
     } catch (err) {
       return domainError(res, err);
     }

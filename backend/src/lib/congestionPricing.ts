@@ -108,7 +108,21 @@ export function listZoneStates(): ZoneState[] {
 
 /** Effective per-unit price after congestion adjustment. */
 export function adjustedPrice(zone: string, basePrice: number): number {
-  return Number((basePrice * (states.get(zone)?.multiplier ?? 1)).toFixed(7));
+  return adjustedPriceForZones([zone], basePrice);
+}
+
+/**
+ * Effective price for a transaction that crosses one or more zones. A
+ * transaction can be inside overlapping peak windows; congestion is a single
+ * price adjustment, so use the most expensive applicable multiplier rather than
+ * compounding each zone's multiplier.
+ */
+export function adjustedPriceForZones(zones: readonly string[], basePrice: number): number {
+  const multiplier = zones.reduce(
+    (maximum, zone) => Math.max(maximum, states.get(zone)?.multiplier ?? 1),
+    1,
+  );
+  return Number((basePrice * multiplier).toFixed(7));
 }
 
 export function subscribeToZone(zone: string, ownerAddress: string): void {

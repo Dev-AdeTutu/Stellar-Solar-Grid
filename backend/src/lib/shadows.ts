@@ -36,6 +36,24 @@ export interface ShadowHistoryEntry {
 const shadows = new Map<string, Shadow>();
 const history = new Map<string, ShadowHistoryEntry[]>();
 const MAX_HISTORY = 500;
+const FLOAT_EPSILON = 1e-9;
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (typeof left === "number" && typeof right === "number") {
+    return Math.abs(left - right) < FLOAT_EPSILON;
+  }
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => valuesEqual(value, right[index]));
+  }
+  if (left && right && typeof left === "object" && typeof right === "object") {
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const keys = Object.keys(leftRecord);
+    return keys.length === Object.keys(rightRecord).length
+      && keys.every((key) => Object.hasOwn(rightRecord, key) && valuesEqual(leftRecord[key], rightRecord[key]));
+  }
+  return left === right;
+}
 
 export function getShadow(meterId: string): Shadow {
   let s = shadows.get(meterId);
@@ -72,7 +90,7 @@ export function delta(meterId: string): ShadowState {
   const s = getShadow(meterId);
   const out: ShadowState = {};
   for (const [k, v] of Object.entries(s.desired)) {
-    if (JSON.stringify(v) !== JSON.stringify(s.reported[k])) out[k] = v;
+    if (!valuesEqual(v, s.reported[k])) out[k] = v;
   }
   return out;
 }
@@ -105,7 +123,7 @@ function resolveConflicts(meterId: string, keys: string[], strategy: ConflictStr
   const s = getShadow(meterId);
   const resolved: { key: string; desired: unknown; reported: unknown; winner: "desired" | "reported" }[] = [];
   for (const k of keys) {
-    if (!(k in s.desired) || JSON.stringify(s.desired[k]) === JSON.stringify(s.reported[k])) continue;
+    if (!(k in s.desired) || valuesEqual(s.desired[k], s.reported[k])) continue;
     const reportedNewer = (s.reportedMeta[k]?.updatedAt ?? 0) > (s.desiredMeta[k]?.updatedAt ?? 0);
     const winner = strategy === "reported_wins" || (strategy === "latest_wins" && reportedNewer) ? "reported" : "desired";
     resolved.push({ key: k, desired: s.desired[k], reported: s.reported[k], winner });

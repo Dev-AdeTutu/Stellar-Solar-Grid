@@ -13,7 +13,7 @@
 import { Router } from "express";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 import {
-  adjustedPrice,
+  adjustedPriceForZones,
   forecastZone,
   getZoneState,
   listZoneStates,
@@ -36,7 +36,19 @@ congestionRouter.get("/:zone", (req, res) => {
   const state = getZoneState(req.params.zone);
   if (!state) return res.status(404).json({ error: "Zone not found" });
   const base = Number(req.query.basePrice);
-  res.json({ ...state, ...(isPositive(base) ? { basePrice: base, adjustedPrice: adjustedPrice(state.zone, base) } : {}) });
+  if (!isPositive(base)) return res.json(state);
+
+  const requestedZones = typeof req.query.zones === "string"
+    ? req.query.zones.split(",").map((zone) => zone.trim()).filter(Boolean)
+    : [];
+  const zones = [...new Set([state.zone, ...requestedZones])];
+  res.json({
+    ...state,
+    basePrice: base,
+    zones,
+    // Overlapping windows share one effective multiplier: take the maximum.
+    adjustedPrice: adjustedPriceForZones(zones, base),
+  });
 });
 
 congestionRouter.get("/:zone/forecast", (req, res) => {
