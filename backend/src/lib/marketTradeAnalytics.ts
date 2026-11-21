@@ -40,6 +40,20 @@ function bucketKey(iso: string, grain: "hour" | "day" | "week"): string {
   return weekStart(iso);
 }
 
+/**
+ * Filters matches to those whose open time falls within [from, to] (inclusive).
+ * `from` and `to` are ISO timestamps; a match exactly at either boundary is kept,
+ * while the candle immediately preceding `from` is excluded.
+ */
+export function filterMatchesByRange(matches: TradeMatch[], from: string, to: string): TradeMatch[] {
+  const fromMs = new Date(from).getTime();
+  const toMs = new Date(to).getTime();
+  return matches.filter((m) => {
+    const openMs = new Date(m.matchedAt).getTime();
+    return openMs >= fromMs && openMs <= toMs;
+  });
+}
+
 function buildHistory(matches: TradeMatch[], grain: "hour" | "day" | "week"): PricePoint[] {
   const buckets = new Map<string, { valueXlm: number; volumeKwh: number; trades: number }>();
   for (const m of matches) {

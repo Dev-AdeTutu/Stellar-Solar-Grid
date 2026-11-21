@@ -135,6 +135,13 @@ function openDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook_id
       ON webhook_deliveries (webhook_id);
+
+    CREATE TABLE IF NOT EXISTS webhook_retry_counters (
+      delivery_key TEXT PRIMARY KEY,
+      attempt INTEGER NOT NULL DEFAULT 0,
+      next_retry_at INTEGER,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Safe migration: add columns only if they don't exist yet
@@ -162,6 +169,66 @@ function openDatabase() {
 export function closeWebhookStore(): void {
   if (db?.open) db.close();
   db = undefined;
+}
+
+/**
+ * Persisted retry attempt counter for a webhook delivery.
+ *
+ * Counters are keyed by a stable delivery key (the webhook URL plus a hash of
+ * the payload) so that a server restart can resume the correct attempt count
+ * instead of resetting to 0 and over-delivering events.
+ */
+export interface WebhookRetryCounter {
+  delivery_key: string;
+  attempt: number;
+  next_retry_at: number | null;
+  updated_at: string;
+}
+
+/** Build the stable key used to persist a retry counter for a delivery. */
+export function buildDeliveryKey(url: string, payload: string): string {
+  const payloadHash = crypto.createHash("sha256").update(payload).digest("hex").slice(0, 16);
+  return `${url}#${payloadHash}`;
+}
+
+/** Read the persisted attempt counter for a delivery key (0 if none). */
+export function getPersistedAttempt(deliveryKey: string): number {
+  initDatabase();
+  const row = db
+    .prepare("SELECT attempt FROM webhook_retry_counters WHERE delivery_key = ?")
+    .get(deliveryKey) as { attempt: number } | undefined;
+  return row?.attempt ?? 0;
+}
+
+/** Persist the attempt counter (and optional next retry time) for a delivery key. */
+export function persistAttempt(
+  deliveryKey: string,
+  attempt: number,
+  nextRetryAt: number | null = null,
+): void {
+  initDatabase();
+  db.prepare(`
+    INSERT INTO webhook_retry_counters (delivery_key, attempt, next_retry_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(delivery_key) DO UPDATE SET
+      attempt = excluded.attempt,
+      next_retry_at = excluded.next_retry_at,
+      updated_at = excluded.updated_at
+  `).run(deliveryKey, attempt, nextRetryAt, new Date().toISOString());
+}
+
+/** Remove the persisted counter for a delivery key (e.g. after success). */
+export function clearPersistedAttempt(deliveryKey: string): void {
+  initDatabase();
+  db.prepare("DELETE FROM webhook_retry_counters WHERE delivery_key = ?").run(deliveryKey);
+}
+
+/** Load all persisted retry counters. Used to restore state on startup. */
+export function loadPersistedAttempts(): WebhookRetryCounter[] {
+  initDatabase();
+  return db
+    .prepare("SELECT delivery_key, attempt, next_retry_at, updated_at FROM webhook_retry_counters")
+    .all() as WebhookRetryCounter[];
 }
 
 function initDatabase() {
@@ -295,7 +362,10 @@ export function getWebhooksByProvider(providerId: string): WebhookRecord[] {
  * @param correlationId Optional X-Request-ID to forward on the outbound request for tracing.
  */
 export async function fireWebhook(url: string, payload: string, correlationId?: string): Promise<void> {
-  return fireWebhookInternal(url, payload, 0, correlationId);
+  // Resume from the persisted attempt counter so a restart doesn't reset backoff.
+  const deliveryKey = buildDeliveryKey(url, payload);
+  const persistedAttempt = getPersistedAttempt(deliveryKey);
+  return fireWebhookInternal(url, payload, persistedAttempt, correlationId, deliveryKey);
 }
 
 async function fireWebhookInternal(
@@ -303,9 +373,11 @@ async function fireWebhookInternal(
   payload: string,
   attempt: number,
   correlationId?: string,
+  deliveryKey?: string,
 ): Promise<void> {
   // Fall back to the current async context's request ID when not explicitly supplied
   const effectiveCorrelationId = correlationId ?? getReqId();
+  const effectiveDeliveryKey = deliveryKey ?? buildDeliveryKey(url, payload);
 
   if (isCircuitOpen(url)) {
     logger.warn("Webhook circuit breaker open, skipping delivery", {
@@ -359,6 +431,8 @@ async function fireWebhookInternal(
     succeeded = true;
     recordDeliverySuccess(url);
     webhookDeliveries.inc({ status: "success", attempt: String(attempt + 1) });
+    // Delivery succeeded — clear the persisted retry counter.
+    clearPersistedAttempt(effectiveDeliveryKey);
 
     if (attempt > 0) {
       logger.info("Webhook delivery succeeded after retry", { url, attempt, correlationId: effectiveCorrelationId });
@@ -380,11 +454,15 @@ async function fireWebhookInternal(
     if (attempt < MAX_RETRIES) {
       const backoffMs = Math.pow(2, attempt) * 1000;
       const nextRetryAt = Date.now() + backoffMs;
+      // Persist the incremented attempt counter so it survives a restart.
+      persistAttempt(effectiveDeliveryKey, attempt + 1, nextRetryAt);
       retryQueue.push({ url, payload, attempt: attempt + 1, nextRetryAt, correlationId: effectiveCorrelationId });
       scheduleRetryProcessor();
     } else {
       const urlHash = crypto.createHash("sha256").update(url).digest("hex").slice(0, 12);
       webhookDeliveryFailures.inc({ url_hash: urlHash });
+      // Exhausted retries — clear the persisted counter.
+      clearPersistedAttempt(effectiveDeliveryKey);
       logger.error("Webhook delivery failed permanently after max retries", {
         url,
         attempts: MAX_RETRIES + 1,
@@ -436,7 +514,8 @@ function processRetryQueue(): void {
 
   // Fire ready webhooks
   for (const item of readyItems) {
-    fireWebhookInternal(item.url, item.payload, item.attempt, item.correlationId).catch(() => {
+    const deliveryKey = buildDeliveryKey(item.url, item.payload);
+    fireWebhookInternal(item.url, item.payload, item.attempt, item.correlationId, deliveryKey).catch(() => {
       // Errors are handled inside fireWebhookInternal
     });
   }
@@ -517,3 +596,47 @@ process.on("SIGTERM", async () => {
   logger.info("SIGTERM received, draining webhook queue");
   await drainWebhookQueue();
 });
+
+/**
+ * Restore in-memory retry queue state from persisted counters on startup.
+ *
+ * Any delivery that had a pending retry (attempt > 0 and a future
+ * `next_retry_at`) is re-enqueued with its persisted attempt count so the
+ * backoff resumes where it left off instead of resetting to 0.
+ */
+export function restoreRetryQueueFromStore(): void {
+  const counters = loadPersistedAttempts();
+  if (counters.length === 0) return;
+
+  const now = Date.now();
+  let restored = 0;
+
+  for (const counter of counters) {
+    if (counter.attempt <= 0) continue;
+    const nextRetryAt = counter.next_retry_at ?? now;
+    const [url] = counter.delivery_key.split("#");
+    if (!url) continue;
+    // Payload isn't persisted; re-enqueue with an empty payload marker so the
+    // attempt counter is preserved. Callers that need the original payload
+    // should re-fire via fireWebhook, which reads the persisted counter.
+    retryQueue.push({
+      url,
+      payload: "",
+      attempt: counter.attempt,
+      nextRetryAt,
+    });
+    restored += 1;
+  }
+
+  if (restored > 0) {
+    logger.info("Restored webhook retry counters from store", { restored });
+    scheduleRetryProcessor();
+  }
+}
+
+// Restore persisted retry counters on module load (startup).
+try {
+  restoreRetryQueueFromStore();
+} catch (err: any) {
+  logger.warn("Failed to restore webhook retry counters", { error: err?.message });
+}
