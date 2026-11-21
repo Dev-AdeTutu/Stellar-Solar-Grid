@@ -38,6 +38,27 @@ function addBucket(map: Map<string, number>, date: Date, granularity: "daily" | 
   map.set(bucket, (map.get(bucket) ?? 0) + value);
 }
 
+const RENEWABLE_SOURCES = new Set(["solar", "wind", "hydro", "geothermal", "biomass"]);
+
+function isRenewable(source: string): boolean {
+  return RENEWABLE_SOURCES.has(source.trim().toLowerCase());
+}
+
+function computeRenewablePercentage(mix: Array<{ source: string; units: number }>): number {
+  let total = 0;
+  let renewable = 0;
+  for (const entry of mix) {
+    const units = Number(entry.units ?? 0);
+    if (!Number.isFinite(units) || units <= 0) continue;
+    total += units;
+    if (isRenewable(entry.source)) {
+      renewable += units;
+    }
+  }
+  if (total <= 0) return 0;
+  return (renewable / total) * 100;
+}
+
 function sumTopMeters(rows: Array<{ meter_id: string; units: number }>): Array<{ meterId: string; totalUnits: number }> {
   const totals = new Map<string, number>();
   for (const row of rows) {
@@ -120,6 +141,53 @@ analyticsRouter.get(
       summary,
       series,
       topMeters: sumTopMeters(rows),
+    };
+
+    cache.set(cacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });
+    res.json(payload);
+  }),
+);
+
+analyticsRouter.get(
+  "/energy-mix",
+  asyncHandler(async (req, res) => {
+    const now = new Date();
+    const endDate = parseDate(req.query.end_date, now);
+    const startDate = parseDate(req.query.start_date, new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000));
+
+    const cacheKey = JSON.stringify({ route: "energy-mix", startDate: startDate.toISOString(), endDate: endDate.toISOString() });
+    const cached = cache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      res.json(cached.data);
+      return;
+    }
+
+    const db = initUsageEventStore();
+    const rows = db
+      .prepare(
+        `
+          SELECT source, units
+          FROM usage_events
+          WHERE received_at >= ? AND received_at <= ?
+        `,
+      )
+      .all(startDate.toISOString(), endDate.toISOString()) as Array<{ source: string; units: number }>;
+
+    const totals = new Map<string, number>();
+    for (const row of rows) {
+      const source = String(row.source ?? "unknown").trim().toLowerCase() || "unknown";
+      const units = Number(row.units ?? 0);
+      if (!Number.isFinite(units) || units <= 0) continue;
+      totals.set(source, (totals.get(source) ?? 0) + units);
+    }
+
+    const mix = [...totals.entries()]
+      .map(([source, units]) => ({ source, units }))
+      .sort((a, b) => b.units - a.units);
+
+    const payload = {
+      mix,
+      renewablePercentage: computeRenewablePercentage(mix),
     };
 
     cache.set(cacheKey, { data: payload, expiresAt: Date.now() + CACHE_TTL_MS });

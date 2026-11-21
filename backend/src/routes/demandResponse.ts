@@ -279,6 +279,52 @@ router.put('/events/:eventId/status', requireAdmin, async (req: Request, res: Re
         validStatuses
       });
     }
+
+    if (status === 'cancelled') {
+      const db = (req as any).db;
+
+      const event = db.prepare('SELECT * FROM peak_events WHERE id = ?').get(eventId);
+      if (!event || event.status === 'cancelled') {
+        return res.status(404).json({
+          success: false,
+          error: 'Event not found or already cancelled'
+        });
+      }
+
+      const affectedMeters = db.prepare(`
+        SELECT meter_id, reserved_capacity_kw
+        FROM demand_response_reservations
+        WHERE peak_event_id = ?
+      `).all(eventId);
+
+      const cancelEvent = db.transaction(() => {
+        for (const reservation of affectedMeters) {
+          db.prepare(`
+            UPDATE meter_metadata
+            SET reserved_capacity_kw = MAX(0, COALESCE(reserved_capacity_kw, 0) - ?)
+            WHERE meter_id = ?
+          `).run(reservation.reserved_capacity_kw || 0, reservation.meter_id);
+        }
+
+        db.prepare('DELETE FROM demand_response_reservations WHERE peak_event_id = ?').run(eventId);
+        db.prepare('DELETE FROM peak_events WHERE id = ?').run(eventId);
+      });
+
+      try {
+        cancelEvent();
+      } catch (txError: any) {
+        logger.error('Error cancelling DR event', { error: txError.message, eventId });
+        return next(txError);
+      }
+
+      return res.json({
+        success: true,
+        message: 'Event cancelled and reserved capacity released',
+        eventId,
+        newStatus: 'cancelled',
+        releasedMeters: affectedMeters.length
+      });
+    }
     
     updateEventStatus(eventId, status);
     
