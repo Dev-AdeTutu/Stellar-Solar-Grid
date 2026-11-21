@@ -100,7 +100,19 @@ const BatteryDashboard: React.FC<BatteryDashboardProps> = ({
 
   if (loading) {
     return (
-      <div className="battery-dashboard battery-dashboard--loading" role="status">
+      <div
+        className="battery-dashboard battery-dashboard--loading"
+        role="status"
+        aria-label="Loading battery data"
+      >
+        <h2>Battery</h2>
+        <div className="battery-dashboard__section" aria-hidden="true">
+          <div className="battery-dashboard__label">
+            <span className="battery-dashboard__skeleton battery-dashboard__skeleton--label" />
+            <span className="battery-dashboard__skeleton battery-dashboard__skeleton--value" />
+          </div>
+          <div className="battery-dashboard__progress battery-dashboard__progress--skeleton" />
+        </div>
         <p>Loading battery data…</p>
       </div>
     );
