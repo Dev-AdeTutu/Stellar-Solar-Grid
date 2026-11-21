@@ -321,6 +321,49 @@ describe("multisig routes", () => {
     expect(list.proposals.map((p: { id: string }) => p.id)).toEqual([proposal.id]);
   });
 
+  it("tells signers who had not voted that the proposal expired, once, and nobody else (#1160)", async () => {
+    await registerWallet();
+    const proposal = await propose();
+    expect((await post(`/proposals/${proposal.id}/signatures`, {
+      publicKey: ALICE.publicKey(),
+      signature: signFor(ALICE, proposal.payloadHex),
+    })).status).toBe(200);
+    mocks.sendEmail.mockClear();
+
+    chain.ledger = 1_101;
+    const attempt = () =>
+      post(`/proposals/${proposal.id}/signatures`, { publicKey: BOB.publicKey(), signature: signFor(BOB, proposal.payloadHex) });
+    expect((await attempt()).status).toBe(409);
+
+    // Alice already signed and Carol has no email, so only Bob is told.
+    expect(mocks.sendEmail.mock.calls.map(([m]) => m.to)).toEqual(["bob@example.com"]);
+    expect(mocks.sendEmail.mock.calls[0][0].subject).toContain("expired");
+    expect(mocks.sendEmail.mock.calls[0][0].text).toContain(`proposal=${proposal.id}`);
+
+    // A later touch of the already expired proposal does not email again.
+    expect((await attempt()).status).toBe(409);
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not email anyone when a proposal has not expired", async () => {
+    await registerWallet();
+    const proposal = await propose();
+    mocks.sendEmail.mockClear();
+    chain.ledger = 1_100; // last valid ledger
+    await post(`/proposals/${proposal.id}/signatures`, { publicKey: ALICE.publicKey(), signature: signFor(ALICE, proposal.payloadHex) });
+    expect(mocks.sendEmail.mock.calls.some(([m]) => /expired/.test(m.subject))).toBe(false);
+  });
+
+  it("still expires the proposal when the notification email fails", async () => {
+    await registerWallet();
+    const proposal = await propose();
+    mocks.sendEmail.mockReset().mockRejectedValue(new Error("smtp down"));
+    chain.ledger = 1_101;
+    const res = await post(`/proposals/${proposal.id}/signatures`, { publicKey: ALICE.publicKey(), signature: signFor(ALICE, proposal.payloadHex) });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("PROPOSAL_EXPIRED");
+  });
+
   it("records failed submissions", async () => {
     await registerWallet();
     const proposal = await propose();
