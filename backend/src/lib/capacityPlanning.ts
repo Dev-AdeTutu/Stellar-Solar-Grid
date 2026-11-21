@@ -118,6 +118,17 @@ export function forecastRegion(region: string, horizonMonths = 24, scenario: Sce
   return { region, capacityKw, meterTrend, peakTrend, monthlyGrowthRate, projections, bottleneckInMonths };
 }
 
+/** Number of days in the given calendar year (365 or 366). */
+export function daysInYear(year: number): number {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0 ? 366 : 365;
+}
+
+/** Annual projection of a monthly value for the calendar year containing `month` (ISO "YYYY-MM"). */
+export function annualProjection(monthlyValue: number, month: string): number {
+  const year = Number(month.slice(0, 4));
+  return (monthlyValue * daysInYear(year)) / 12;
+}
+
 export function recommendInvestments(horizonMonths = 24, scenario: Scenario = "baseline"): Recommendation[] {
   return listRegions()
     .map((region) => forecastRegion(region, horizonMonths, scenario))

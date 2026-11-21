@@ -131,6 +131,64 @@ collaboratorRouter.post("/", requireAdminKey, async (req, res) => {
 });
 
 /**
+ * POST /api/collaborators/invite/accept — accept a collaborator invite.
+ *
+ * The invite token encodes the invited address, the share in basis points and
+ * an expiry timestamp (unix seconds). Expired tokens are rejected with 410 Gone
+ * before any state is mutated.
+ *
+ * Closes #1168.
+ */
+collaboratorRouter.post("/invite/accept", async (req, res) => {
+  const { token } = req.body as { token?: string };
+
+  if (!token || typeof token !== "string") {
+    return res.status(400).json({ error: "token is required", code: "VALIDATION_ERROR" });
+  }
+
+  let payload: { address?: string; basis_points?: number; expires_at?: number };
+  try {
+    payload = JSON.parse(Buffer.from(token, "base64url").toString("utf8"));
+  } catch {
+    return res.status(400).json({ error: "Invalid invite token", code: "INVALID_TOKEN" });
+  }
+
+  const { address, basis_points, expires_at } = payload ?? {};
+
+  if (
+    typeof address !== "string" ||
+    typeof basis_points !== "number" ||
+    typeof expires_at !== "number"
+  ) {
+    return res.status(400).json({ error: "Invalid invite token", code: "INVALID_TOKEN" });
+  }
+
+  try {
+    StellarSdk.StrKey.decodeEd25519PublicKey(address);
+  } catch {
+    return res.status(400).json({ error: "Invalid invite token", code: "INVALID_TOKEN" });
+  }
+
+  if (!Number.isInteger(basis_points) || basis_points < 0 || basis_points > 10000) {
+    return res.status(400).json({ error: "Invalid invite token", code: "INVALID_TOKEN" });
+  }
+
+  if (expires_at * 1000 <= Date.now()) {
+    return res.status(410).json({ error: "Invite expired", code: "INVITE_EXPIRED" });
+  }
+
+  try {
+    const hash = await adminInvoke("add_collaborator", [
+      StellarSdk.nativeToScVal(address, { type: "address" }),
+      StellarSdk.nativeToScVal(basis_points, { type: "u32" }),
+    ]);
+    return res.json({ hash });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message, code: "INTERNAL_ERROR" });
+  }
+});
+
+/**
  * DELETE /api/collaborators/:address — remove a collaborator (admin only)
  * Requires X-Admin-Key header.
  * Validates the address is a valid Stellar Ed25519 public key before invoking

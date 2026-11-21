@@ -29,8 +29,29 @@ export const locationalPricingRouter = Router();
 
 const STELLAR_ADDRESS_RE = /^G[A-Z2-7]{55}$/;
 
+/**
+ * Resolve the requested region from either the `:region` path param or the
+ * `?zone=` query param (e.g. GET /api/locational-pricing?zone=NG-LAG).
+ */
+function resolveRegion(req: { params?: { region?: string }; query?: Record<string, unknown> }): string | undefined {
+  const fromParam = req.params?.region;
+  if (typeof fromParam === "string" && fromParam.length > 0) return fromParam;
+  const fromQuery = req.query?.zone;
+  if (typeof fromQuery === "string" && fromQuery.length > 0) return fromQuery;
+  return undefined;
+}
+
 locationalPricingRouter.get("/regions", (_req, res) => res.json(listPrices()));
 locationalPricingRouter.get("/heatmap", (_req, res) => res.json(heatmap()));
+
+// GET /api/locational-pricing?zone=NG-LAG — prices in the zone's local currency.
+locationalPricingRouter.get("/", (req, res) => {
+  const region = resolveRegion(req);
+  if (!region) return res.status(400).json({ error: "zone query parameter is required" });
+  const p = getPrice(region);
+  if (!p) return res.status(404).json({ error: "Unknown region" });
+  res.json(p);
+});
 
 locationalPricingRouter.get("/regions/:region", (req, res) => {
   const p = getPrice(req.params.region);
@@ -42,6 +63,7 @@ locationalPricingRouter.put("/regions/:region", requireAdminKey, (req, res) => {
   const parsed = z.object({
     zone: z.string().min(1),
     lossFactor: z.number().min(0).max(1),
+    currency: z.string().min(1).optional(),
     lat: z.number().min(-90).max(90).optional(),
     lng: z.number().min(-180).max(180).optional(),
   }).safeParse(req.body ?? {});
