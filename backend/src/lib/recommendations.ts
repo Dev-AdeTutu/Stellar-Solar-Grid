@@ -418,6 +418,85 @@ function attachNudge(meterId: string, recommendationId: number, c: Candidate, f:
   }
 }
 
+/** Days of usage a meter needs before personalised recommendations can be generated. */
+export const MIN_HISTORY_DAYS = 7;
+
+/** A starter tip shown while a meter has too little history for personalised ones. */
+export interface OnboardingRecommendation {
+  /** Stable string id. Not a database id: it cannot be accepted or dismissed. */
+  id: string;
+  kind: string;
+  message: string;
+  priority: RecommendationPriority;
+  onboarding: true;
+}
+
+export const ONBOARDING_RECOMMENDATIONS: readonly OnboardingRecommendation[] = [
+  {
+    id: "onboarding-shift-peak",
+    kind: "onboarding",
+    message: "Run heavy appliances such as washing machines and dishwashers outside the 18:00-22:00 evening peak.",
+    priority: "medium",
+    onboarding: true,
+  },
+  {
+    id: "onboarding-use-daylight",
+    kind: "onboarding",
+    message: "Schedule high-load tasks for the middle of the day, when solar production is highest.",
+    priority: "medium",
+    onboarding: true,
+  },
+  {
+    id: "onboarding-standby",
+    kind: "onboarding",
+    message: "Switch off devices left on standby overnight; always-on loads add up over a week.",
+    priority: "low",
+    onboarding: true,
+  },
+];
+
+export interface RecommendationsResult {
+  recommendations: Array<Recommendation | OnboardingRecommendation>;
+  /** `true` when `recommendations` are starter tips because the meter has too little history. */
+  onboarding: boolean;
+  /** Why starter tips are shown. Present only when `onboarding` is true. */
+  reason?: string;
+  historyDays?: number;
+  minHistoryDays?: number;
+}
+
+/** How many distinct days a meter has submitted usage on. */
+export function usageHistoryDays(meterId: string): number {
+  const row = db()
+    .prepare(
+      `SELECT COUNT(DISTINCT date(received_at)) AS days FROM usage_events
+       WHERE meter_id = ? AND status IN ('submitted','pending')`,
+    )
+    .get(meterId) as { days: number };
+  return row.days;
+}
+
+/**
+ * The meter's recommendations, or starter tips with an explanation when there are none yet because
+ * the meter has fewer than `MIN_HISTORY_DAYS` days of usage. A meter with enough history and no
+ * recommendations (for example, all dismissed this week) still gets an empty list.
+ */
+export function recommendationsOrOnboarding(meterId: string): RecommendationsResult {
+  const recommendations = listRecommendations(meterId);
+  if (recommendations.length > 0) return { recommendations, onboarding: false };
+
+  const historyDays = usageHistoryDays(meterId);
+  if (historyDays >= MIN_HISTORY_DAYS) return { recommendations, onboarding: false };
+
+  return {
+    recommendations: [...ONBOARDING_RECOMMENDATIONS],
+    onboarding: true,
+    reason: `Personalised recommendations need at least ${MIN_HISTORY_DAYS} days of usage; this meter has ${historyDays}. Here are some tips to start with.`,
+    historyDays,
+    minHistoryDays: MIN_HISTORY_DAYS,
+  };
+}
+
 export function listRecommendations(meterId: string): Recommendation[] {
   const current = kwhBetween(meterId, 7, 0);
   return (db()
