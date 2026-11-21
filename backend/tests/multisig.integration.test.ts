@@ -25,6 +25,7 @@ import {
   buildAuthPreimage,
   buildSignatureScVal,
   decodeSignature,
+  expireDueProposals,
   resetMultisigForTests,
   type MultisigChain,
 } from "../src/lib/multisig";
@@ -343,6 +344,30 @@ describe("multisig routes", () => {
     // A later touch of the already expired proposal does not email again.
     expect((await attempt()).status).toBe(409);
     expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("expires untouched proposals in a sweep and tells their pending signers, once (#1160)", async () => {
+    await registerWallet();
+    const stale = await propose();
+    chain.ledger = 1_050;
+    const fresh = await propose();
+    mocks.sendEmail.mockClear();
+
+    chain.ledger = 1_101; // past the first proposal's window (1,100), inside the second's (1,150)
+    const expired = await expireDueProposals(chain);
+
+    expect(expired.map((p) => p.id)).toEqual([stale.id]);
+    expect(mocks.sendEmail.mock.calls.map(([m]) => m.to).sort()).toEqual(["alice@example.com", "bob@example.com"]);
+    const list = await (await fetch(`${base}/wallets/${WALLET}/proposals?status=pending`)).json();
+    expect(list.proposals.map((p: { id: string }) => p.id)).toEqual([fresh.id]);
+
+    mocks.sendEmail.mockClear();
+    expect(await expireDueProposals(chain)).toEqual([]);
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a sweep with nothing open does nothing", async () => {
+    expect(await expireDueProposals(chain)).toEqual([]);
   });
 
   it("does not email anyone when a proposal has not expired", async () => {

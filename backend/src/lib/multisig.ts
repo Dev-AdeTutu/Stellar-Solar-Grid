@@ -492,6 +492,25 @@ async function refreshExpiry(chain: MultisigChain, proposal: Proposal): Promise<
   return expired;
 }
 
+/**
+ * Expires every pending or ready proposal whose signature window has passed, notifying the signers
+ * who had not voted. Expiry is otherwise only noticed when a proposal is touched, so a proposal
+ * nobody opens again would stay `pending` and nobody would be told. Run this on an interval.
+ * Returns the proposals that were expired by this call.
+ */
+export async function expireDueProposals(chain: MultisigChain): Promise<Proposal[]> {
+  const open = (db().prepare("SELECT * FROM multisig_proposals WHERE status IN ('pending', 'ready')").all() as ProposalRow[]).map(toProposal);
+  if (open.length === 0) return [];
+  const latest = await chain.latestLedger();
+  const expired: Proposal[] = [];
+  for (const proposal of open) {
+    if (latest <= proposal.expirationLedger) continue;
+    const result = await refreshExpiry(chain, proposal);
+    if (result.status === "expired") expired.push(result);
+  }
+  return expired;
+}
+
 export async function addSignature(
   chain: MultisigChain,
   id: string,
