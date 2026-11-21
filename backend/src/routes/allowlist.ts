@@ -8,6 +8,21 @@ import { z } from 'zod';
 export const allowlistRouter = Router();
 const AddressSchema = z.object({ address: z.string().length(56) });
 
+// Methods permitted on the allowlist routes. Compared case-insensitively so
+// proxies forwarding uppercase methods (e.g. "GET") cannot bypass the check.
+const ALLOWED_METHODS = new Set(['GET', 'POST', 'DELETE']);
+
+allowlistRouter.use((req, res, next) => {
+  const method = req.method.toUpperCase();
+  if (!ALLOWED_METHODS.has(method)) {
+    return res.status(405).json({
+      error: 'Method Not Allowed',
+      code: 'METHOD_NOT_ALLOWED',
+    });
+  }
+  return next();
+});
+
 /** GET /api/allowlist — get all allowlisted addresses */
 allowlistRouter.get('/', asyncHandler(async (_req, res) => {
   const result = await stellarService.query('get_allowlist', []);
