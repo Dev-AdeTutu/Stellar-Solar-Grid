@@ -982,9 +982,31 @@ function startMqttBridge() {
   // Issue #601: submit near-zero-balance meters first within the batch.
   flushIntervalHandle = setInterval(flush, FLUSH_INTERVAL_MS);
 
+  // Issue #1171: track topics we've already subscribed to so a reconnect
+  // doesn't re-subscribe (and re-log) every topic. mqtt.js does not persist
+  // subscriptions across a clean session, so we clear this on 'close' and
+  // re-subscribe once on the next connect.
+  const subscribedTopics = new Set<string>();
+  const subscribeOnce = (topic: string, qos: 0 | 1 | 2, label: string) => {
+    if (subscribedTopics.has(topic)) return;
+    subscribedTopics.add(topic);
+    client.subscribe(topic, { qos }, (err) => {
+      if (err) {
+        subscribedTopics.delete(topic);
+        logger.error(`MQTT ${label} subscribe error`, { err });
+      }
+    });
+  };
+
+  client.on("close", () => {
+    // Session is gone; subscriptions must be re-established on reconnect.
+    subscribedTopics.clear();
+  });
+
   client.on("connect", () => {
     reconnectAttempts = 0;
     client.options.reconnectPeriod = 1000;
+    // Issue #1171: log the connected message once per connection event.
     logger.info(`IoT bridge connected to ${BROKER}`);
     // Issue #1069: on (re)connect, sync any edge results buffered while the
     // meter/bridge was offline. Best-effort so a sync failure can't break
@@ -994,19 +1016,13 @@ function startMqttBridge() {
     void syncGlobalModelSafely();
     // Issue #731: subscribe at QoS 2 (exactly-once, ordered) for meter usage so
     // the broker guarantees delivery AND ordering for billing-critical data.
-    client.subscribe(TOPIC, { qos: 2 }, (err) => {
-      if (err) logger.error("MQTT subscribe error", { err });
-    });
-    client.subscribe(HEARTBEAT_TOPIC, { qos: 1 }, (err) => {
-      if (err) logger.error("MQTT heartbeat subscribe error", { err });
-    });
-    client.subscribe(DEVICE_TELEMETRY_TOPIC, { qos: 0 }, (err) => {
-      if (err) logger.error("MQTT device telemetry subscribe error", { err });
-    });
-    client.subscribe(FREQUENCY_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT frequency subscribe error", { err }); });
-    client.subscribe(LOCATION_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT location subscribe error", { err }); });
-    client.subscribe(DR_CURTAILMENT_TOPIC, { qos: 1 }, (err) => { if (err) logger.error("MQTT DR curtailment subscribe error", { err }); });
-    client.subscribe(TAMPER_TOPIC, { qos: 2 }, (err) => { if (err) logger.error("MQTT tamper subscribe error", { err }); });
+    subscribeOnce(TOPIC, 2, "usage");
+    subscribeOnce(HEARTBEAT_TOPIC, 1, "heartbeat");
+    subscribeOnce(DEVICE_TELEMETRY_TOPIC, 0, "device telemetry");
+    subscribeOnce(FREQUENCY_TOPIC, 1, "frequency");
+    subscribeOnce(LOCATION_TOPIC, 1, "location");
+    subscribeOnce(DR_CURTAILMENT_TOPIC, 1, "DR curtailment");
+    subscribeOnce(TAMPER_TOPIC, 2, "tamper");
     // Issue #1047: (re)apply any active DR event on connect so curtailment
     // survives a bridge restart mid-event.
     void enforceActiveDrEvent().catch((err) => {
