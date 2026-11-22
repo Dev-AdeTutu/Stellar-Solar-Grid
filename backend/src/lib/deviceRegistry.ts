@@ -39,6 +39,7 @@ export type Device = {
   id: string;
   type: DeviceType;
   owner: string;
+  tenantId: string;
   manufacturer: string;
   model: string;
   serialNumber: string;
@@ -129,6 +130,7 @@ function db(): Database.Database {
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
         owner TEXT NOT NULL,
+        tenant_id TEXT NOT NULL DEFAULT '',
         manufacturer TEXT NOT NULL,
         model TEXT NOT NULL,
         serial_number TEXT NOT NULL,
@@ -215,6 +217,11 @@ function db(): Database.Database {
       CREATE INDEX IF NOT EXISTS idx_device_quarantine_active
         ON device_quarantine (released_at);
     `);
+    const deviceColumns = new Set(
+      (_db.pragma("table_info(devices)") as Array<{ name: string }>).map((column) => column.name),
+    );
+    if (!deviceColumns.has("tenant_id")) _db.exec("ALTER TABLE devices ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''");
+    _db.exec("CREATE INDEX IF NOT EXISTS idx_devices_tenant_id ON devices (tenant_id)");
     const performanceColumns = new Set(
       (_db.pragma("table_info(device_performance)") as Array<{ name: string }>).map((column) => column.name),
     );
@@ -242,6 +249,7 @@ type DeviceRow = {
   id: string;
   type: DeviceType;
   owner: string;
+  tenant_id: string;
   manufacturer: string;
   model: string;
   serial_number: string;
@@ -259,6 +267,7 @@ function toDevice(row: DeviceRow): Device {
     id: row.id,
     type: row.type,
     owner: row.owner,
+    tenantId: row.tenant_id,
     manufacturer: row.manufacturer,
     model: row.model,
     serialNumber: row.serial_number,
@@ -326,6 +335,7 @@ function toSchedule(row: MaintRow): MaintenanceSchedule {
 export type RegisterDeviceInput = {
   type: DeviceType;
   owner: string;
+  tenantId?: string;
   manufacturer: string;
   model: string;
   serialNumber: string;
@@ -343,14 +353,15 @@ export function registerDevice(input: RegisterDeviceInput): Device {
   try {
     db()
       .prepare(
-        `INSERT INTO devices (id, type, owner, manufacturer, model, serial_number, meter_id,
+        `INSERT INTO devices (id, type, owner, tenant_id, manufacturer, model, serial_number, meter_id,
                               location, installed_at, status, specs, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
       )
       .run(
         id,
         input.type,
         input.owner,
+        input.tenantId ?? input.owner,
         input.manufacturer,
         input.model,
         input.serialNumber,
@@ -379,6 +390,7 @@ export function getDevice(id: string): Device | undefined {
 
 export type DeviceFilter = {
   owner?: string;
+  tenantId?: string;
   type?: DeviceType;
   status?: DeviceStatus;
   meterId?: string;
@@ -390,6 +402,7 @@ export function listDevices(filter: DeviceFilter = {}): Device[] {
   const where: string[] = [];
   const args: unknown[] = [];
   if (filter.owner) (where.push("owner = ?"), args.push(filter.owner));
+  if (filter.tenantId) (where.push("tenant_id = ?"), args.push(filter.tenantId));
   if (filter.type) (where.push("type = ?"), args.push(filter.type));
   if (filter.status) (where.push("status = ?"), args.push(filter.status));
   if (filter.meterId) (where.push("meter_id = ?"), args.push(filter.meterId));
@@ -399,6 +412,18 @@ export function listDevices(filter: DeviceFilter = {}): Device[] {
                ORDER BY created_at DESC LIMIT ? OFFSET ?`;
   const rows = db().prepare(sql).all(...args, limit, offset) as DeviceRow[];
   return rows.map(toDevice);
+}
+
+export function getTenantMeterStats(tenantId: string): { total: number; active: number; inactive: number } {
+  const row = db().prepare(`
+    SELECT COUNT(*) AS total,
+           SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active
+    FROM devices
+    WHERE tenant_id = ? AND type = 'meter'
+  `).get(tenantId) as { total: number; active: number | null };
+  const total = Number(row.total ?? 0);
+  const active = Number(row.active ?? 0);
+  return { total, active, inactive: total - active };
 }
 
 export type UpdateDeviceInput = Partial<

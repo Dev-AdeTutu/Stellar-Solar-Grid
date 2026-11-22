@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import * as crypto from "crypto";
 import * as StellarSdk from "@stellar/stellar-sdk";
 import { stellarService } from "../lib/stellar.js";
@@ -38,6 +38,31 @@ export function verifySignature(rawBody: Buffer, signature: string): boolean {
 }
 
 /**
+ * Middleware: reject empty bodies with 400 and verify the HMAC signature over
+ * the exact raw request bytes before any parsing/validation of the payload.
+ * An empty body is never allowed to reach (or bypass) signature verification.
+ */
+export function requireWebhookSignature(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const rawBody = (req as Request & { rawBody?: Buffer }).rawBody;
+  if (!rawBody || rawBody.length === 0) {
+    return res
+      .status(400)
+      .json({ error: "Request body must not be empty", code: "EMPTY_BODY" });
+  }
+  const signature = req.headers["x-webhook-signature"];
+  if (typeof signature !== "string" || !signature || !verifySignature(rawBody, signature)) {
+    return res
+      .status(401)
+      .json({ error: "Invalid webhook signature", code: "UNAUTHORIZED" });
+  }
+  return next();
+}
+
+/**
  * Extract provider_id from request. Requires X-Provider-ID header.
  */
 function getProviderId(req: any): string | null {
@@ -54,19 +79,9 @@ function getProviderId(req: any): string | null {
  */
 webhookRouter.post(
   "/sms-payment",
+  requireWebhookSignature,
   validateRequest({ body: SmsPaymentWebhookSchema }),
   asyncHandler(async (req, res) => {
-    const signature = req.headers["x-webhook-signature"] as string | undefined;
-    if (
-      !signature ||
-      !verifySignature(
-        (req as any).rawBody ?? Buffer.from(JSON.stringify(req.body)),
-        signature,
-      )
-    ) {
-      return res.status(401).json({ error: "Invalid webhook signature", code: "UNAUTHORIZED" });
-    }
-
     const { meter_id, amount_xlm, plan } = req.body;
 
     const stroops = BigInt(Math.round(amount_xlm * 10_000_000));

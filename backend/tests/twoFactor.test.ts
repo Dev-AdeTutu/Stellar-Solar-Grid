@@ -34,6 +34,16 @@ describe("two-factor authentication", () => {
 
     expect(verifyTotp(secret, codeTwoStepsAhead, now)).toBe(false);
   });
+
+  it("accepts ±1 step window around boundary (issue #1147)", () => {
+    const { secret } = setupTwoFactor("admin");
+    const boundary = Date.parse("2026-01-01T00:00:30.000Z");
+    const previousStepCode = totp(secret, boundary - 1_000); // generated at :29
+    const nextStepCode = totp(secret, boundary + 29_000); // generated at :59
+
+    expect(verifyTotp(secret, previousStepCode, boundary)).toBe(true);
+    expect(verifyTotp(secret, nextStepCode, boundary)).toBe(true);
+  });
   it("consumes a recovery code once", () => {
     const { recoveryCodes } = setupTwoFactor("admin");
     expect(verifyTwoFactor("admin", recoveryCodes[0])).toBe(true);

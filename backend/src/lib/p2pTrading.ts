@@ -268,69 +268,78 @@ export function getUserMatches(userId: string): TradeMatch[] {
   );
 }
 
+const matchingLocks = new Set<string>();
+
 /**
  * Find compatible sell/buy offer pairs.
  * Matching criteria: buyer's maxPrice >= seller's askPrice, energy overlap.
  */
 export function runMatchingAlgorithm(): TradeMatch[] {
-  const now = new Date().toISOString();
-  const sells = [...offers.values()].filter(
-    (o) => o.direction === "sell" && o.status === "open" && o.expiresAt > now,
-  );
-  const buys = [...offers.values()].filter(
-    (o) => o.direction === "buy" && o.status === "open" && o.expiresAt > now,
-  );
+  if (matchingLocks.has("global")) return [];
+  matchingLocks.add("global");
+  try {
+    const now = new Date().toISOString();
+    const sells = [...offers.values()].filter(
+      (o) => o.direction === "sell" && o.status === "open" && o.expiresAt > now && o.remainingKwh > 0,
+    );
+    const buys = [...offers.values()].filter(
+      (o) => o.direction === "buy" && o.status === "open" && o.expiresAt > now && o.remainingKwh > 0,
+    );
 
-  const newMatches: TradeMatch[] = [];
+    const newMatches: TradeMatch[] = [];
 
-  for (const sell of sells) {
-    for (const buy of buys) {
-      if (sell.status !== "open" || buy.status !== "open") continue;
-      if (buy.userId === sell.userId) continue;
-      if (buy.pricePerKwh < sell.pricePerKwh) continue;
-      // Island-restricted offers may only match within the same active island.
-      if (sell.islandId !== null || buy.islandId !== null) {
-        try {
-          validateIslandTrade(sell, buy);
-        } catch {
-          continue;
+    for (const sell of sells) {
+      if (sell.status !== "open" || sell.remainingKwh <= 0) continue;
+      for (const buy of buys) {
+        if (buy.status !== "open" || buy.remainingKwh <= 0) continue;
+        if (buy.userId === sell.userId) continue;
+        if (buy.pricePerKwh < sell.pricePerKwh) continue;
+        // Island-restricted offers may only match within the same active island.
+        if (sell.islandId !== null || buy.islandId !== null) {
+          try {
+            validateIslandTrade(sell, buy);
+          } catch {
+            continue;
+          }
         }
+
+        const tradableKwh = Math.min(sell.remainingKwh, buy.remainingKwh);
+        if (tradableKwh < Math.max(sell.minKwh, buy.minKwh)) continue;
+
+        const settlementPrice = (sell.pricePerKwh + buy.pricePerKwh) / 2;
+        const totalXlm = tradableKwh * settlementPrice;
+        const fee = totalXlm * PLATFORM_FEE_RATE;
+        const sellerNet = totalXlm - fee;
+
+        const match: TradeMatch = {
+          id: nextId("MATCH"),
+          sellOfferId: sell.id,
+          buyOfferId: buy.id,
+          energyKwh: Number(tradableKwh.toFixed(4)),
+          pricePerKwh: Number(settlementPrice.toFixed(4)),
+          totalXlm: Number(totalXlm.toFixed(4)),
+          fee: Number(fee.toFixed(4)),
+          sellerNet: Number(sellerNet.toFixed(4)),
+          matchedAt: new Date().toISOString(),
+          status: "matched",
+          settledAt: null,
+          disputeReason: null,
+        };
+
+        sell.remainingKwh = Number((sell.remainingKwh - tradableKwh).toFixed(4));
+        buy.remainingKwh = Number((buy.remainingKwh - tradableKwh).toFixed(4));
+        if (sell.remainingKwh <= 0) { sell.remainingKwh = 0; sell.status = "matched"; }
+        if (buy.remainingKwh <= 0) { buy.remainingKwh = 0; buy.status = "matched"; }
+        matches.set(match.id, match);
+        newMatches.push(match);
+        if (sell.remainingKwh <= 0) break;
       }
-
-      const tradableKwh = Math.min(sell.remainingKwh, buy.remainingKwh);
-      if (tradableKwh < Math.max(sell.minKwh, buy.minKwh)) continue;
-
-      const settlementPrice = (sell.pricePerKwh + buy.pricePerKwh) / 2;
-      const totalXlm = tradableKwh * settlementPrice;
-      const fee = totalXlm * PLATFORM_FEE_RATE;
-      const sellerNet = totalXlm - fee;
-
-      const match: TradeMatch = {
-        id: nextId("MATCH"),
-        sellOfferId: sell.id,
-        buyOfferId: buy.id,
-        energyKwh: Number(tradableKwh.toFixed(4)),
-        pricePerKwh: Number(settlementPrice.toFixed(4)),
-        totalXlm: Number(totalXlm.toFixed(4)),
-        fee: Number(fee.toFixed(4)),
-        sellerNet: Number(sellerNet.toFixed(4)),
-        matchedAt: new Date().toISOString(),
-        status: "matched",
-        settledAt: null,
-        disputeReason: null,
-      };
-
-      sell.remainingKwh = Number((sell.remainingKwh - tradableKwh).toFixed(4));
-      buy.remainingKwh = Number((buy.remainingKwh - tradableKwh).toFixed(4));
-      if (sell.remainingKwh === 0) sell.status = "matched";
-      if (buy.remainingKwh === 0) buy.status = "matched";
-      matches.set(match.id, match);
-      newMatches.push(match);
-      if (sell.status !== "open") break;
     }
-  }
 
-  return newMatches;
+    return newMatches;
+  } finally {
+    matchingLocks.delete("global");
+  }
 }
 
 export function settleMatch(matchId: string): TradeMatch {

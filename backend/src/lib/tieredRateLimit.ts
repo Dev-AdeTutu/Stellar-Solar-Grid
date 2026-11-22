@@ -6,7 +6,7 @@
  * can absorb short spikes. Usage counters are tracked in real time per
  * consumer and exposed via /api/rate-limits/usage.
  */
-
+import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
@@ -47,16 +47,26 @@ const subscriptions = new Map<string, Tier>();
 const usage = new Map<string, Usage>();
 
 let _db: Database.Database | undefined;
+let readTier: Database.Statement;
+let writeTier: Database.Statement;
 
 function db(): Database.Database {
   if (!_db) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
     _db = new Database(DB_PATH);
+    _db.pragma("journal_mode = WAL");
     _db.exec(`
       CREATE TABLE IF NOT EXISTS rate_limit_tiers (
         consumer_id TEXT PRIMARY KEY,
-        tier TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+    `);
+    readTier = _db.prepare("SELECT tier FROM rate_limit_tiers WHERE consumer_id = ?");
+    writeTier = _db.prepare(`
+      INSERT INTO rate_limit_tiers (consumer_id, tier, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at
     `);
   }
   return _db;
@@ -72,12 +82,8 @@ export function isTier(value: unknown): value is Tier {
 }
 
 export function setTier(consumerId: string, tier: Tier): void {
-  db()
-    .prepare(
-      `INSERT INTO rate_limit_tiers (consumer_id, tier, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at`,
-    )
-    .run(consumerId, tier, new Date().toISOString());
+  db();
+  writeTier.run(consumerId, tier);
   subscriptions.set(consumerId, tier);
   const u = usage.get(consumerId);
   if (u) u.tokens = Math.min(u.tokens, capacity(tier));
@@ -86,16 +92,12 @@ export function setTier(consumerId: string, tier: Tier): void {
 export function getTier(consumerId: string): Tier {
   const cached = subscriptions.get(consumerId);
   if (cached) return cached;
-  const row = db().prepare("SELECT tier FROM rate_limit_tiers WHERE consumer_id = ?").get(consumerId) as
-    | { tier: string }
-    | undefined;
-  if (row && isTier(row.tier)) {
-    subscriptions.set(consumerId, row.tier);
-    return row.tier;
-  }
+  db();
+  const row = readTier.get(consumerId) as { tier?: unknown } | undefined;
+  const tier = isTier(row?.tier) ? row.tier : "free";
   // Cache the default too so unsubscribed consumers do not hit SQLite per request.
-  subscriptions.set(consumerId, "free");
-  return "free";
+  subscriptions.set(consumerId, tier);
+  return tier;
 }
 
 function capacity(tier: Tier): number {
