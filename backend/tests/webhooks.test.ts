@@ -161,3 +161,29 @@ describe("webhookRouter - GET /api/webhooks", () => {
     });
   });
 });
+
+describe("verifySignature - empty body and malformed signatures (#1128)", () => {
+  it("rejects an empty body even with a signature matching the empty payload", async () => {
+    const { verifySignature } = await import("../src/routes/webhooks");
+    const crypto = await import("crypto");
+    process.env.TELECOM_WEBHOOK_SECRET = "test-secret";
+    const sig =
+      "sha256=" + crypto.createHmac("sha256", "test-secret").update(Buffer.alloc(0)).digest("hex");
+    expect(verifySignature(Buffer.alloc(0), sig)).toBe(false);
+  });
+
+  it("returns false (does not throw) for a wrong-length signature", async () => {
+    const { verifySignature } = await import("../src/routes/webhooks");
+    process.env.TELECOM_WEBHOOK_SECRET = "test-secret";
+    expect(verifySignature(Buffer.from("{}"), "sha256=abc")).toBe(false);
+  });
+
+  it("accepts a valid signature over a non-empty body", async () => {
+    const { verifySignature } = await import("../src/routes/webhooks");
+    const crypto = await import("crypto");
+    process.env.TELECOM_WEBHOOK_SECRET = "test-secret";
+    const body = Buffer.from('{"meter_id":"M1"}');
+    const sig = "sha256=" + crypto.createHmac("sha256", "test-secret").update(body).digest("hex");
+    expect(verifySignature(body, sig)).toBe(true);
+  });
+});

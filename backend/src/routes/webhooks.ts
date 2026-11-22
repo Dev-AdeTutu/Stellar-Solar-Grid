@@ -24,13 +24,17 @@ export const webhookRouter = Router();
  * Verify the HMAC-SHA256 signature sent by the telecom partner.
  * Header: X-Webhook-Signature: sha256=<hex>
  */
-function verifySignature(rawBody: Buffer, signature: string): boolean {
+export function verifySignature(rawBody: Buffer, signature: string): boolean {
   const secret = process.env.TELECOM_WEBHOOK_SECRET;
-  if (!secret) return false;
-  const expected =
-    "sha256=" +
-    crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+  // An empty body is never a legitimate signed delivery (#1128).
+  if (!secret || rawBody.length === 0) return false;
+  const expected = Buffer.from(
+    "sha256=" + crypto.createHmac("sha256", secret).update(rawBody).digest("hex"),
+  );
+  const provided = Buffer.from(signature);
+  // timingSafeEqual throws on length mismatch; treat that as a failed check.
+  if (provided.length !== expected.length) return false;
+  return crypto.timingSafeEqual(expected, provided);
 }
 
 /**

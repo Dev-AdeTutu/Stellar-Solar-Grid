@@ -7,6 +7,10 @@
  * consumer and exposed via /api/rate-limits/usage.
  */
 
+import path from "node:path";
+import Database from "better-sqlite3";
+import { registerDatabase } from "./databaseLifecycle.js";
+
 export type Tier = "free" | "basic" | "premium" | "enterprise";
 
 export interface TierLimits {
@@ -35,21 +39,63 @@ interface Usage {
   totalCount: number;
 }
 
+const DB_PATH =
+  process.env.RATE_LIMIT_TIERS_DB_PATH ?? path.resolve(process.cwd(), "data", "rate-limit-tiers.sqlite");
+
+/** Tiers are persisted (#1129) so upgrades survive restarts; `subscriptions` is a read-through cache. */
 const subscriptions = new Map<string, Tier>();
 const usage = new Map<string, Usage>();
+
+let _db: Database.Database | undefined;
+
+function db(): Database.Database {
+  if (!_db) {
+    _db = new Database(DB_PATH);
+    _db.exec(`
+      CREATE TABLE IF NOT EXISTS rate_limit_tiers (
+        consumer_id TEXT PRIMARY KEY,
+        tier TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `);
+  }
+  return _db;
+}
+
+registerDatabase("rate-limit-tiers", () => {
+  _db?.close();
+  _db = undefined;
+});
 
 export function isTier(value: unknown): value is Tier {
   return typeof value === "string" && value in TIERS;
 }
 
 export function setTier(consumerId: string, tier: Tier): void {
+  db()
+    .prepare(
+      `INSERT INTO rate_limit_tiers (consumer_id, tier, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at`,
+    )
+    .run(consumerId, tier, new Date().toISOString());
   subscriptions.set(consumerId, tier);
   const u = usage.get(consumerId);
   if (u) u.tokens = Math.min(u.tokens, capacity(tier));
 }
 
 export function getTier(consumerId: string): Tier {
-  return subscriptions.get(consumerId) ?? "free";
+  const cached = subscriptions.get(consumerId);
+  if (cached) return cached;
+  const row = db().prepare("SELECT tier FROM rate_limit_tiers WHERE consumer_id = ?").get(consumerId) as
+    | { tier: string }
+    | undefined;
+  if (row && isTier(row.tier)) {
+    subscriptions.set(consumerId, row.tier);
+    return row.tier;
+  }
+  // Cache the default too so unsubscribed consumers do not hit SQLite per request.
+  subscriptions.set(consumerId, "free");
+  return "free";
 }
 
 function capacity(tier: Tier): number {
@@ -144,7 +190,14 @@ export function getUsage(consumerId: string, now = Date.now()) {
   };
 }
 
-export function _resetTieredRateLimit(): void {
+/** Drop in-memory state only (simulates a process restart); persisted tiers are kept. */
+export function _resetTieredRateLimitCache(): void {
   subscriptions.clear();
   usage.clear();
+}
+
+/** Clear in-memory state and persisted tiers (test isolation). */
+export function _resetTieredRateLimit(): void {
+  _resetTieredRateLimitCache();
+  db().prepare("DELETE FROM rate_limit_tiers").run();
 }
