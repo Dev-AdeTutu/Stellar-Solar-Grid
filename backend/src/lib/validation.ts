@@ -232,6 +232,53 @@ export const SandboxPromotionRequestSchema = z
   })
   .strict();
 
+// Emergency contacts (#1000, #1151). These back the POST/GET/DELETE routes in
+// routes/emergencyContacts.ts. A contact must have at least one delivery
+// channel; the DELETE route identifies the owner via user_address and the
+// numeric contact id in the path.
+export const AddEmergencyContactSchema = z
+  .object({
+    user_address: z
+      .string()
+      .regex(STELLAR_ADDRESS_REGEX, "Invalid Stellar address"),
+    name: z.string().trim().min(1, "name is required").max(120),
+    phone: z.string().trim().max(30).optional(),
+    email: z.email().optional(),
+    relationship: z.string().trim().max(80).optional(),
+    notify_on_tamper: z.boolean().optional(),
+    notify_on_outage: z.boolean().optional(),
+  })
+  .strict()
+  .refine((value) => Boolean(value.phone?.trim() || value.email?.trim()), {
+    message: "At least one of phone or email is required",
+    path: ["phone"],
+  });
+
+export const ListEmergencyContactsQuerySchema = z
+  .object({
+    user_address: z
+      .string()
+      .regex(STELLAR_ADDRESS_REGEX, "Invalid Stellar address"),
+  })
+  .strict();
+
+export const DeleteEmergencyContactParamsSchema = z
+  .object({
+    id: z.coerce
+      .number()
+      .int("contact id must be an integer")
+      .positive("contact id must be a positive integer"),
+  })
+  .strict();
+
+export const DeleteEmergencyContactQuerySchema = z
+  .object({
+    user_address: z
+      .string()
+      .regex(STELLAR_ADDRESS_REGEX, "Invalid Stellar address"),
+  })
+  .strict();
+
 type RequestSchemaSet = {
   body?: ZodTypeAny;
   params?: ZodTypeAny;
