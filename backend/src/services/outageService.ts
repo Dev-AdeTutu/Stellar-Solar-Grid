@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { logger } from '../lib/logger.js';
 import { notifyEmergencyContacts } from '../lib/emergencyContacts.js';
 
@@ -37,6 +38,8 @@ export class OutageService {
   private outages: Map<string, OutageRecord> = new Map();
   private recentReadings: Map<string, GridReading> = new Map();
   private idCounter = 1;
+  private readonly events = new EventEmitter();
+  private readonly emittedOutageIds = new Set<string>();
 
   /**
    * Ingest a real-time IoT voltage/frequency telemetry reading.
@@ -93,9 +96,13 @@ export class OutageService {
     return createdOutages;
   }
 
-  /**
-   * Create an outage record.
-   */
+  /** Subscribe to lifecycle events emitted by this service. */
+  public on(event: 'outage:detected', listener: (outage: OutageRecord) => void): this {
+    this.events.on(event, listener);
+    return this;
+  }
+
+  /** Create an outage record. */
   public createOutage(input: CreateOutageInput): OutageRecord {
     const id = `outage-${Date.now()}-${this.idCounter++}`;
     const startedAt = new Date().toISOString();
@@ -116,6 +123,10 @@ export class OutageService {
     };
 
     this.outages.set(id, record);
+    if (!this.emittedOutageIds.has(record.id)) {
+      this.emittedOutageIds.add(record.id);
+      this.events.emit('outage:detected', record);
+    }
     logger.warn('Grid outage record created', { outageId: id, region: input.region });
 
     // Send notifications to affected users
@@ -177,6 +188,7 @@ export class OutageService {
     this.outages.clear();
     this.recentReadings.clear();
     this.idCounter = 1;
+    this.emittedOutageIds.clear();
   }
 }
 

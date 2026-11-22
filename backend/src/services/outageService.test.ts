@@ -111,4 +111,16 @@ describe('OutageService', () => {
 
     expect(service.getActiveOutages()).toHaveLength(0);
   });
+  it('emits one outage:detected event for a record even when evaluation repeats', () => {
+    const listener = vi.fn();
+    service.on('outage:detected', listener);
+    service.recordReading({ meterId: 'MTR-1', voltage: 0, frequency: 0, region: 'grid-1' });
+    service.recordReading({ meterId: 'MTR-2', voltage: 0, frequency: 0, region: 'grid-1' });
+    const first = service.evaluateGridReadings();
+    const second = service.evaluateGridReadings();
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(0);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(first[0]);
+  });
 });

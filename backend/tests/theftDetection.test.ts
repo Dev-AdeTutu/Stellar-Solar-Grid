@@ -1,4 +1,4 @@
-import { TheftDetectionService } from '../src/services/theftDetectionService';
+import { scoreExceedsThreshold, TheftDetectionService } from '../src/services/theftDetectionService';
 import { getMeterTheftAnalysisHandler } from '../src/routes/theftAnalysisRoutes';
 
 describe('Meter Energy Theft Detection (#1012)', () => {
@@ -47,4 +47,10 @@ describe('Meter Energy Theft Detection (#1012)', () => {
     expect(typeof bodyPayload.riskScore).toBe('number');
     expect(bodyPayload.investigationReport).toBeDefined();
   });
+});
+
+test('normalizes string scores before applying theft thresholds', () => {
+  expect(scoreExceedsThreshold('9.5', '10')).toBe(false);
+  expect(scoreExceedsThreshold('10.5', '10')).toBe(true);
+  expect(scoreExceedsThreshold('not-a-score', 10)).toBe(false);
 });

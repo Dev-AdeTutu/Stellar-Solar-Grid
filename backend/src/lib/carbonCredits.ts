@@ -233,7 +233,6 @@ export function retireCredit(creditId: string, actor: string): CarbonCredit {
   const credit = credits.get(creditId);
   if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
   if (credit.status === "retired") throw Object.assign(new Error("Credit already retired"), { code: "CONFLICT" });
-
   const now = new Date().toISOString();
   credit.status = "retired";
   credit.retiredAt = now;
@@ -242,6 +241,27 @@ export function retireCredit(creditId: string, actor: string): CarbonCredit {
   return credit;
 }
 
+/** Retire a credit and settle its ledger operation atomically. */
+export async function retireCreditWithLedger(
+  creditId: string,
+  actor: string,
+  settleOnLedger: () => Promise<void>,
+): Promise<CarbonCredit> {
+  const credit = credits.get(creditId);
+  if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
+  const previousCredit = { ...credit, auditTrail: credit.auditTrail.map((entry) => ({ ...entry })) };
+  const previousListing = listings.get(creditId);
+  try {
+    const retired = retireCredit(creditId, actor);
+    await settleOnLedger();
+    return retired;
+  } catch (error) {
+    credits.set(creditId, previousCredit);
+    if (previousListing) listings.set(creditId, previousListing);
+    else listings.delete(creditId);
+    throw error;
+  }
+}
 export function listForSale(creditId: string, sellerId: string, pricePerCredit: number, quantity: number): MarketListing {
   const credit = credits.get(creditId);
   if (!credit) throw Object.assign(new Error("Credit not found"), { code: "NOT_FOUND" });
