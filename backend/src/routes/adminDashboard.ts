@@ -16,10 +16,17 @@
 import { Router, Request, Response } from "express";
 import os from "node:os";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { getTenantMeterStats } from "../lib/deviceRegistry.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 
 export const adminDashboardRouter = Router();
 adminDashboardRouter.use(requireAdminKey);
+
+adminDashboardRouter.get("/stats", (req: Request, res: Response) => {
+  const tenantId = typeof req.query.tenant_id === "string" ? req.query.tenant_id.trim() : "";
+  if (!tenantId) return res.status(400).json({ error: "tenant_id is required" });
+  res.json({ tenantId, meters: getTenantMeterStats(tenantId) });
+});
 
 // ── In-memory user registry ──────────────────────────────────────────────────
 
