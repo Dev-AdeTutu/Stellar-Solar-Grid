@@ -52,3 +52,17 @@ export function paginateMeters<T>(meters: T[], page: number, pageSize: number) {
     pages: Math.ceil(total / pageSize),
   };
 }
+
+/**
+ * Apply filters before calculating pagination metadata. Keeping this as one
+ * operation prevents X-Total-Count from accidentally using the raw contract
+ * result while the response body uses a filtered page.
+ */
+export function buildMeterListPage<T extends Record<string, any>>(
+  meters: T[],
+  filters: MeterListFilters,
+  page: number,
+  pageSize: number,
+) {
+  return paginateMeters(filterMeters(meters, filters), page, pageSize);
+}
