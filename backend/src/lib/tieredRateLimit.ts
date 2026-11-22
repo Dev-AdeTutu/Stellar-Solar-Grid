@@ -6,6 +6,9 @@
  * can absorb short spikes. Usage counters are tracked in real time per
  * consumer and exposed via /api/rate-limits/usage.
  */
+import fs from "node:fs";
+import path from "node:path";
+import Database from "better-sqlite3";
 
 export type Tier = "free" | "basic" | "premium" | "enterprise";
 
@@ -38,18 +41,42 @@ interface Usage {
 const subscriptions = new Map<string, Tier>();
 const usage = new Map<string, Usage>();
 
+const dbPath = process.env.RATE_LIMIT_TIERS_DB_PATH ?? path.join(process.cwd(), "data", "rate-limit-tiers.sqlite");
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const tierDb = new Database(dbPath);
+tierDb.pragma("journal_mode = WAL");
+tierDb.exec(`
+  CREATE TABLE IF NOT EXISTS rate_limit_subscriptions (
+    consumer_id TEXT PRIMARY KEY,
+    tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+const readTier = tierDb.prepare("SELECT tier FROM rate_limit_subscriptions WHERE consumer_id = ?");
+const writeTier = tierDb.prepare(`
+  INSERT INTO rate_limit_subscriptions (consumer_id, tier, updated_at)
+  VALUES (?, ?, CURRENT_TIMESTAMP)
+  ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at
+`);
+
 export function isTier(value: unknown): value is Tier {
   return typeof value === "string" && value in TIERS;
 }
 
 export function setTier(consumerId: string, tier: Tier): void {
+  writeTier.run(consumerId, tier);
   subscriptions.set(consumerId, tier);
   const u = usage.get(consumerId);
   if (u) u.tokens = Math.min(u.tokens, capacity(tier));
 }
 
 export function getTier(consumerId: string): Tier {
-  return subscriptions.get(consumerId) ?? "free";
+  const cached = subscriptions.get(consumerId);
+  if (cached) return cached;
+  const row = readTier.get(consumerId) as { tier?: unknown } | undefined;
+  const tier = isTier(row?.tier) ? row.tier : "free";
+  subscriptions.set(consumerId, tier);
+  return tier;
 }
 
 function capacity(tier: Tier): number {
@@ -147,4 +174,5 @@ export function getUsage(consumerId: string, now = Date.now()) {
 export function _resetTieredRateLimit(): void {
   subscriptions.clear();
   usage.clear();
+  tierDb.exec("DELETE FROM rate_limit_subscriptions");
 }
