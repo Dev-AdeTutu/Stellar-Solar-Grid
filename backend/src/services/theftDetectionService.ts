@@ -1,3 +1,10 @@
+/** Convert externally sourced scores to finite numbers before comparison. */
+export function scoreExceedsThreshold(score: unknown, threshold: unknown): boolean {
+  const numericScore = Number(score);
+  const numericThreshold = Number(threshold);
+  return Number.isFinite(numericScore) && Number.isFinite(numericThreshold) && numericScore > numericThreshold;
+}
+
 export interface ConsumptionReading {
   timestamp: string;
   kwh: number;
@@ -163,7 +170,7 @@ export class TheftDetectionService {
     const probability = Number((riskScore / 100).toFixed(2));
 
     let alert: ProviderAlert | null = null;
-    if (riskScore >= 70) {
+    if (scoreExceedsThreshold(riskScore, 70) || riskScore === 70) {
       alert = this.triggerProviderAlert(meterId, riskScore, probability);
     }
 
