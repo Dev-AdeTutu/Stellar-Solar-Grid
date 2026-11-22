@@ -10,7 +10,7 @@ import {
 export const loadBalancingRouter = Router();
 
 const schema = z.object({
-  capacityKw: z.number().positive(),
+  capacityKw: z.number().nonnegative(),
   pricePerKwh: z.number().nonnegative(),
   peakPriceThreshold: z.number().nonnegative().optional(),
   loads: z.array(z.object({
