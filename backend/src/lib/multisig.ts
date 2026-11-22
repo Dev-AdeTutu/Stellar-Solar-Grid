@@ -486,6 +486,28 @@ async function refreshExpiry(chain: MultisigChain, proposal: Proposal): Promise<
   if ((await chain.latestLedger()) <= proposal.expirationLedger) return proposal;
   const expired = { ...proposal, status: "expired" as const };
   saveProposal(expired);
+  // Only reached on the transition (pending/ready to expired), so each signer is told once.
+  const wallet = getWallet(proposal.wallet);
+  if (wallet) await notifySigners(wallet, expired, "expired");
+  return expired;
+}
+
+/**
+ * Expires every pending or ready proposal whose signature window has passed, notifying the signers
+ * who had not voted. Expiry is otherwise only noticed when a proposal is touched, so a proposal
+ * nobody opens again would stay `pending` and nobody would be told. Run this on an interval.
+ * Returns the proposals that were expired by this call.
+ */
+export async function expireDueProposals(chain: MultisigChain): Promise<Proposal[]> {
+  const open = (db().prepare("SELECT * FROM multisig_proposals WHERE status IN ('pending', 'ready')").all() as ProposalRow[]).map(toProposal);
+  if (open.length === 0) return [];
+  const latest = await chain.latestLedger();
+  const expired: Proposal[] = [];
+  for (const proposal of open) {
+    if (latest <= proposal.expirationLedger) continue;
+    const result = await refreshExpiry(chain, proposal);
+    if (result.status === "expired") expired.push(result);
+  }
   return expired;
 }
 
@@ -600,18 +622,24 @@ function proposalUrl(proposal: Proposal): string {
   return `${base}/multisig?wallet=${encodeURIComponent(proposal.wallet)}&proposal=${proposal.id}`;
 }
 
-async function notifySigners(wallet: MultisigWallet, proposal: Proposal, kind: "pending" | "ready"): Promise<void> {
+async function notifySigners(wallet: MultisigWallet, proposal: Proposal, kind: "pending" | "ready" | "expired"): Promise<void> {
   const recipients =
-    kind === "pending"
+    kind === "pending" || kind === "expired"
       ? wallet.signers.filter((s) => s.email && !proposal.signatures[s.publicKey])
       : wallet.signers.filter((s) => s.email);
   const signed = Object.keys(proposal.signatures).length;
   const subject =
-    kind === "pending"
-      ? `[${wallet.name}] Signature requested: ${proposal.description}`
-      : `[${wallet.name}] Ready to submit: ${proposal.description}`;
+    kind === "expired"
+      ? `[${wallet.name}] Proposal expired without your signature: ${proposal.description}`
+      : kind === "pending"
+        ? `[${wallet.name}] Signature requested: ${proposal.description}`
+        : `[${wallet.name}] Ready to submit: ${proposal.description}`;
   const text =
-    kind === "pending"
+    kind === "expired"
+      ? `The transaction "${proposal.description}" for "${wallet.name}" expired at ledger ${proposal.expirationLedger} ` +
+        `with ${signed} of ${proposal.threshold} required approvals. You had not signed it. ` +
+        `It can no longer be signed or submitted; create a new proposal if it is still needed.\n\n${proposalUrl(proposal)}\n`
+      : kind === "pending"
       ? `A transaction for the multisig wallet "${wallet.name}" needs your approval.\n\n` +
         `Action: ${proposal.description} (${proposal.function})\n` +
         `Approvals: ${signed} of ${proposal.threshold} required\n` +

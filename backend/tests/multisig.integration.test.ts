@@ -25,6 +25,7 @@ import {
   buildAuthPreimage,
   buildSignatureScVal,
   decodeSignature,
+  expireDueProposals,
   resetMultisigForTests,
   type MultisigChain,
 } from "../src/lib/multisig";
@@ -319,6 +320,73 @@ describe("multisig routes", () => {
     expect((await res.json()).code).toBe("PROPOSAL_EXPIRED");
     const list = await (await fetch(`${base}/wallets/${WALLET}/proposals?status=expired`)).json();
     expect(list.proposals.map((p: { id: string }) => p.id)).toEqual([proposal.id]);
+  });
+
+  it("tells signers who had not voted that the proposal expired, once, and nobody else (#1160)", async () => {
+    await registerWallet();
+    const proposal = await propose();
+    expect((await post(`/proposals/${proposal.id}/signatures`, {
+      publicKey: ALICE.publicKey(),
+      signature: signFor(ALICE, proposal.payloadHex),
+    })).status).toBe(200);
+    mocks.sendEmail.mockClear();
+
+    chain.ledger = 1_101;
+    const attempt = () =>
+      post(`/proposals/${proposal.id}/signatures`, { publicKey: BOB.publicKey(), signature: signFor(BOB, proposal.payloadHex) });
+    expect((await attempt()).status).toBe(409);
+
+    // Alice already signed and Carol has no email, so only Bob is told.
+    expect(mocks.sendEmail.mock.calls.map(([m]) => m.to)).toEqual(["bob@example.com"]);
+    expect(mocks.sendEmail.mock.calls[0][0].subject).toContain("expired");
+    expect(mocks.sendEmail.mock.calls[0][0].text).toContain(`proposal=${proposal.id}`);
+
+    // A later touch of the already expired proposal does not email again.
+    expect((await attempt()).status).toBe(409);
+    expect(mocks.sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("expires untouched proposals in a sweep and tells their pending signers, once (#1160)", async () => {
+    await registerWallet();
+    const stale = await propose();
+    chain.ledger = 1_050;
+    const fresh = await propose();
+    mocks.sendEmail.mockClear();
+
+    chain.ledger = 1_101; // past the first proposal's window (1,100), inside the second's (1,150)
+    const expired = await expireDueProposals(chain);
+
+    expect(expired.map((p) => p.id)).toEqual([stale.id]);
+    expect(mocks.sendEmail.mock.calls.map(([m]) => m.to).sort()).toEqual(["alice@example.com", "bob@example.com"]);
+    const list = await (await fetch(`${base}/wallets/${WALLET}/proposals?status=pending`)).json();
+    expect(list.proposals.map((p: { id: string }) => p.id)).toEqual([fresh.id]);
+
+    mocks.sendEmail.mockClear();
+    expect(await expireDueProposals(chain)).toEqual([]);
+    expect(mocks.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a sweep with nothing open does nothing", async () => {
+    expect(await expireDueProposals(chain)).toEqual([]);
+  });
+
+  it("does not email anyone when a proposal has not expired", async () => {
+    await registerWallet();
+    const proposal = await propose();
+    mocks.sendEmail.mockClear();
+    chain.ledger = 1_100; // last valid ledger
+    await post(`/proposals/${proposal.id}/signatures`, { publicKey: ALICE.publicKey(), signature: signFor(ALICE, proposal.payloadHex) });
+    expect(mocks.sendEmail.mock.calls.some(([m]) => /expired/.test(m.subject))).toBe(false);
+  });
+
+  it("still expires the proposal when the notification email fails", async () => {
+    await registerWallet();
+    const proposal = await propose();
+    mocks.sendEmail.mockReset().mockRejectedValue(new Error("smtp down"));
+    chain.ledger = 1_101;
+    const res = await post(`/proposals/${proposal.id}/signatures`, { publicKey: ALICE.publicKey(), signature: signFor(ALICE, proposal.payloadHex) });
+    expect(res.status).toBe(409);
+    expect((await res.json()).code).toBe("PROPOSAL_EXPIRED");
   });
 
   it("records failed submissions", async () => {
