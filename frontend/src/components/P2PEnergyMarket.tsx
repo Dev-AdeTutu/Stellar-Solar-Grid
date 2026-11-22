@@ -73,10 +73,21 @@ export default function P2PEnergyMarket() {
   const [buyKwh, setBuyKwh] = useState<number>(20);
   const [selectedListing, setSelectedListing] = useState<EnergyListingUI | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleCreateListing = (e: React.FormEvent) => {
     e.preventDefault();
-    if (listKwh <= 0 || listPrice <= 0) return;
+    setErrorMessage(null);
+    
+    if (listKwh < 0) {
+      setErrorMessage("Energy quantity cannot be negative. Please enter a positive value.");
+      return;
+    }
+    
+    if (listKwh <= 0 || listPrice <= 0) {
+      setErrorMessage("Energy quantity and price must be greater than zero.");
+      return;
+    }
 
     const newListing: EnergyListingUI = {
       id: listings.length + 1,
@@ -93,7 +104,18 @@ export default function P2PEnergyMarket() {
   };
 
   const handleBuy = (listing: EnergyListingUI) => {
-    if (buyKwh <= 0) return;
+    setErrorMessage(null);
+    
+    if (buyKwh < 0) {
+      setErrorMessage("Purchase quantity cannot be negative. Please enter a positive value.");
+      return;
+    }
+    
+    if (buyKwh <= 0) {
+      setErrorMessage("Purchase quantity must be greater than zero.");
+      return;
+    }
+    
     const amountToBuy = Math.min(buyKwh, listing.kwhAvailable);
     const cost = +(amountToBuy * listing.pricePerKwh).toFixed(2);
 
@@ -130,6 +152,18 @@ export default function P2PEnergyMarket() {
   };
 
   const handleMatchAndBuy = () => {
+    setErrorMessage(null);
+    
+    if (buyKwh < 0) {
+      setErrorMessage("Purchase quantity cannot be negative. Please enter a positive value.");
+      return;
+    }
+    
+    if (buyKwh <= 0) {
+      setErrorMessage("Purchase quantity must be greater than zero.");
+      return;
+    }
+    
     if (listings.length === 0) {
       setStatusMessage("No active listings available to match.");
       return;
@@ -167,6 +201,12 @@ export default function P2PEnergyMarket() {
         </div>
       )}
 
+      {errorMessage && (
+        <div className="p-4 bg-red-950/60 border border-red-800/80 rounded-xl text-red-300 text-sm">
+          ✕ {errorMessage}
+        </div>
+      )}
+
       {/* Grid: Create Listing + Auto-match Engine */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Sell Energy Form */}
@@ -183,7 +223,8 @@ export default function P2PEnergyMarket() {
               </label>
               <input
                 type="number"
-                min="1"
+                min="0"
+                step="1"
                 value={listKwh}
                 onChange={(e) => setListKwh(parseFloat(e.target.value) || 0)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
@@ -234,7 +275,8 @@ export default function P2PEnergyMarket() {
               </label>
               <input
                 type="number"
-                min="1"
+                min="0"
+                step="1"
                 value={buyKwh}
                 onChange={(e) => setBuyKwh(parseFloat(e.target.value) || 0)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-emerald-500"
