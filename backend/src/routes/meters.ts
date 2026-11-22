@@ -1,5 +1,6 @@
 import { Router } from "express";
 import * as StellarSdk from "@stellar/stellar-sdk";
+import { z } from "zod";
 import { StellarService, server } from "../lib/stellar.js";
 import {
   getUsageHistory,
@@ -35,6 +36,7 @@ import {
 import { getBatteryStats } from "../lib/batteryStats.js";
 import { getEdgeStatus } from "../lib/edgeComputing.js";
 import { getTamperHistory } from "../lib/tamperDetection.js";
+import { filterMeters, paginateMeters } from "../lib/meterList.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -124,6 +126,7 @@ export function createMeterRouter(stellar: StellarService) {
       // Optional filters — each is only applied when the caller supplies it.
       const owner = req.query.owner;
       const active = req.query.active;
+      const status = req.query.status;
       const plan = req.query.plan;
       const rawExpiresBefore = req.query.expiresBefore;
       const expiresBeforeMs =
@@ -132,39 +135,31 @@ export function createMeterRouter(stellar: StellarService) {
           : undefined;
 
       const result = await stellar.query("get_all_meters", []);
-      let allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
+      const allMeters = (StellarSdk.scValToNative(result) as any[]) ?? [];
 
-      if (owner !== undefined) {
-        allMeters = allMeters.filter((m: any) => m.owner === String(owner));
-      }
-      if (active !== undefined) {
-        const activeVal = active === "true";
-        allMeters = allMeters.filter((m: any) => Boolean(m.active) === activeVal);
-      }
-      if (plan !== undefined) {
-        const planMap: Record<string, string> = { daily: "Daily", weekly: "Weekly", usage_based: "UsageBased" };
-        const contractPlan = planMap[String(plan)];
-        allMeters = allMeters.filter((m: any) => m.plan === contractPlan);
-      }
-      if (expiresBeforeMs !== undefined) {
-        const threshold = expiresBeforeMs;
-        allMeters = allMeters.filter((m: any) => {
-          if (!m.expires_at) return false;
-          return Number(m.expires_at) * 1000 < threshold;
+      if (status !== undefined && status !== "online" && status !== "offline") {
+        return res.status(400).json({
+          error: "status must be online or offline",
+          code: "VALIDATION_ERROR",
         });
       }
+      const filteredMeters = filterMeters(allMeters, {
+        owner,
+        active,
+        status,
+        plan,
+        expiresBeforeMs,
+      });
+      const { meters, total, pages } = paginateMeters(filteredMeters, page, pageSize);
 
-      const total = allMeters.length;
-      const start = (page - 1) * pageSize;
-      const meters = allMeters.slice(start, start + pageSize);
-
+      res.setHeader("X-Total-Count", String(total));
       res.json({
         meters,
         pagination: {
           page,
           pageSize,
           total,
-          pages: Math.ceil(total / pageSize),
+          pages,
         },
       });
     }),
