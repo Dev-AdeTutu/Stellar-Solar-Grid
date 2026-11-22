@@ -5,7 +5,6 @@ export type ComplianceFramework = "GSE" | "I-REC" | "EU-RED" | "FERC";
 export type ComplianceReport = { framework: ComplianceFramework; period: { from: string; to: string }; generatedAt: string; customerCount: number; energyDistributedMwh: number; revenueXlm: number; subsidiesXlm: number; signature: string; signatureAlgorithm: "SHA-256"; sandbox: boolean };
 function isSandboxMode(): boolean { return process.env.SANDBOX_MODE === "true" || process.env.SANDBOX_MODE === "1"; }
 function syntheticMeters(): any[] { const count = 3 + Math.floor(Math.random() * 5); return Array.from({ length: count }, (_, i) => ({ owner: `sandbox-owner-${i}`, units_used: 100 + Math.floor(Math.random() * 900) })); }
-=======
 function periodFor(period: string) { const end = new Date(); const from = new Date(end); if (period === "quarterly") from.setUTCMonth(from.getUTCMonth() - 3); else from.setUTCMonth(from.getUTCMonth() - 1); return { from: from.toISOString(), to: end.toISOString() }; }
 export async function generateComplianceReport(framework: ComplianceFramework, period = "monthly"): Promise<ComplianceReport> {
   const sandbox = isSandboxMode();
