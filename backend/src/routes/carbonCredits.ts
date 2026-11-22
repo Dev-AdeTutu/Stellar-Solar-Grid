@@ -26,6 +26,7 @@ import { requireAdminKey } from "../middleware/adminAuth.js";
 import {
   issueCredit,
   retireCredit,
+  retireCreditWithLedger,
   listForSale,
   purchaseCredit,
   getCredit,
@@ -285,7 +286,9 @@ carbonCreditsRouter.post(
     const { actor } = req.body as { actor?: string };
     if (!actor) return res.status(400).json({ error: "actor is required" });
     try {
-      const credit = retireCredit(req.params.id, actor);
+      const credit = await retireCreditWithLedger(req.params.id, actor, async () => {
+        // Ledger settlement hook. Integrate with on-chain retirement when configured.
+      });
       res.json(credit);
     } catch (err: any) {
       const status = err.code === "NOT_FOUND" ? 404 : err.code === "CONFLICT" ? 409 : 400;
