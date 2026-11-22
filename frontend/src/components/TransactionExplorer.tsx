@@ -121,6 +121,12 @@ export const TransactionExplorer: React.FC<{ defaultAddress?: string }> = ({
       });
   }, [address, typeFilter, meterIdFilter, startDate, endDate]);
 
+  const decodeHtmlEntities = (text: string): string => {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    return textarea.value;
+  };
+
   const handleExportCsv = () => {
     const headers = [
       "txHash",
@@ -144,7 +150,7 @@ export const TransactionExplorer: React.FC<{ defaultAddress?: string }> = ({
         tx.assetCode,
         tx.status,
         tx.ledger,
-        `"${tx.description.replace(/"/g, '""')}"`,
+        `"${decodeHtmlEntities(tx.description).replace(/"/g, '""')}"`,
         tx.explorerUrl,
       ].join(",")
     );
