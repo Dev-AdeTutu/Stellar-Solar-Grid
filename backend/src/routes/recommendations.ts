@@ -1,7 +1,7 @@
 /**
  * Energy recommendations API (#895)
  *
- * GET  /api/recommendations/:meterId              — this week's recommendations (generated on demand)
+ * GET  /api/recommendations/:meterId              — this week's recommendations; onboarding tips (with `onboarding: true` and a `reason`) when the meter has under 7 days of usage
  * POST /api/recommendations/:meterId/:id/accept   — accept a suggestion
  * POST /api/recommendations/:meterId/:id/dismiss  — dismiss a suggestion
  * GET  /api/recommendations/:meterId/savings      — estimated vs actual savings
@@ -20,7 +20,7 @@
 import { Router } from "express";
 import {
   generateWeekly,
-  listRecommendations,
+  recommendationsOrOnboarding,
   respond,
   savingsSummary,
   subscribe,
@@ -38,8 +38,7 @@ import {
 export const recommendationsRouter = Router();
 
 recommendationsRouter.get("/:meterId", (req, res) => {
-  const recommendations = listRecommendations(req.params.meterId);
-  res.json({ recommendations });
+  res.json(recommendationsOrOnboarding(req.params.meterId));
 });
 
 recommendationsRouter.get("/:meterId/savings", (req, res) => {
