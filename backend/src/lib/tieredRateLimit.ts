@@ -60,8 +60,8 @@ function applyTierSchema(database: Database): void {
   database.exec(`
     CREATE TABLE IF NOT EXISTS rate_limit_subscriptions (
       consumer_id TEXT PRIMARY KEY,
-      tier TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
 }
@@ -110,7 +110,15 @@ export function setTier(consumerId: string, tier: Tier): void {
 }
 
 export function getTier(consumerId: string): Tier {
-  return subscriptions.get(consumerId) ?? "free";
+  const cached = subscriptions.get(consumerId);
+  if (cached) return cached;
+  const row = pool
+    .primaryDb()
+    .prepare("SELECT tier FROM rate_limit_subscriptions WHERE consumer_id = ?")
+    .get(consumerId) as { tier?: unknown } | undefined;
+  const tier = isTier(row?.tier) ? row.tier : "free";
+  subscriptions.set(consumerId, tier);
+  return tier;
 }
 
 function capacity(tier: Tier): number {

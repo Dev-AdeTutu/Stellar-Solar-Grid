@@ -36,7 +36,7 @@ import {
 import { getBatteryStats } from "../lib/batteryStats.js";
 import { getEdgeStatus } from "../lib/edgeComputing.js";
 import { getTamperHistory } from "../lib/tamperDetection.js";
-import { filterMeters, paginateMeters, parseMeterPagination } from "../lib/meterList.js";
+import { filterMeters, paginateMeters, parseMeterPagination, buildMeterListPage } from "../lib/meterList.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -142,23 +142,22 @@ export function createMeterRouter(stellar: StellarService) {
           code: "VALIDATION_ERROR",
         });
       }
-      const filteredMeters = filterMeters(allMeters, {
+      const pageResult = buildMeterListPage(allMeters, {
         owner,
         active,
         status,
         plan,
         expiresBeforeMs,
-      });
-      const { meters, total, pages } = paginateMeters(filteredMeters, page, pageSize);
+      }, page, pageSize);
 
-      res.setHeader("X-Total-Count", String(total));
+      res.setHeader("X-Total-Count", String(pageResult.total));
       res.json({
-        meters,
+        meters: pageResult.meters,
         pagination: {
           page,
           pageSize,
-          total,
-          pages,
+          total: pageResult.total,
+          pages: pageResult.pages,
         },
       });
     }),

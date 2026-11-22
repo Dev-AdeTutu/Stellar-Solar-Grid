@@ -7,13 +7,24 @@
  * unrelated "emergency energy sharing" pool feature for outages — this
  * route is about a user's personal emergency contacts.
  *
- *   POST /api/users/emergency-contacts — add a contact
- *   GET  /api/users/emergency-contacts — list a user's contacts
+ *   POST   /api/users/emergency-contacts — add a contact
+ *   GET    /api/users/emergency-contacts — list a user's contacts
+ *   DELETE /api/users/emergency-contacts/:id — delete a contact owned by the user
  */
 import { Router } from "express";
 import { asyncHandler } from "../lib/asyncHandler.js";
-import { validateRequest, AddEmergencyContactSchema, ListEmergencyContactsQuerySchema } from "../lib/validation.js";
-import { addEmergencyContact, listEmergencyContacts } from "../lib/emergencyContacts.js";
+import {
+  validateRequest,
+  AddEmergencyContactSchema,
+  ListEmergencyContactsQuerySchema,
+  DeleteEmergencyContactParamsSchema,
+  DeleteEmergencyContactQuerySchema,
+} from "../lib/validation.js";
+import {
+  addEmergencyContact,
+  listEmergencyContacts,
+  deleteEmergencyContact,
+} from "../lib/emergencyContacts.js";
 import { logger } from "../lib/logger.js";
 
 export const emergencyContactsRouter = Router();
@@ -72,5 +83,35 @@ emergencyContactsRouter.get(
     const { user_address } = req.query as { user_address: string };
     const contacts = listEmergencyContacts(user_address);
     return res.json({ contacts });
+  }),
+);
+
+/**
+ * DELETE /api/users/emergency-contacts/:id?user_address=G...
+ *
+ * A missing or non-numeric id is rejected by validation with 400. A contact
+ * that does not exist or belongs to a different user returns 404, so one
+ * user can never delete another user's contact.
+ *
+ * Response (200): { "deleted": true, "id": 1 }
+ */
+emergencyContactsRouter.delete(
+  "/:id",
+  validateRequest({
+    params: DeleteEmergencyContactParamsSchema,
+    query: DeleteEmergencyContactQuerySchema,
+  }),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params as unknown as { id: number };
+    const { user_address } = req.query as { user_address: string };
+    const deleted = deleteEmergencyContact(user_address, id);
+    if (!deleted) {
+      return res.status(404).json({
+        error: "Contact not found",
+        code: "CONTACT_NOT_FOUND",
+      });
+    }
+    logger.info({ userAddress: user_address, contactId: id }, "Emergency contact deleted");
+    return res.status(200).json({ deleted: true, id });
   }),
 );

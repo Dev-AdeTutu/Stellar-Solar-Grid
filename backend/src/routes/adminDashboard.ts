@@ -16,10 +16,17 @@
 import { Router, Request, Response } from "express";
 import os from "node:os";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { getTenantMeterStats } from "../lib/deviceRegistry.js";
 import { requireAdminKey } from "../middleware/adminAuth.js";
 
 export const adminDashboardRouter = Router();
 adminDashboardRouter.use(requireAdminKey);
+
+adminDashboardRouter.get("/stats", (req: Request, res: Response) => {
+  const tenantId = typeof req.query.tenant_id === "string" ? req.query.tenant_id.trim() : "";
+  if (!tenantId) return res.status(400).json({ error: "tenant_id is required" });
+  res.json({ tenantId, meters: getTenantMeterStats(tenantId) });
+});
 
 // ── In-memory user registry ──────────────────────────────────────────────────
 
@@ -90,6 +97,7 @@ export function recordTransaction(tx: Omit<TransactionRecord, "id">): Transactio
   const id = `tx-${txIdSeq++}`;
   const record = { id, ...tx };
   transactions.push(record);
+  indexTransaction(record);
   return record;
 }
 
@@ -185,45 +193,76 @@ adminDashboardRouter.get(
     const userId = req.query.user_id as string | undefined;
     const type = req.query.type as string | undefined;
 
-    let list = [...transactions];
-    if (userId) list = list.filter((t) => t.userId === userId);
-    if (type) list = list.filter((t) => t.type === type);
+    let list: TransactionRecord[] = transactions;
+    if (userId && type) {
+      const byUser = transactionsByUserId.get(userId) ?? [];
+      list = byUser.filter((t) => t.type === type);
+    } else if (userId) {
+      list = transactionsByUserId.get(userId) ?? [];
+    } else if (type) {
+      list = transactionsByType.get(type) ?? [];
+    }
 
-    list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-    const total = list.length;
-    const items = list.slice((page - 1) * perPage, page * perPage);
+    const sorted = list === transactions ? [...list] : list.slice();
+    sorted.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    const total = sorted.length;
+    const items = sorted.slice((page - 1) * perPage, page * perPage);
     res.json({ total, page, perPage, transactions: items });
   }),
 );
 
+// Indexes for large tenant/admin datasets to keep dashboard stats responsive.
+const transactionsByUserId = new Map<string, TransactionRecord[]>();
+const transactionsByType = new Map<string, TransactionRecord[]>();
+
+function indexTransaction(tx: TransactionRecord): void {
+  const byUser = transactionsByUserId.get(tx.userId) ?? [];
+  byUser.push(tx);
+  transactionsByUserId.set(tx.userId, byUser);
+  const byType = transactionsByType.get(tx.type) ?? [];
+  byType.push(tx);
+  transactionsByType.set(tx.type, byType);
+}
+
+// Rebuild indexes for any pre-seeded records.
+for (const tx of transactions) indexTransaction(tx);
+
 adminDashboardRouter.get(
   "/analytics",
   asyncHandler(async (_req: Request, res: Response) => {
-    const userList = [...users.values()];
-    const txList = [...transactions];
     const now = new Date();
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
-    const activeUsers = userList.filter((u) => u.status === "active").length;
-    const suspendedUsers = userList.filter((u) => u.status === "suspended").length;
-    const recentTx = txList.filter((t) => t.timestamp >= dayAgo);
-    const totalVolume = txList.reduce((sum, t) => sum + t.amount, 0);
-    const recentVolume = recentTx.reduce((sum, t) => sum + t.amount, 0);
+    let activeUsers = 0;
+    let suspendedUsers = 0;
+    const roleCounts = new Map<string, number>();
+    for (const role of roles.keys()) roleCounts.set(role, 0);
+    for (const u of users.values()) {
+      if (u.status === "active") activeUsers++;
+      if (u.status === "suspended") suspendedUsers++;
+      roleCounts.set(u.role, (roleCounts.get(u.role) ?? 0) + 1);
+    }
 
-    const roleBreakdown = [...roles.keys()].map((role) => ({
-      role,
-      count: userList.filter((u) => u.role === role).length,
-    }));
+    let totalVolume = 0;
+    let recentTxCount = 0;
+    let recentVolume = 0;
+    for (const t of transactions) {
+      totalVolume += t.amount;
+      if (t.timestamp >= dayAgo) {
+        recentTxCount++;
+        recentVolume += t.amount;
+      }
+    }
 
     res.json({
-      users: { total: userList.length, active: activeUsers, suspended: suspendedUsers },
+      users: { total: users.size, active: activeUsers, suspended: suspendedUsers },
       transactions: {
-        total: txList.length,
-        last24h: recentTx.length,
+        total: transactions.length,
+        last24h: recentTxCount,
         totalVolumeXlm: Number(totalVolume.toFixed(4)),
         last24hVolumeXlm: Number(recentVolume.toFixed(4)),
       },
-      roles: roleBreakdown,
+      roles: [...roleCounts.entries()].map(([role, count]) => ({ role, count })),
       generatedAt: now.toISOString(),
     });
   }),

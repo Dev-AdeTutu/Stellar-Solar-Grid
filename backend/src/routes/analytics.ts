@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { initUsageEventStore } from "../lib/usageEvents.js";
+import {
+  createBucketFormatter,
+  resolveTimezone,
+  type AnalyticsGranularity,
+} from "../lib/analyticsTimezone.js";
 
 export const analyticsRouter = Router();
 
@@ -13,29 +18,9 @@ function parseDate(value: unknown, fallback: Date): Date {
   return Number.isNaN(parsed.getTime()) ? fallback : parsed;
 }
 
-function normalizeGranularity(value: unknown): "daily" | "weekly" | "monthly" {
+function normalizeGranularity(value: unknown): AnalyticsGranularity {
   const v = String(value ?? "daily").trim().toLowerCase();
   return v === "weekly" || v === "monthly" ? v : "daily";
-}
-
-function formatBucket(date: Date, granularity: "daily" | "weekly" | "monthly"): string {
-  if (granularity === "daily") {
-    return date.toISOString().slice(0, 10);
-  }
-  if (granularity === "weekly") {
-    const start = new Date(date);
-    const day = start.getUTCDay();
-    const diff = (day + 6) % 7;
-    start.setUTCDate(start.getUTCDate() - diff);
-    start.setUTCHours(0, 0, 0, 0);
-    return start.toISOString().slice(0, 10);
-  }
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
-}
-
-function addBucket(map: Map<string, number>, date: Date, granularity: "daily" | "weekly" | "monthly", value: number) {
-  const bucket = formatBucket(date, granularity);
-  map.set(bucket, (map.get(bucket) ?? 0) + value);
 }
 
 const RENEWABLE_SOURCES = new Set(["solar", "wind", "hydro", "geothermal", "biomass"]);
@@ -79,8 +64,20 @@ analyticsRouter.get(
     const startDate = parseDate(req.query.start_date, new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000));
     const granularity = normalizeGranularity(req.query.granularity);
     const meterId = typeof req.query.meter_id === "string" ? req.query.meter_id.trim() : undefined;
+    const timezone = resolveTimezone(req.query.timezone);
+    if (timezone === null) {
+      return res.status(400).json({
+        error: "Validation failed",
+        code: "VALIDATION_ERROR",
+        details: { query: { timezone: ["Invalid IANA timezone"] } },
+      });
+    }
 
-    const cacheKey = JSON.stringify({ startDate: startDate.toISOString(), endDate: endDate.toISOString(), granularity, meterId });
+    // One formatter per request, not one per row. Buckets are derived in the
+    // requested timezone so late-evening events stay on their local calendar day.
+    const formatBucket = createBucketFormatter(timezone);
+
+    const cacheKey = JSON.stringify({ startDate: startDate.toISOString(), endDate: endDate.toISOString(), granularity, meterId, timezone });
     const cached = cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
       res.json(cached.data);
@@ -105,6 +102,7 @@ analyticsRouter.get(
       ) as Array<{ meter_id: string; units: number; received_at: string }>;
 
     const bucketTotals = new Map<string, number>();
+    const rowsPerBucket = new Map<string, number>();
     const meterTotals = new Map<string, number>();
     let peakBucket = "";
     let peakValue = 0;
@@ -114,7 +112,8 @@ analyticsRouter.get(
       if (Number.isNaN(receivedAt.getTime())) continue;
       const bucket = formatBucket(receivedAt, granularity);
       const units = Number(row.units ?? 0);
-      addBucket(bucketTotals, receivedAt, granularity, units);
+      bucketTotals.set(bucket, (bucketTotals.get(bucket) ?? 0) + units);
+      rowsPerBucket.set(bucket, (rowsPerBucket.get(bucket) ?? 0) + 1);
       meterTotals.set(row.meter_id, (meterTotals.get(row.meter_id) ?? 0) + units);
       if ((bucketTotals.get(bucket) ?? 0) > peakValue) {
         peakBucket = bucket;
@@ -125,7 +124,7 @@ analyticsRouter.get(
     const series = [...bucketTotals.entries()].map(([bucket, total]) => ({
       bucket,
       totalUnits: total,
-      averageUsage: rows.length > 0 ? total / Math.max(1, rows.filter((row) => formatBucket(new Date(row.received_at), granularity) === bucket).length) : 0,
+      averageUsage: total / Math.max(1, rowsPerBucket.get(bucket) ?? 0),
     })).sort((a, b) => a.bucket.localeCompare(b.bucket));
 
     const summary = {
@@ -135,6 +134,7 @@ analyticsRouter.get(
       peakBucket,
       peakUsage: peakValue,
       granularity,
+      timezone,
     };
 
     const payload = {

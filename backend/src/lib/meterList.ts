@@ -63,3 +63,17 @@ export function parseMeterPagination(query: { page?: unknown; pageSize?: unknown
   const pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? query.limit ?? 25) || 25));
   return { page, pageSize };
 }
+
+/**
+ * Apply filters before calculating pagination metadata. Keeping this as one
+ * operation prevents X-Total-Count from accidentally using the raw contract
+ * result while the response body uses a filtered page.
+ */
+export function buildMeterListPage<T extends Record<string, any>>(
+  meters: T[],
+  filters: MeterListFilters,
+  page: number,
+  pageSize: number,
+) {
+  return paginateMeters(filterMeters(meters, filters), page, pageSize);
+}

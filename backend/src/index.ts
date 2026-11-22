@@ -196,7 +196,14 @@ app.use(cors({ exposedHeaders: [
   "X-RateLimit-Policy", "Retry-After",
 ] }));
 app.use(globalRateLimiter);
-app.use(express.json());
+app.use(
+  express.json({
+    // Keep the exact bytes for webhook HMAC verification.
+    verify: (req, _res, buf) => {
+      (req as unknown as { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,

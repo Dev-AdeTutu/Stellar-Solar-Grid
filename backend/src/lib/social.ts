@@ -222,11 +222,15 @@ export function syncAchievements(address: string, usage = usageMap()): string[] 
     "INSERT OR IGNORE INTO user_achievements (address, achievement_id, unlocked_at) VALUES (?, ?, ?)",
   );
   const unlocked: string[] = [];
+  // The unlock row and its activity entry are written together, so a failing write cannot leave an
+  // achievement recorded as unlocked without the activity that announces it (or the reverse).
+  const grant = db.transaction((a: Achievement): boolean => {
+    if (!insert.run(address, a.id, new Date().toISOString()).changes) return false;
+    addActivity(address, "achievement", `${profile.displayName || shortAddr(address)} unlocked "${a.name}"`);
+    return true;
+  });
   for (const a of ACHIEVEMENTS) {
-    if (a.test(stats) && insert.run(address, a.id, new Date().toISOString()).changes) {
-      unlocked.push(a.id);
-      addActivity(address, "achievement", `${profile.displayName || shortAddr(address)} unlocked "${a.name}"`);
-    }
+    if (a.test(stats) && grant(a)) unlocked.push(a.id);
   }
   return unlocked;
 }
@@ -235,14 +239,16 @@ export function syncAchievements(address: string, usage = usageMap()): string[] 
 function unlockAchievementDirect(address: string, achievementId: string): boolean {
   const profile = getProfile(address);
   if (!profile) return false;
-  const changed = db
-    .prepare("INSERT OR IGNORE INTO user_achievements (address, achievement_id, unlocked_at) VALUES (?, ?, ?)")
-    .run(address, achievementId, new Date().toISOString()).changes > 0;
-  if (changed) {
-    const achievement = ACHIEVEMENTS.find((a) => a.id === achievementId);
-    addActivity(address, "achievement", `${profile.displayName || shortAddr(address)} unlocked "${achievement?.name ?? achievementId}"`);
-  }
-  return changed;
+  return db.transaction((): boolean => {
+    const changed = db
+      .prepare("INSERT OR IGNORE INTO user_achievements (address, achievement_id, unlocked_at) VALUES (?, ?, ?)")
+      .run(address, achievementId, new Date().toISOString()).changes > 0;
+    if (changed) {
+      const achievement = ACHIEVEMENTS.find((a) => a.id === achievementId);
+      addActivity(address, "achievement", `${profile.displayName || shortAddr(address)} unlocked "${achievement?.name ?? achievementId}"`);
+    }
+    return changed;
+  })();
 }
 
 export function getUserAchievements(address: string) {

@@ -22,6 +22,9 @@ const SubscriptionSchema = z.object({
     .regex(/^G[A-Z2-7]{55}$/, "Invalid Stellar owner address"),
   subscription: z.object({
     endpoint: z.string().url(),
+    // PushSubscriptionJSON carries the expiry as epoch milliseconds, or null when the push service
+    // gave none. A subscription that has already expired only produces 410 Gone on every send.
+    expirationTime: z.number().finite().nullable().optional(),
     keys: z.object({
       p256dh: z.string().min(1),
       auth: z.string().min(1),
@@ -74,6 +77,12 @@ pushSubscriptionsRouter.post(
     }
 
     const { ownerAddress, subscription } = parsed.data;
+    if (typeof subscription.expirationTime === "number" && subscription.expirationTime <= Date.now()) {
+      return res.status(400).json({
+        error: "Push subscription has already expired",
+        details: { "subscription.expirationTime": ["expirationTime is in the past"] },
+      });
+    }
     upsertPushSubscription({
       ownerAddress,
       endpoint: subscription.endpoint,
