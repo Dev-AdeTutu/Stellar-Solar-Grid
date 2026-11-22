@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { env } from "@/lib/env";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -189,6 +189,10 @@ export default function SolarForecast() {
   const [panelAgeYears, setPanelAgeYears] = useState("0");
   const [ratePerKwh, setRatePerKwh] = useState("0.12");
 
+  // Date range state
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+
   // Async state
   const [result, setResult] = useState<ForecastResult | null>(null);
   const [zones, setZones] = useState<IrradianceZone[]>([]);
@@ -231,6 +235,10 @@ export default function SolarForecast() {
         ratePerKwh,
       });
 
+      // Add date range if specified
+      if (startDate) params.append("startDate", startDate);
+      if (endDate) params.append("endDate", endDate);
+
       const res = await fetch(`${API_BASE}/api/solar/forecast?${params}`);
       const data = await res.json();
 
@@ -255,7 +263,14 @@ export default function SolarForecast() {
     setWeatherError(null);
 
     try {
-      const res = await fetch(`${API_BASE}/api/meters/${encodeURIComponent(id)}/forecast`);
+      const params = new URLSearchParams();
+      if (startDate) params.append("startDate", startDate);
+      if (endDate) params.append("endDate", endDate);
+      
+      const queryString = params.toString();
+      const url = `${API_BASE}/api/meters/${encodeURIComponent(id)}/forecast${queryString ? `?${queryString}` : ""}`;
+      
+      const res = await fetch(url);
       const data = await res.json();
 
       if (!res.ok) {
@@ -270,6 +285,22 @@ export default function SolarForecast() {
       setWeatherLoading(false);
     }
   }
+
+  // Refetch data when date range changes
+  useEffect(() => {
+    if (result) {
+      void runForecast();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startDate, endDate]);
+
+  // Refetch weather forecast when date range changes
+  useEffect(() => {
+    if (weatherForecast && meterId.trim()) {
+      void runWeatherForecast();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startDate, endDate]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -292,6 +323,44 @@ export default function SolarForecast() {
         <p className="mt-1 text-sm text-gray-400">
           Estimate daily, weekly, monthly and yearly kWh output and XLM revenue for your solar installation.
         </p>
+      </div>
+
+      {/* Date Range Filter */}
+      <div className="rounded-2xl border border-white/10 bg-solar-accent p-5 space-y-4">
+        <div>
+          <h3 className="text-sm font-semibold text-white flex items-center gap-1.5">
+            <span aria-hidden="true">📅</span> Date Range (Optional)
+          </h3>
+          <p className="mt-1 text-xs text-gray-400">
+            Filter forecast data by date range. Changes automatically trigger a data refetch.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="startDate" className="text-xs font-medium text-gray-300">
+              Start Date
+            </label>
+            <input
+              id="startDate"
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="rounded-lg border border-white/10 bg-solar-dark px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="endDate" className="text-xs font-medium text-gray-300">
+              End Date
+            </label>
+            <input
+              id="endDate"
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="rounded-lg border border-white/10 bg-solar-dark px-3 py-2 text-sm text-white placeholder-gray-600 focus:border-solar-yellow focus:outline-none transition"
+            />
+          </div>
+        </div>
       </div>
 
       {/* Form */}
