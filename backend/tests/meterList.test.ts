@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { filterMeters, paginateMeters } from "../src/lib/meterList.js";
+import { buildMeterListPage, filterMeters, paginateMeters } from "../src/lib/meterList.js";
 
 describe("meter list filters and pagination", () => {
   const meters = [
@@ -31,5 +31,13 @@ describe("meter list filters and pagination", () => {
     expect(filterMeters(meters, { status: "online" })).toEqual([meters[2]]);
     expect(filterMeters(meters, { active: "true" })).toEqual([meters[2]]);
     expect(filterMeters(meters, { status: "offline", active: "true" })).toEqual([]);
+  });
+
+  it("uses the filtered set for pagination totals", () => {
+    const result = buildMeterListPage(meters, { owner: "owner-a" }, 2, 1);
+
+    expect(result.meters).toEqual([meters[2]]);
+    expect(result.total).toBe(2);
+    expect(result.pages).toBe(2);
   });
 });
