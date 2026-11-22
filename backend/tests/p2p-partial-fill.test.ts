@@ -1,11 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import * as trading from "../src/lib/p2pTrading.js";
+import { buildSnapshot } from "../src/routes/orderBook.js";
 
 describe("P2P partial-fill accounting", () => {
-  beforeEach(() => {
-    trading.resetTradingStateForTests();
-  });
-
   it("never matches more than the sell offer's remaining quantity", () => {
     const sell = trading.createOffer({
       userId: "seller",
@@ -21,7 +18,7 @@ describe("P2P partial-fill accounting", () => {
       pricePerKwh: 1,
       minKwh: 1,
     });
-    trading.createOffer({
+    const secondBuyer = trading.createOffer({
       userId: "buyer-2",
       direction: "buy",
       energyKwh: 7,
@@ -38,6 +35,7 @@ describe("P2P partial-fill accounting", () => {
     expect(sell.remainingKwh).toBe(0);
     expect(sell.status).toBe("matched");
     expect(trading.getOpenOffers("sell")).toHaveLength(0);
+    trading.cancelOffer(secondBuyer.id, "buyer-2");
   });
 
   it("leaves a sell offer open with its residual quantity after a partial fill", () => {
@@ -60,6 +58,7 @@ describe("P2P partial-fill accounting", () => {
     expect(match.energyKwh).toBe(4);
     expect(sell.remainingKwh).toBe(6);
     expect(sell.status).toBe("open");
+    expect(buildSnapshot().asks[0]?.kwh).toBe(6);
 
     trading.settleMatch(match.id);
     expect(sell.remainingKwh).toBe(6);

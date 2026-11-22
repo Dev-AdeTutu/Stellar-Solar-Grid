@@ -13,11 +13,16 @@ export const orderBookRouter = Router();
 
 type Level = { price: number; kwh: number; cumulative: number };
 
-function aggregate(prices: { pricePerKwh: number; energyKwh: number }[], tick: number, desc: boolean, max: number): Level[] {
+function aggregate(
+  prices: { pricePerKwh: number; energyKwh: number; remainingKwh?: number }[],
+  tick: number,
+  desc: boolean,
+  max: number,
+): Level[] {
   const byLevel = new Map<number, number>();
   for (const o of prices) {
     const p = Number((Math.round(o.pricePerKwh / tick) * tick).toFixed(8));
-    byLevel.set(p, (byLevel.get(p) ?? 0) + o.energyKwh);
+    byLevel.set(p, (byLevel.get(p) ?? 0) + (o.remainingKwh ?? o.energyKwh));
   }
   let cumulative = 0;
   return [...byLevel.entries()]

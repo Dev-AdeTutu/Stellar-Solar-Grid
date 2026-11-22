@@ -717,9 +717,3 @@ export function getDerivativeStats(): {
     totalNotionalXlm: Number(totalNotionalXlm.toFixed(4)),
   };
 }
-
-/** Clear spot-trading state between isolated unit tests. */
-export function resetTradingStateForTests(): void {
-  offers.clear();
-  matches.clear();
-}
