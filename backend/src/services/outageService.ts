@@ -127,15 +127,21 @@ export class OutageService {
    * reported meters merged in, and no second `outage:detected` event fires.
    */
   public createOutage(input: CreateOutageInput): OutageRecord {
-    const existing = this.findExistingOutage(input);
+    // One active outage per region: concurrent detectors (MQTT listener and
+    // HTTP polling) that report the same outage are merged into the existing
+    // record instead of creating a second ID and a second event (#1130).
+    const existing = this.getActiveOutages().find((o) => o.region === input.region);
     if (existing) {
-      for (const meter of input.affectedMeters) {
-        if (!existing.affectedMeters.includes(meter)) existing.affectedMeters.push(meter);
+      for (const m of input.affectedMeters) {
+        if (!existing.affectedMeters.includes(m)) existing.affectedMeters.push(m);
+      }
+      for (const u of input.affectedUsers ?? []) {
+        if (!existing.affectedUsers.includes(u)) existing.affectedUsers.push(u);
       }
       return existing;
     }
 
-    const id = input.id ?? `outage-${Date.now()}-${this.idCounter++}`;
+    const id = `outage-${Date.now()}-${this.idCounter++}`;
     const startedAt = new Date().toISOString();
     const estimatedRestorationAt =
       input.estimatedRestorationAt ?? new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();

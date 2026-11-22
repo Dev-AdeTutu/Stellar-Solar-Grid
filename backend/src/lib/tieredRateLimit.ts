@@ -11,10 +11,8 @@
  * are short-lived, and a restart only grants consumers a fresh bucket.
  */
 import path from "node:path";
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";
-import { logger } from "./logger.js";
-import { SqlitePool } from "./sqlitePool.js";
 
 export type Tier = "free" | "basic" | "premium" | "enterprise";
 
@@ -47,63 +45,48 @@ interface Usage {
 const DB_PATH =
   process.env.RATE_LIMIT_TIERS_DB_PATH ?? path.resolve(process.cwd(), "data", "rate-limit-tiers.sqlite");
 
-const pool = new SqlitePool({
-  filename: DB_PATH,
-  min: 1,
-  max: Number(process.env.RATE_LIMIT_TIERS_POOL_MAX ?? 2),
-  idleTimeout: Number(process.env.SQLITE_POOL_IDLE_TIMEOUT_MS ?? 30_000),
-  acquireTimeout: Number(process.env.SQLITE_POOL_ACQUIRE_TIMEOUT_MS ?? 10_000),
-  onOpen: applyTierSchema,
-});
-
-function applyTierSchema(database: Database): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS rate_limit_subscriptions (
-      consumer_id TEXT PRIMARY KEY,
-      tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-}
-
-registerDatabase("rate-limit-tiers", () => {
-  pool.drain();
-});
-
-/** In-memory cache of persisted tiers; the database is the source of truth. */
+/** Tiers are persisted (#1129) so upgrades survive restarts; `subscriptions` is a read-through cache. */
 const subscriptions = new Map<string, Tier>();
 const usage = new Map<string, Usage>();
 
-function loadPersistedTiers(): void {
-  try {
-    const rows = pool.primaryDb().prepare("SELECT consumer_id, tier FROM rate_limit_subscriptions").all() as Array<{
-      consumer_id: string;
-      tier: string;
-    }>;
-    for (const row of rows) {
-      if (isTier(row.tier)) subscriptions.set(row.consumer_id, row.tier);
-    }
-  } catch (err) {
-    // Fall back to the default tier rather than refusing to serve traffic.
-    logger.error({ err }, "Failed to load persisted rate-limit tiers");
+let _db: Database.Database | undefined;
+let readTier: Database.Statement;
+let writeTier: Database.Statement;
+
+function db(): Database.Database {
+  if (!_db) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    _db = new Database(DB_PATH);
+    _db.pragma("journal_mode = WAL");
+    _db.exec(`
+      CREATE TABLE IF NOT EXISTS rate_limit_tiers (
+        consumer_id TEXT PRIMARY KEY,
+        tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    readTier = _db.prepare("SELECT tier FROM rate_limit_tiers WHERE consumer_id = ?");
+    writeTier = _db.prepare(`
+      INSERT INTO rate_limit_tiers (consumer_id, tier, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at
+    `);
   }
+  return _db;
 }
+
+registerDatabase("rate-limit-tiers", () => {
+  _db?.close();
+  _db = undefined;
+});
 
 export function isTier(value: unknown): value is Tier {
   return typeof value === "string" && value in TIERS;
 }
 
 export function setTier(consumerId: string, tier: Tier): void {
-  // Persist first so a failed write never leaves memory ahead of the database.
-  pool.withConnection((database) => {
-    database
-      .prepare(
-        `INSERT INTO rate_limit_subscriptions (consumer_id, tier, updated_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT (consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at`,
-      )
-      .run(consumerId, tier, new Date().toISOString());
-  });
+  db();
+  writeTier.run(consumerId, tier);
   subscriptions.set(consumerId, tier);
   const u = usage.get(consumerId);
   if (u) u.tokens = Math.min(u.tokens, capacity(tier));
@@ -112,11 +95,10 @@ export function setTier(consumerId: string, tier: Tier): void {
 export function getTier(consumerId: string): Tier {
   const cached = subscriptions.get(consumerId);
   if (cached) return cached;
-  const row = pool
-    .primaryDb()
-    .prepare("SELECT tier FROM rate_limit_subscriptions WHERE consumer_id = ?")
-    .get(consumerId) as { tier?: unknown } | undefined;
+  db();
+  const row = readTier.get(consumerId) as { tier?: unknown } | undefined;
   const tier = isTier(row?.tier) ? row.tier : "free";
+  // Cache the default too so unsubscribed consumers do not hit SQLite per request.
   subscriptions.set(consumerId, tier);
   return tier;
 }
@@ -213,12 +195,14 @@ export function getUsage(consumerId: string, now = Date.now()) {
   };
 }
 
-loadPersistedTiers();
-
-export function _resetTieredRateLimit(): void {
+/** Drop in-memory state only (simulates a process restart); persisted tiers are kept. */
+export function _resetTieredRateLimitCache(): void {
   subscriptions.clear();
   usage.clear();
-  pool.withConnection((database) => {
-    database.exec("DELETE FROM rate_limit_subscriptions");
-  });
+}
+
+/** Clear in-memory state and persisted tiers (test isolation). */
+export function _resetTieredRateLimit(): void {
+  _resetTieredRateLimitCache();
+  db().prepare("DELETE FROM rate_limit_tiers").run();
 }

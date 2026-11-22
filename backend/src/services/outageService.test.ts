@@ -123,4 +123,28 @@ describe('OutageService', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(listener).toHaveBeenCalledWith(first[0]);
   });
+
+  it('emits a single outage:detected event when two sources report the same regional outage (#1130)', () => {
+    const listener = vi.fn();
+    service.on('outage:detected', listener);
+
+    const mqtt = service.createOutage({ region: 'grid-1', affectedMeters: ['MTR-1'] });
+    const polled = service.createOutage({ region: 'grid-1', affectedMeters: ['MTR-1', 'MTR-2'], affectedUsers: ['GU1'] });
+
+    expect(polled.id).toBe(mqtt.id);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(service.getActiveOutages()).toHaveLength(1);
+    expect(polled.affectedMeters).toEqual(['MTR-1', 'MTR-2']);
+    expect(polled.affectedUsers).toEqual(['GU1']);
+  });
+
+  it('emits again for a region after its previous outage is resolved (#1130)', () => {
+    const listener = vi.fn();
+    service.on('outage:detected', listener);
+    const first = service.createOutage({ region: 'grid-1', affectedMeters: ['MTR-1'] });
+    service.resolveOutage(first.id);
+    const second = service.createOutage({ region: 'grid-1', affectedMeters: ['MTR-1'] });
+    expect(second.id).not.toBe(first.id);
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
 });
