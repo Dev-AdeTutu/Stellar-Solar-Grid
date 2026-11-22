@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useWalletStore } from "@/store/walletStore";
 
 // ── Sub-components ─────────────────────────────────────────────────────────
@@ -95,6 +95,28 @@ export function WalletConnectButton({ compact = false }: WalletConnectButtonProp
 
   const [copied, setCopied] = useState(false);
   const [tooltipVisible, setTooltipVisible] = useState(false);
+
+  // Listen for wallet disconnection events from the wallet app
+  useEffect(() => {
+    const checkConnection = () => {
+      const freighter = (window as any).freighter;
+      if (freighter && freighter.isConnected) {
+        freighter.isConnected().then((connected: boolean) => {
+          if (!connected && address) {
+            // Wallet was disconnected externally - update UI
+            disconnect();
+          }
+        }).catch(() => {
+          // If we can't check, silently fail
+        });
+      }
+    };
+
+    // Check periodically for external disconnections
+    const intervalId = setInterval(checkConnection, 2000);
+
+    return () => clearInterval(intervalId);
+  }, [address, disconnect]);
 
   const isNotInstalled =
     !!connectError &&

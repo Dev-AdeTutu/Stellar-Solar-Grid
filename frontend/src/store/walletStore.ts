@@ -230,24 +230,45 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 export { FREIGHTER_ID, xBullWalletId };
 
 // Issue #694: Properly handle wallet disconnection events with transaction cleanup
-if (typeof window !== "undefined" && (window as any).freighter) {
-  const handleAccountChange = (newAddress: string | null) => {
-    const state = useWalletStore.getState();
+if (typeof window !== "undefined") {
+  // Poll for freighter availability and set up listener when it's ready
+  const setupFreighterListener = () => {
+    const freighter = (window as any).freighter;
+    
+    if (freighter) {
+      const handleAccountChange = (newAddress: string | null) => {
+        const state = useWalletStore.getState();
 
-    if (!newAddress) {
-      // Account was disconnected - cleanup properly
-      state.disconnect();
-    } else if (state.address !== newAddress) {
-      // Account was changed - only update if not in a pending transaction
-      // to avoid race conditions during signing
-      if (!state.isTransactionPending) {
-        useWalletStore.setState({ address: newAddress });
-      } else {
-        // If transaction is pending, disconnect to prevent inconsistent state
-        state.disconnect();
+        if (!newAddress) {
+          // Account was disconnected - cleanup properly
+          state.disconnect();
+        } else if (state.address !== newAddress) {
+          // Account was changed - only update if not in a pending transaction
+          // to avoid race conditions during signing
+          if (!state.isTransactionPending) {
+            useWalletStore.setState({ address: newAddress });
+          } else {
+            // If transaction is pending, disconnect to prevent inconsistent state
+            state.disconnect();
+          }
+        }
+      };
+
+      // Remove existing listener if any to prevent duplicates
+      if (freighter.off) {
+        freighter.off("accountChanged", handleAccountChange);
+      }
+
+      // Add the listener
+      if (freighter.on) {
+        freighter.on("accountChanged", handleAccountChange);
       }
     }
   };
 
-  (window as any).freighter.on("accountChanged", handleAccountChange);
+  // Try to set up immediately
+  setupFreighterListener();
+
+  // Also listen for when Freighter gets loaded later
+  window.addEventListener("load", setupFreighterListener);
 }
