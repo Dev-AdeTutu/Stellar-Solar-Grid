@@ -567,6 +567,13 @@ Response headers: `X-RateLimit-Tier`, `X-RateLimit-Limit`, `X-RateLimit-Remainin
 | GET | `/api/rate-limits/usage` | Real-time usage for the caller (`requestsToday`, `quotaUsedPct`, `upgrade`) |
 | PUT | `/api/rate-limits/subscriptions/:consumerId` | Admin (`X-Admin-Key`): `{ "tier": "premium" }` |
 
+Assigned tiers are persisted to SQLite (`RATE_LIMIT_TIERS_DB_PATH`, default `data/rate-limit-tiers.sqlite`) and reloaded at startup, so an upgrade survives a restart (#1124). Per-minute and daily usage counters remain in memory and start fresh after a restart.
+
+Other notes for this release:
+
+- `POST /api/outages` is idempotent per outage (#1125): a report that repeats a supplied `id`, or matches an active outage in the same region sharing at least one meter, returns the existing record with `200` (new outages return `201`) and does not emit a second `outage:detected` event.
+- `GET /api/meters` accepts `limit` as an alias for `pageSize`; `X-Total-Count` and `pagination.total` count the filtered result set (#1127).
+
 ## Lifespan, Shadows, Forecast Dashboard (#1079, #1081, #1082)
 
 See `backend/LIFESPAN.md`, `backend/SHADOWS.md` and `frontend/FORECASTING.md`.

@@ -1,8 +1,27 @@
-/** Convert externally sourced scores to finite numbers before comparison. */
-export function scoreExceedsThreshold(score: unknown, threshold: unknown): boolean {
-  const numericScore = Number(score);
-  const numericThreshold = Number(threshold);
-  return Number.isFinite(numericScore) && Number.isFinite(numericThreshold) && numericScore > numericThreshold;
+/**
+ * Parse an externally sourced score or threshold (e.g. a Redis string such as
+ * "9.5") into a finite number. Returns undefined for anything that is not a
+ * real numeric value; blank strings, null and booleans are rejected because
+ * Number() would silently coerce them to 0 or 1.
+ */
+export function parseNumericScore(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Numeric comparison of an externally sourced score against a threshold.
+ * Both sides are parsed to numbers first so that "9.5" never beats 10 through
+ * lexicographic comparison. Returns false when either side is not numeric.
+ * Pass `inclusive` to treat a score equal to the threshold as exceeding it.
+ */
+export function scoreExceedsThreshold(score: unknown, threshold: unknown, inclusive = false): boolean {
+  const numericScore = parseNumericScore(score);
+  const numericThreshold = parseNumericScore(threshold);
+  if (numericScore === undefined || numericThreshold === undefined) return false;
+  return inclusive ? numericScore >= numericThreshold : numericScore > numericThreshold;
 }
 
 export interface ConsumptionReading {
@@ -170,7 +189,7 @@ export class TheftDetectionService {
     const probability = Number((riskScore / 100).toFixed(2));
 
     let alert: ProviderAlert | null = null;
-    if (scoreExceedsThreshold(riskScore, 70) || riskScore === 70) {
+    if (scoreExceedsThreshold(riskScore, 70, true)) {
       alert = this.triggerProviderAlert(meterId, riskScore, probability);
     }
 

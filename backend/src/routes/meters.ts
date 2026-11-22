@@ -36,7 +36,7 @@ import {
 import { getBatteryStats } from "../lib/batteryStats.js";
 import { getEdgeStatus } from "../lib/edgeComputing.js";
 import { getTamperHistory } from "../lib/tamperDetection.js";
-import { filterMeters, paginateMeters } from "../lib/meterList.js";
+import { filterMeters, paginateMeters, parseMeterPagination } from "../lib/meterList.js";
 
 const FALLBACK_LOW_BALANCE_THRESHOLD = Number(process.env.LOW_BALANCE_THRESHOLD ?? 1_000_000);
 
@@ -120,8 +120,7 @@ export function createMeterRouter(stellar: StellarService) {
   meterRouter.get(
     "/",
     asyncHandler(async (req, res) => {
-      const page = Math.max(1, Number(req.query.page ?? 1) || 1);
-      const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 25) || 25));
+      const { page, pageSize } = parseMeterPagination(req.query);
 
       // Optional filters — each is only applied when the caller supplies it.
       const owner = req.query.owner;
