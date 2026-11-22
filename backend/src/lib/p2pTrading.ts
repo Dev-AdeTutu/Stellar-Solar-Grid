@@ -14,6 +14,7 @@ export type TradeOffer = {
   userId: string;
   direction: TradeDirection;
   energyKwh: number;
+  remainingKwh: number;
   pricePerKwh: number;
   minKwh: number;
   status: TradeStatus;
@@ -70,6 +71,7 @@ export function createOffer(params: {
     userId: params.userId,
     direction: params.direction,
     energyKwh: params.energyKwh,
+    remainingKwh: params.energyKwh,
     pricePerKwh: params.pricePerKwh,
     minKwh: params.minKwh ?? Math.max(1, params.energyKwh * 0.1),
     status: "open",
@@ -283,6 +285,7 @@ export function runMatchingAlgorithm(): TradeMatch[] {
 
   for (const sell of sells) {
     for (const buy of buys) {
+      if (sell.status !== "open" || buy.status !== "open") continue;
       if (buy.userId === sell.userId) continue;
       if (buy.pricePerKwh < sell.pricePerKwh) continue;
       // Island-restricted offers may only match within the same active island.
@@ -294,7 +297,7 @@ export function runMatchingAlgorithm(): TradeMatch[] {
         }
       }
 
-      const tradableKwh = Math.min(sell.energyKwh, buy.energyKwh);
+      const tradableKwh = Math.min(sell.remainingKwh, buy.remainingKwh);
       if (tradableKwh < Math.max(sell.minKwh, buy.minKwh)) continue;
 
       const settlementPrice = (sell.pricePerKwh + buy.pricePerKwh) / 2;
@@ -317,11 +320,13 @@ export function runMatchingAlgorithm(): TradeMatch[] {
         disputeReason: null,
       };
 
-      sell.status = "matched";
-      buy.status = "matched";
+      sell.remainingKwh = Number((sell.remainingKwh - tradableKwh).toFixed(4));
+      buy.remainingKwh = Number((buy.remainingKwh - tradableKwh).toFixed(4));
+      if (sell.remainingKwh === 0) sell.status = "matched";
+      if (buy.remainingKwh === 0) buy.status = "matched";
       matches.set(match.id, match);
       newMatches.push(match);
-      break; // one match per sell offer per run
+      if (sell.status !== "open") break;
     }
   }
 
@@ -338,8 +343,8 @@ export function settleMatch(matchId: string): TradeMatch {
 
   const sell = offers.get(match.sellOfferId);
   const buy = offers.get(match.buyOfferId);
-  if (sell) sell.status = "settled";
-  if (buy) buy.status = "settled";
+  if (sell?.remainingKwh === 0) sell.status = "settled";
+  if (buy?.remainingKwh === 0) buy.status = "settled";
 
   return match;
 }
@@ -404,6 +409,7 @@ export function getRecentMatches(limit = 50): TradeMatch[] {
 /** Every recorded match, oldest first — used for market analytics price history (#999). */
 export function getAllMatches(): TradeMatch[] {
   return [...matches.values()].sort((a, b) => a.matchedAt.localeCompare(b.matchedAt));
+}
 // ---------------------------------------------------------------------------
 // Energy credit derivatives (#1062)
 // ---------------------------------------------------------------------------
