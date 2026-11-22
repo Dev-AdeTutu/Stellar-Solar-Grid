@@ -9,6 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
+import { registerDatabase } from "./databaseLifecycle.js";
 
 export type Tier = "free" | "basic" | "premium" | "enterprise";
 
@@ -38,32 +39,50 @@ interface Usage {
   totalCount: number;
 }
 
+const DB_PATH =
+  process.env.RATE_LIMIT_TIERS_DB_PATH ?? path.resolve(process.cwd(), "data", "rate-limit-tiers.sqlite");
+
+/** Tiers are persisted (#1129) so upgrades survive restarts; `subscriptions` is a read-through cache. */
 const subscriptions = new Map<string, Tier>();
 const usage = new Map<string, Usage>();
 
-const dbPath = process.env.RATE_LIMIT_TIERS_DB_PATH ?? path.join(process.cwd(), "data", "rate-limit-tiers.sqlite");
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const tierDb = new Database(dbPath);
-tierDb.pragma("journal_mode = WAL");
-tierDb.exec(`
-  CREATE TABLE IF NOT EXISTS rate_limit_subscriptions (
-    consumer_id TEXT PRIMARY KEY,
-    tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )
-`);
-const readTier = tierDb.prepare("SELECT tier FROM rate_limit_subscriptions WHERE consumer_id = ?");
-const writeTier = tierDb.prepare(`
-  INSERT INTO rate_limit_subscriptions (consumer_id, tier, updated_at)
-  VALUES (?, ?, CURRENT_TIMESTAMP)
-  ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at
-`);
+let _db: Database.Database | undefined;
+let readTier: Database.Statement;
+let writeTier: Database.Statement;
+
+function db(): Database.Database {
+  if (!_db) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    _db = new Database(DB_PATH);
+    _db.pragma("journal_mode = WAL");
+    _db.exec(`
+      CREATE TABLE IF NOT EXISTS rate_limit_tiers (
+        consumer_id TEXT PRIMARY KEY,
+        tier TEXT NOT NULL CHECK (tier IN ('free', 'basic', 'premium', 'enterprise')),
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    readTier = _db.prepare("SELECT tier FROM rate_limit_tiers WHERE consumer_id = ?");
+    writeTier = _db.prepare(`
+      INSERT INTO rate_limit_tiers (consumer_id, tier, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(consumer_id) DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at
+    `);
+  }
+  return _db;
+}
+
+registerDatabase("rate-limit-tiers", () => {
+  _db?.close();
+  _db = undefined;
+});
 
 export function isTier(value: unknown): value is Tier {
   return typeof value === "string" && value in TIERS;
 }
 
 export function setTier(consumerId: string, tier: Tier): void {
+  db();
   writeTier.run(consumerId, tier);
   subscriptions.set(consumerId, tier);
   const u = usage.get(consumerId);
@@ -73,8 +92,10 @@ export function setTier(consumerId: string, tier: Tier): void {
 export function getTier(consumerId: string): Tier {
   const cached = subscriptions.get(consumerId);
   if (cached) return cached;
+  db();
   const row = readTier.get(consumerId) as { tier?: unknown } | undefined;
   const tier = isTier(row?.tier) ? row.tier : "free";
+  // Cache the default too so unsubscribed consumers do not hit SQLite per request.
   subscriptions.set(consumerId, tier);
   return tier;
 }
@@ -171,8 +192,14 @@ export function getUsage(consumerId: string, now = Date.now()) {
   };
 }
 
-export function _resetTieredRateLimit(): void {
+/** Drop in-memory state only (simulates a process restart); persisted tiers are kept. */
+export function _resetTieredRateLimitCache(): void {
   subscriptions.clear();
   usage.clear();
-  tierDb.exec("DELETE FROM rate_limit_subscriptions");
+}
+
+/** Clear in-memory state and persisted tiers (test isolation). */
+export function _resetTieredRateLimit(): void {
+  _resetTieredRateLimitCache();
+  db().prepare("DELETE FROM rate_limit_tiers").run();
 }
