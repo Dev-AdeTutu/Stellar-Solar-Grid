@@ -22,6 +22,33 @@ vi.mock("../src/lib/stellar", () => ({
 
 import { webhookRouter } from "../src/routes/webhooks";
 import { registerWebhook, getWebhookUrls } from "../src/lib/webhookRegistry";
+import { stellarService } from "../src/lib/stellar";
+
+describe("webhookRouter - POST /api/webhooks/sms-payment validation", () => {
+  it("rejects an empty body with 400 before signature verification or payment", () => {
+    const route = webhookRouter.stack.find(
+      (layer: any) => layer.route?.path === "/sms-payment" && layer.route?.methods.post
+    )?.route;
+    const validationMiddleware = route?.stack[0]?.handle;
+    const status = vi.fn().mockReturnThis();
+    const json = vi.fn().mockReturnThis();
+    const next = vi.fn();
+
+    expect(validationMiddleware).toBeDefined();
+    validationMiddleware(
+      { body: {}, headers: {}, rawBody: Buffer.alloc(0) },
+      { status, json },
+      next
+    );
+
+    expect(status).toHaveBeenCalledWith(400);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "VALIDATION_ERROR" })
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(stellarService.invoke).not.toHaveBeenCalled();
+  });
+});
 
 describe("webhookRouter - POST /api/webhooks/low-balance auth", () => {
   let req: Partial<Request>;
