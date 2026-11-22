@@ -67,10 +67,15 @@ async function load(req: Request) {
   return report;
 }
 
+function markStaleResponse(res: Response, stale: boolean): void {
+  if (stale) res.setHeader("X-Data-Stale", "true");
+}
+
 weatherRouter.get(
   "/current",
   handle(async (req, res) => {
     const report = await load(req);
+    markStaleResponse(res, report.stale);
     res.json({ location: report.location, current: report.current, fetchedAt: report.fetchedAt, stale: report.stale });
   }),
 );
@@ -79,6 +84,7 @@ weatherRouter.get(
   "/forecast",
   handle(async (req, res) => {
     const report = await load(req);
+    markStaleResponse(res, report.stale);
     res.json({
       location: report.location,
       daily: report.daily.slice(0, 7),
@@ -99,6 +105,7 @@ weatherRouter.get(
       throw new WeatherUnavailableError("panelAgeYears must be a non-negative number", 400);
     }
     const report = await load(req);
+    markStaleResponse(res, report.stale);
     const baseline = calcDailyKwh(capacityKw, peakSunHours, efficiency, panelAgeYears);
     const days = forecastProduction(report.daily, baseline);
     res.json({
@@ -148,6 +155,7 @@ weatherRouter.get(
 
     const report = await getWeather(lat, lon);
     recordObservation(report);
+    markStaleResponse(res, report.stale);
     if (report.hourly.length < hours) {
       throw new WeatherUnavailableError(`Weather provider returned ${report.hourly.length} hourly points; ${hours} are required`, 502);
     }
@@ -228,6 +236,7 @@ weatherRouter.get(
   "/alerts",
   handle(async (req, res) => {
     const report = await load(req);
+    markStaleResponse(res, report.stale);
     res.json({ location: report.location, alerts: deriveAlerts(report), fetchedAt: report.fetchedAt });
   }),
 );

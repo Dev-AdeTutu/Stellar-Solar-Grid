@@ -142,6 +142,26 @@ beforeEach(() => {
   });
 });
 
+describe("weather forecast stale-data signaling", () => {
+  it("sets X-Data-Stale when the forecast is served from stale cache", async () => {
+    mocks.getWeather.mockResolvedValue({ ...dailyWeatherReport(), stale: true, cached: true });
+
+    const response = await fetch(`${baseUrl}/api/weather/forecast?lat=1&lon=2`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("X-Data-Stale")).toBe("true");
+    const body = await response.json() as { stale: boolean };
+    expect(body.stale).toBe(true);
+  });
+
+  it("does not add the stale header for fresh forecasts", async () => {
+    const response = await fetch(`${baseUrl}/api/weather/forecast?lat=1&lon=2`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.has("X-Data-Stale")).toBe(false);
+  });
+});
+
 describe("energy forecast HTTP API", () => {
   it("returns 48 weather-integrated hourly consumption values and model accuracy", async () => {
     const response = await fetch(`${baseUrl}/api/weather/energy-forecast?meterId=METER1&lat=1&lon=2`);
