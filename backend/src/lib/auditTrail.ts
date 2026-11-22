@@ -67,7 +67,6 @@ export type ForensicEvent = AuditEntry & {
   context: string | null;
   detector: string | null;
 };
-=======
 
 const GENESIS = "0".repeat(64);
 
