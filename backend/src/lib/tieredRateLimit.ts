@@ -5,8 +5,11 @@
  * minute up to `requestsPerMinute + burst`, so premium/enterprise consumers
  * can absorb short spikes. Usage counters are tracked in real time per
  * consumer and exposed via /api/rate-limits/usage.
+ *
+ * Subscription tiers are persisted to SQLite (#1124) so an upgrade survives a
+ * server restart. Token-bucket usage counters stay in memory by design: they
+ * are short-lived, and a restart only grants consumers a fresh bucket.
  */
-import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { registerDatabase } from "./databaseLifecycle.js";

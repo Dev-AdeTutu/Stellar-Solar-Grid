@@ -22,7 +22,7 @@ outagesRouter.get('/current', (_req: Request, res: Response) => {
  * Create an outage record manually or from monitoring events.
  */
 outagesRouter.post('/', (req: Request, res: Response) => {
-  const { region, affectedMeters, affectedUsers, estimatedRestorationAt, cause, severity } = req.body;
+  const { id, region, affectedMeters, affectedUsers, estimatedRestorationAt, cause, severity } = req.body;
 
   if (!region || !Array.isArray(affectedMeters) || affectedMeters.length === 0) {
     return res.status(400).json({
@@ -30,16 +30,21 @@ outagesRouter.post('/', (req: Request, res: Response) => {
     });
   }
 
-  const record = outageService.createOutage({
+  const input = {
+    id: typeof id === 'string' && id.trim() ? id.trim() : undefined,
     region,
     affectedMeters,
     affectedUsers: Array.isArray(affectedUsers) ? affectedUsers : [],
     estimatedRestorationAt,
     cause,
     severity,
-  });
+  };
 
-  return res.status(201).json({
+  // A repeat report of an outage that is already tracked is not a new resource.
+  const duplicate = outageService.findExistingOutage(input) !== undefined;
+  const record = outageService.createOutage(input);
+
+  return res.status(duplicate ? 200 : 201).json({
     status: 'success',
     outage: record,
   });

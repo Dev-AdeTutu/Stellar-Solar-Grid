@@ -54,6 +54,17 @@ export function paginateMeters<T>(meters: T[], page: number, pageSize: number) {
 }
 
 /**
+ * Parse `page` and `pageSize` for GET /api/meters. `limit` is accepted as an
+ * alias for `pageSize` (as on /api/meters/search); `pageSize` wins if both are
+ * supplied. Page size is clamped to 1..100 and defaults to 25.
+ */
+export function parseMeterPagination(query: { page?: unknown; pageSize?: unknown; limit?: unknown }) {
+  const page = Math.max(1, Number(query.page ?? 1) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(query.pageSize ?? query.limit ?? 25) || 25));
+  return { page, pageSize };
+}
+
+/**
  * Apply filters before calculating pagination metadata. Keeping this as one
  * operation prevents X-Total-Count from accidentally using the raw contract
  * result while the response body uses a filtered page.

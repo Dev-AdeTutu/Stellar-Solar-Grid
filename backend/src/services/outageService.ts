@@ -26,6 +26,8 @@ export interface OutageRecord {
 }
 
 export interface CreateOutageInput {
+  /** Optional caller-supplied outage ID; re-submitting the same ID is idempotent. */
+  id?: string;
   region: string;
   affectedMeters: string[];
   affectedUsers?: string[];
@@ -102,7 +104,28 @@ export class OutageService {
     return this;
   }
 
-  /** Create an outage record. */
+  /**
+   * Find an existing outage that a new detection report refers to: either the
+   * same caller-supplied ID, or an active outage in the same region that
+   * already covers at least one of the reported meters. Lets independent
+   * detection sources (MQTT listener, HTTP polling fallback, manual reports)
+   * report the same physical outage without creating duplicates.
+   */
+  public findExistingOutage(input: CreateOutageInput): OutageRecord | undefined {
+    if (input.id) {
+      const byId = this.outages.get(input.id);
+      if (byId) return byId;
+    }
+    return this.getActiveOutages().find(
+      (o) => o.region === input.region && input.affectedMeters.some((m) => o.affectedMeters.includes(m)),
+    );
+  }
+
+  /**
+   * Create an outage record. If the same outage was already reported (see
+   * findExistingOutage) the existing record is returned, with any newly
+   * reported meters merged in, and no second `outage:detected` event fires.
+   */
   public createOutage(input: CreateOutageInput): OutageRecord {
     // One active outage per region: concurrent detectors (MQTT listener and
     // HTTP polling) that report the same outage are merged into the existing
