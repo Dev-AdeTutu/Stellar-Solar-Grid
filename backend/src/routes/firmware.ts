@@ -9,6 +9,7 @@ import {
   recordMeterUpdate,
   advanceRollout,
 } from '../services/firmwareService';
+import { isValidSemVer } from '../lib/semver.js';
 
 const router = Router();
 
@@ -24,6 +25,9 @@ router.post(
 
     if (!version || typeof version !== 'string') {
       return res.status(400).json({ error: 'version is required' });
+    }
+    if (!isValidSemVer(version)) {
+      return res.status(400).json({ error: 'version must be a valid semver string (MAJOR.MINOR.PATCH)' });
     }
     if (!binary) {
       return res.status(400).json({ error: 'binary is required' });
@@ -66,6 +70,9 @@ router.post(
 
     if (!meterId) {
       return res.status(400).json({ error: 'meterId is required' });
+    }
+    if (version !== undefined && !isValidSemVer(version)) {
+      return res.status(400).json({ error: 'version must be a valid semver string (MAJOR.MINOR.PATCH)' });
     }
 
     let firmware = null;

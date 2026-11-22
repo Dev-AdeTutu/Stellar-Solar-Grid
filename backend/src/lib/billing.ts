@@ -378,6 +378,15 @@ export function buildSep7Uri(bill: Pick<Bill, "bill_number" | "total">): string 
 
 const xlm = (stroops: number) => `${(stroops / STROOPS_PER_XLM).toFixed(7)} XLM`;
 
+/**
+ * Presentation helper for bill dates. Stored bills can carry a null due date
+ * (for example when a due date was never generated), and calling `.slice()` on
+ * it crashed both the PDF renderer and the bill email with a 500 (#1148).
+ */
+export function formatBillDate(value: string | null | undefined): string {
+  return typeof value === "string" && value.length > 0 ? value.slice(0, 10) : "N/A";
+}
+
 export function createBillPdf(bill: Bill, account?: BillingAccount): Buffer {
   return createTextPdf(
     [
@@ -386,8 +395,8 @@ export function createBillPdf(bill: Bill, account?: BillingAccount): Buffer {
       `Bill number: ${bill.bill_number}`,
       `Meter ID: ${bill.meter_id}`,
       ...(account?.name ? [`Customer: ${account.name}`] : []),
-      `Billing period: ${bill.period_start.slice(0, 10)} to ${bill.period_end.slice(0, 10)} (exclusive)`,
-      `Issued: ${bill.issued_at.slice(0, 10)}    Due: ${bill.due_at.slice(0, 10)}`,
+      `Billing period: ${formatBillDate(bill.period_start)} to ${formatBillDate(bill.period_end)} (exclusive)`,
+      `Issued: ${formatBillDate(bill.issued_at)}    Due: ${formatBillDate(bill.due_at)}`,
       "",
       { text: "Charges", bold: true },
       `Energy consumed: ${bill.units} units`,
@@ -436,7 +445,7 @@ export async function emailBill(bill: Bill): Promise<boolean> {
     "",
     `Energy consumed: ${bill.units} units`,
     ...(bill.discount_amount > 0 ? [`Community discount: -${xlm(bill.discount_amount)}`] : []),
-    `Total due: ${xlm(bill.total)} by ${bill.due_at.slice(0, 10)}`,
+    `Total due: ${xlm(bill.total)} by ${formatBillDate(bill.due_at)}`,
     "",
     `Pay online: ${bill.payment_link}`,
     ...(sep7 ? [`Pay from a Stellar wallet: ${sep7}`] : []),
@@ -445,7 +454,7 @@ export async function emailBill(bill: Bill): Promise<boolean> {
   ].join("\n");
   const html = `<p>Hello${account.name ? ` ${escapeHtml(account.name)}` : ""},</p>
 <p>Your SolarGrid bill for <strong>${bill.period}</strong> (meter ${escapeHtml(bill.meter_id)}) is ready.</p>
-<ul><li>Energy consumed: ${bill.units} units</li>${bill.discount_amount > 0 ? `<li>Community discount: -${xlm(bill.discount_amount)}</li>` : ""}<li>Total due: <strong>${xlm(bill.total)}</strong> by ${bill.due_at.slice(0, 10)}</li></ul>
+<ul><li>Energy consumed: ${bill.units} units</li>${bill.discount_amount > 0 ? `<li>Community discount: -${xlm(bill.discount_amount)}</li>` : ""}<li>Total due: <strong>${xlm(bill.total)}</strong> by ${formatBillDate(bill.due_at)}</li></ul>
 <p><a href="${escapeHtml(bill.payment_link)}">Pay your bill</a>${sep7 ? ` or <a href="${escapeHtml(sep7)}">pay from a Stellar wallet</a>` : ""}</p>
 <p>Your bill is attached as a PDF.</p>`;
 

@@ -42,6 +42,31 @@ export type StakerInfo = {
 const addr = (a: string) => StellarSdk.nativeToScVal(a, { type: "address" });
 const big = (v: unknown) => BigInt((v as bigint | number | undefined) ?? 0);
 
+/**
+ * Divides two BigInts and returns a Number, keeping the division in BigInt
+ * space. Converting each large token amount to Number first loses precision
+ * above 2^53 and produced wrong percentages for whale accounts (#1149).
+ * Returns null when the denominator is zero or negative.
+ */
+export function ratioToNumber(
+  numerator: bigint,
+  denominator: bigint,
+  fractionDigits = 6,
+): number | null {
+  if (denominator <= 0n) return null;
+  if (numerator < 0n) {
+    const positive = ratioToNumber(-numerator, denominator, fractionDigits);
+    return positive === null ? null : -positive;
+  }
+  const integerPart = numerator / denominator;
+  const remainder = numerator % denominator;
+  // Keep the fractional division in BigInt space so the intermediate value
+  // stays bounded by `scale` instead of becoming another huge Number.
+  const scale = 10n ** BigInt(fractionDigits);
+  const fraction = ((remainder * scale) / denominator).toString().padStart(fractionDigits, "0");
+  return Number(`${integerPart}.${fraction}`);
+}
+
 async function view(method: string, args: StellarSdk.xdr.ScVal[] = []): Promise<any> {
   return StellarSdk.scValToNative(await stellarService.query(method, args));
 }
@@ -83,9 +108,8 @@ export async function getStakingStats(): Promise<StakingStats> {
     stakerCount: Number(pool.staker_count ?? 0),
     rewardReserve: reserve.toString(),
     totalDistributed: big(pool.total_distributed).toString(),
-    aprPercent:
-      total > 0n && reserve > 0n ? (Number(rate) * SECONDS_PER_YEAR * 100) / Number(total) : null,
-    reserveRunwayDays: rate > 0n ? Number(reserve / rate) / 86_400 : null,
+    aprPercent: ratioToNumber(rate * BigInt(SECONDS_PER_YEAR) * 100n, total),
+    reserveRunwayDays: rate > 0n ? ratioToNumber(reserve / rate, 86_400n) : null,
   };
 }
 
@@ -106,7 +130,7 @@ export async function getStakerInfo(address: string, now = Date.now()): Promise<
     unlockAt: unlockAt ? new Date(unlockAt * 1000).toISOString() : null,
     canWithdraw: unstaking > 0n && unlockAt * 1000 <= now,
     votingPower: power.toString(),
-    votingSharePercent: total > 0n ? (Number(power) * 100) / Number(total) : null,
+    votingSharePercent: ratioToNumber(power * 100n, total),
     stakedAt: Number(info.staked_at) ? new Date(Number(info.staked_at) * 1000).toISOString() : null,
   };
 }
