@@ -6,6 +6,8 @@ import { logger } from "../lib/logger.js";
 export const twoFactorRouter = Router();
 
 const account = z.string().min(1).max(128);
+// Strip spaces/dashes users paste from authenticator apps so valid codes aren't rejected (#1120).
+const normalizeCode = (c: string) => c.replace(/[\s-]/g, "");
 
 twoFactorRouter.post("/enroll", (req, res) => {
   const p = z.object({ account, phone: z.string().max(20).optional() }).safeParse(req.body);
@@ -17,7 +19,7 @@ twoFactorRouter.post("/enroll", (req, res) => {
 twoFactorRouter.post("/verify", (req, res) => {
   const p = z.object({ account, code: z.string().min(6).max(16), method: z.enum(["totp", "sms", "recovery"]).optional() }).safeParse(req.body);
   if (!p.success) return res.status(400).json({ error: p.error.issues });
-  const ok = tf.verify(p.data.account, p.data.code, p.data.method);
+  const ok = tf.verify(p.data.account, normalizeCode(p.data.code), p.data.method);
   res.status(ok ? 200 : 401).json({ verified: ok });
 });
 
@@ -34,7 +36,7 @@ twoFactorRouter.post("/sms", (req, res) => {
 twoFactorRouter.post("/recovery-codes", (req, res) => {
   const p = z.object({ account, code: z.string() }).safeParse(req.body);
   if (!p.success) return res.status(400).json({ error: p.error.issues });
-  if (!tf.verify(p.data.account, p.data.code)) return res.status(401).json({ error: "Invalid code" });
+  if (!tf.verify(p.data.account, normalizeCode(p.data.code))) return res.status(401).json({ error: "Invalid code" });
   res.json({ recoveryCodes: tf.generateRecoveryCodes(p.data.account) });
 });
 
@@ -43,7 +45,7 @@ export function requireTwoFactor(req: Request, res: Response, next: NextFunction
   const acct = String(req.headers["x-account"] ?? "");
   const value = Number(req.headers["x-account-value"] ?? 0);
   if (!tf.isTwoFactorRequired(value)) return next();
-  const code = String(req.headers["x-2fa-code"] ?? "");
+  const code = normalizeCode(String(req.headers["x-2fa-code"] ?? ""));
   if (tf.isEnabled(acct) && tf.verify(acct, code)) return next();
   res.status(403).json({ error: "Two-factor authentication required" });
 }

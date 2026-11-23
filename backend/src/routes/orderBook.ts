@@ -7,7 +7,7 @@
 import { Router } from "express";
 import type { Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { getOpenOffers, getRecentMatches } from "../lib/p2pTrading.js";
+import { getOpenOffers, getRecentMatches, getOffer } from "../lib/p2pTrading.js";
 
 export const orderBookRouter = Router();
 
@@ -55,6 +55,45 @@ function parseParams(tickRaw: unknown, levelsRaw: unknown) {
 orderBookRouter.get("/", (req, res) => {
   const { tick, levels } = parseParams(req.query.tick, req.query.levels);
   res.json(buildSnapshot(tick, levels));
+});
+
+/**
+ * Per-offer row lock (SELECT ... FOR UPDATE equivalent, #1117). Fill requests for the
+ * same offer are serialized so the remaining quantity is re-read only after the
+ * previous fill commits, preventing over-fills from concurrent partial fills.
+ */
+const offerLocks = new Map<string, Promise<unknown>>();
+export async function withOfferLock<T>(offerId: string, fn: () => T | Promise<T>): Promise<T> {
+  const prev = offerLocks.get(offerId) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  offerLocks.set(offerId, tail);
+  tail.then(() => { if (offerLocks.get(offerId) === tail) offerLocks.delete(offerId); });
+  return run;
+}
+
+export function fillOffer(offerId: string, kwh: number) {
+  return withOfferLock(offerId, () => {
+    const offer = getOffer(offerId);
+    if (!offer) throw Object.assign(new Error("Offer not found"), { status: 404 });
+    if (offer.status !== "open" || offer.remainingKwh <= 0)
+      throw Object.assign(new Error("Offer is not open"), { status: 409 });
+    if (kwh > offer.remainingKwh)
+      throw Object.assign(new Error(`Only ${offer.remainingKwh} kWh remaining`), { status: 409 });
+    offer.remainingKwh = Number((offer.remainingKwh - kwh).toFixed(4));
+    if (offer.remainingKwh <= 0) { offer.remainingKwh = 0; offer.status = "matched"; }
+    return { offerId, filledKwh: kwh, remainingKwh: offer.remainingKwh, status: offer.status };
+  });
+}
+
+orderBookRouter.post("/:offerId/fill", async (req, res) => {
+  const kwh = Number(req.body?.kwh);
+  if (!Number.isFinite(kwh) || kwh <= 0) return res.status(400).json({ error: "kwh must be a positive number" });
+  try {
+    res.json(await fillOffer(req.params.offerId, kwh));
+  } catch (err: any) {
+    res.status(err.status ?? 500).json({ error: err.message });
+  }
 });
 
 /** Attach the public WebSocket feed; snapshots are pushed only when the book changed. */

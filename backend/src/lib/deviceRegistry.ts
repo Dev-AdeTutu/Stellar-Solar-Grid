@@ -222,6 +222,8 @@ function db(): Database.Database {
     );
     if (!deviceColumns.has("tenant_id")) _db.exec("ALTER TABLE devices ADD COLUMN tenant_id TEXT NOT NULL DEFAULT ''");
     _db.exec("CREATE INDEX IF NOT EXISTS idx_devices_tenant_id ON devices (tenant_id)");
+    // Covering index for admin dashboard tenant meter stats (#1119).
+    _db.exec("CREATE INDEX IF NOT EXISTS idx_devices_tenant_type_status ON devices (tenant_id, type, status)");
     const performanceColumns = new Set(
       (_db.pragma("table_info(device_performance)") as Array<{ name: string }>).map((column) => column.name),
     );
