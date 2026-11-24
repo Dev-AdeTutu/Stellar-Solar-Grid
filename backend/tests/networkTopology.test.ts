@@ -4,6 +4,7 @@ import {
   getHierarchyTree,
   getTopologyNode,
   resetTopologyStore,
+  updateNodeParent,
   updateNodeStatus,
   upsertTopologyNode,
 } from "../src/lib/networkTopology.js";
@@ -51,5 +52,32 @@ describe("Network Topology Generation (#1006)", () => {
 
     const updated = updateNodeStatus("meter-999", "fault");
     expect(updated?.status).toBe("fault");
+  });
+
+  it("rebuilds meter edges and weights after feeder reassignment", () => {
+    expect(generateNetworkTopology().links).toContainEqual(expect.objectContaining({
+      source: "tx-north-1",
+      target: "meter-101",
+      loadPercentage: 28,
+    }));
+
+    expect(updateNodeParent("meter-101", "tx-south-1")?.parentId).toBe("tx-south-1");
+
+    const reassignedGraph = generateNetworkTopology();
+    expect(reassignedGraph.links).not.toContainEqual(expect.objectContaining({
+      source: "tx-north-1",
+      target: "meter-101",
+    }));
+    expect(reassignedGraph.links).toContainEqual(expect.objectContaining({
+      source: "tx-south-1",
+      target: "meter-101",
+      loadPercentage: 28,
+    }));
+  });
+
+  it("rejects reassignment to a missing or non-transformer parent", () => {
+    expect(updateNodeParent("meter-101", "missing-feeder")).toBeUndefined();
+    expect(updateNodeParent("meter-101", "grid-main-1")).toBeUndefined();
+    expect(updateNodeParent("tx-north-1", "tx-south-1")).toBeUndefined();
   });
 });

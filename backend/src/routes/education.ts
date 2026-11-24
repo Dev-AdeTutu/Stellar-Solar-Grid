@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { getNextQuizAttemptNumbers, getQuizProgress, upsertQuizAttempt } from "../lib/educationAttempts.js";
 
 export const educationRouter = Router();
 
@@ -46,27 +47,43 @@ export const MODULES: Module[] = [
   },
 ];
 
-const progress = new Map<string, Record<string, number>>();
-
 educationRouter.get("/modules", (_req, res) => res.json(MODULES));
 
-/** POST /api/education/:userId/:moduleId/submit  body: { answers: number[] } */
+/** POST /api/education/:userId/:moduleId/submit body: { answers: number[], attempt_number: number } */
 educationRouter.post("/:userId/:moduleId/submit", (req, res) => {
   const mod = MODULES.find((m) => m.id === req.params.moduleId);
   if (!mod) return res.status(404).json({ error: "Module not found" });
-  const answers: number[] = req.body.answers ?? [];
+  const answers = req.body?.answers;
+  if (!Array.isArray(answers) || !answers.every((answer: unknown) => Number.isInteger(answer))) {
+    return res.status(400).json({ error: "answers must be an array of integers" });
+  }
+  const requestedAttemptNumber = req.body.attempt_number ?? req.body.attemptNumber;
+  if (!Number.isInteger(requestedAttemptNumber) || requestedAttemptNumber < 1) {
+    return res.status(400).json({ error: "attempt_number must be a positive integer" });
+  }
   const score = mod.quiz.filter((q, i) => answers[i] === q.answer).length / mod.quiz.length;
-  const p = progress.get(req.params.userId) ?? {};
-  p[mod.id] = Math.max(p[mod.id] ?? 0, score);
-  progress.set(req.params.userId, p);
-  res.json({ score, passed: score >= 0.7, badge: score >= 0.7 ? mod.badge : null });
+  const attempt = upsertQuizAttempt({
+    userId: req.params.userId,
+    quizId: mod.id,
+    attemptNumber: requestedAttemptNumber,
+    score,
+    answers,
+    submittedAt: new Date().toISOString(),
+  });
+  res.json({
+    score: attempt.score,
+    passed: attempt.score >= 0.7,
+    badge: attempt.score >= 0.7 ? mod.badge : null,
+    attemptNumber: attempt.attemptNumber,
+  });
 });
 
 educationRouter.get("/:userId/progress", (req, res) => {
-  const p = progress.get(req.params.userId) ?? {};
+  const p = getQuizProgress(req.params.userId);
   const completed = MODULES.filter((m) => (p[m.id] ?? 0) >= 0.7);
   res.json({
     progress: p,
+    nextAttemptNumbers: getNextQuizAttemptNumbers(req.params.userId),
     badges: completed.map((m) => m.badge),
     certificate: completed.length === MODULES.length ? { userId: req.params.userId, issuedAt: new Date().toISOString(), title: "Energy Literacy Certificate" } : null,
   });

@@ -5,8 +5,10 @@ import UsageChart, {
   formatTooltipLocal,
   hasTimeComponent,
   isMobileWidth,
+  isNarrowMobileWidth,
   computeXAxisTickInterval,
   MOBILE_BREAKPOINT_PX,
+  NARROW_MOBILE_BREAKPOINT_PX,
 } from "@/components/UsageChart";
 
 // recharts uses ResizeObserver internally — polyfill for jsdom
@@ -160,6 +162,13 @@ describe("UsageChart", () => {
     });
   });
 
+  describe("isNarrowMobileWidth", () => {
+    it("uses compact axis spacing only below 375px", () => {
+      expect(isNarrowMobileWidth(NARROW_MOBILE_BREAKPOINT_PX - 1)).toBe(true);
+      expect(isNarrowMobileWidth(NARROW_MOBILE_BREAKPOINT_PX)).toBe(false);
+    });
+  });
+
   describe("computeXAxisTickInterval", () => {
     it("shows every tick on desktop regardless of dataset size", () => {
       expect(computeXAxisTickInterval(30, false)).toBe(0);
@@ -172,6 +181,10 @@ describe("UsageChart", () => {
 
     it("shows every tick on mobile when the dataset already has few points", () => {
       expect(computeXAxisTickInterval(3, true)).toBe(0);
+    });
+
+    it("thins hourly ticks to about three labels on compact phones", () => {
+      expect(computeXAxisTickInterval(24, true, 3)).toBe(7);
     });
   });
 

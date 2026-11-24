@@ -300,7 +300,9 @@ app.use("/api/competitions", competitionsRouter);
 app.use("/api/challenges", challengesRouter);
 startChallengeScheduler();
 // #1060: disaster recovery automation
-app.use("/api/dr", createDisasterRecoveryRouter());
+const disasterRecoveryRouter = createDisasterRecoveryRouter();
+app.use("/api/dr", disasterRecoveryRouter);
+app.use("/api/disaster-recovery", disasterRecoveryRouter);
 app.use("/api/communities", communitiesRouter);
 // #968: Customer support ticketing
 app.use("/api/tickets", writeLimiter, supportTicketsRouter);
@@ -524,4 +526,3 @@ app.use("/api/nudges", nudgesRouter);
 // #1068: Energy Commons Management
 import { commonsRouter } from "./routes/commons.js";
 app.use("/api/commons", writeLimiter, commonsRouter);
-

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Navbar from "@/components/Navbar";
 import { useWalletStore } from "@/store/walletStore";
 
@@ -21,6 +21,7 @@ export default function LearnPage() {
   const [lang, setLang] = useState<Lang>("en");
   const [modules, setModules] = useState<Module[]>([]);
   const [answers, setAnswers] = useState<Record<string, number[]>>({});
+  const attemptNumbers = useRef<Record<string, number>>({});
   const [badges, setBadges] = useState<string[]>([]);
   const [certificate, setCertificate] = useState<{ issuedAt: string } | null>(null);
   const [kw, setKw] = useState(1);
@@ -30,6 +31,7 @@ export default function LearnPage() {
     fetch(`${API}/api/education/${userId}/progress`).then((r) => r.json()).then((d) => {
       setBadges(d.badges);
       setCertificate(d.certificate);
+      attemptNumbers.current = d.nextAttemptNumbers ?? {};
     });
 
   useEffect(() => {
@@ -38,12 +40,16 @@ export default function LearnPage() {
   }, [userId]);
 
   const submit = async (id: string) => {
-    await fetch(`${API}/api/education/${userId}/${id}/submit`, {
+    const attemptNumber = attemptNumbers.current[id] ?? 1;
+    const response = await fetch(`${API}/api/education/${userId}/${id}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ answers: answers[id] ?? [] }),
+      body: JSON.stringify({ answers: answers[id] ?? [], attempt_number: attemptNumber }),
     });
-    loadProgress();
+    if (!response.ok) return;
+    const result = await response.json();
+    attemptNumbers.current[id] = Math.max(attemptNumber, result.attemptNumber ?? attemptNumber) + 1;
+    await loadProgress();
   };
 
   return (

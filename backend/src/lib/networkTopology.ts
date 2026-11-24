@@ -189,6 +189,17 @@ export function updateNodeStatus(id: string, status: NodeStatus): TopologyNode |
   return updated;
 }
 
+/** Reassign a meter to another transformer; links are rebuilt from this parent on every graph read. */
+export function updateNodeParent(id: string, parentId: string): TopologyNode | undefined {
+  seedDefaultTopology();
+  const existing = topologyNodes.get(id);
+  const parent = topologyNodes.get(parentId);
+  if (!existing || existing.type !== "meter" || !parent || parent.type !== "transformer") return undefined;
+  const updated: TopologyNode = { ...existing, parentId };
+  topologyNodes.set(id, updated);
+  return updated;
+}
+
 export function generateNetworkTopology(filterStatus?: NodeStatus): NetworkTopologyGraph {
   seedDefaultTopology();
   const allNodes = Array.from(topologyNodes.values());
