@@ -48,10 +48,15 @@ function safeEq(a: string, b: string): boolean {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
-/** Verifies a TOTP code allowing ±1 step of clock drift. */
-export function verifyTotp(secret: string, code: string, time = Date.now()): boolean {
+/** Accepted clock-drift window in 30s steps on either side (#1120). */
+export const TOTP_WINDOW = 1;
+
+/** Verifies a TOTP code allowing ±TOTP_WINDOW steps of clock drift. */
+export function verifyTotp(secret: string, code: string, time = Date.now(), window = TOTP_WINDOW): boolean {
   if (!/^\d{6}$/.test(code)) return false;
-  return [-1, 0, 1].some((w) => safeEq(totp(secret, time + w * 30_000), code));
+  let ok = false;
+  for (let w = -window; w <= window; w++) ok = safeEq(totp(secret, time + w * 30_000), code) || ok;
+  return ok;
 }
 
 export function otpauthUrl(secret: string, account: string, issuer = "SolarGrid"): string {

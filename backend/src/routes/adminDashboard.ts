@@ -25,6 +25,7 @@ adminDashboardRouter.use(requireAdminKey);
 adminDashboardRouter.get("/stats", (req: Request, res: Response) => {
   const tenantId = typeof req.query.tenant_id === "string" ? req.query.tenant_id.trim() : "";
   if (!tenantId) return res.status(400).json({ error: "tenant_id is required" });
+  // Served by idx_devices_tenant_type_status, avoiding full scans for large tenants (#1119).
   res.json({ tenantId, meters: getTenantMeterStats(tenantId) });
 });
 

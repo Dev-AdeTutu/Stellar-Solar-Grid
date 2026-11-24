@@ -280,19 +280,25 @@ carbonCreditsRouter.get(
   }),
 );
 
+export type CarbonLedgerSettler = (creditId: string, actor: string) => Promise<void>;
+let ledgerSettler: CarbonLedgerSettler = async () => {};
+/** Configure the on-chain retirement call; failures roll back the DB retirement. */
+export function setCarbonLedgerSettler(fn: CarbonLedgerSettler): void {
+  ledgerSettler = fn;
+}
+
 carbonCreditsRouter.post(
   "/:id/retire",
   asyncHandler(async (req: Request, res: Response) => {
     const { actor } = req.body as { actor?: string };
     if (!actor) return res.status(400).json({ error: "actor is required" });
     try {
-      const credit = await retireCreditWithLedger(req.params.id, actor, async () => {
-        // Ledger settlement hook. Integrate with on-chain retirement when configured.
-      });
+      // Local retirement is rolled back if on-chain settlement throws (#1118).
+      const credit = await retireCreditWithLedger(req.params.id, actor, () => ledgerSettler(req.params.id, actor));
       res.json(credit);
     } catch (err: any) {
-      const status = err.code === "NOT_FOUND" ? 404 : err.code === "CONFLICT" ? 409 : 400;
-      res.status(status).json({ error: err.message });
+      const status = err.code === "NOT_FOUND" ? 404 : err.code === "CONFLICT" ? 409 : err.code ? 400 : 502;
+      res.status(status).json({ error: err.message, rolledBack: status === 502 });
     }
   }),
 );
