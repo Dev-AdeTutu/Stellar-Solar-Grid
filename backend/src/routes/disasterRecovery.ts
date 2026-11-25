@@ -1,5 +1,6 @@
 /**
- * Disaster recovery automation (#1060). All endpoints require X-Admin-Key.
+ * Disaster recovery automation (#1060). Management endpoints require X-Admin-Key;
+ * the dedicated drill endpoint accepts admin or ops roles.
  *
  *   GET  /api/dr/status       — active site, replication lag, RPO/RTO targets
  *   POST /api/dr/replicate    — run a replication cycle now
@@ -8,12 +9,26 @@
  *   GET  /api/dr/history      — previous failovers / drills
  */
 import { Router } from "express";
-import { requireAdminKey } from "../middleware/adminAuth.js";
+import { requireAdminKey, requireAdminOrOps } from "../middleware/adminAuth.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { DisasterRecovery, RPO_MS, RTO_MS, createDefaultAdapter } from "../lib/disasterRecovery.js";
 
 export function createDisasterRecoveryRouter(dr = new DisasterRecovery(createDefaultAdapter())): Router {
   const router = Router();
+
+  router.post(
+    "/drill",
+    requireAdminOrOps,
+    asyncHandler(async (_req, res) => {
+      try {
+        const result = await dr.failover({ drill: true });
+        res.status(result.ok ? 200 : 502).json(result);
+      } catch (err) {
+        res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    }),
+  );
+
   router.use(requireAdminKey);
 
   router.get(

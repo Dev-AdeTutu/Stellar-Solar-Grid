@@ -1,8 +1,10 @@
 import { Router, Request, Response } from "express";
+import { requireAdminOrOps } from "../middleware/adminAuth.js";
 import {
   generateNetworkTopology,
   getHierarchyTree,
   getTopologyNode,
+  updateNodeParent,
   updateNodeStatus,
   upsertTopologyNode,
   NodeStatus,
@@ -68,4 +70,24 @@ networkTopologyRouter.patch("/topology/nodes/:id/status", (req: Request, res: Re
     return;
   }
   res.json(updated);
+});
+
+networkTopologyRouter.patch("/topology/nodes/:id/parent", requireAdminOrOps, (req: Request, res: Response) => {
+  const node = getTopologyNode(req.params.id);
+  if (!node) {
+    res.status(404).json({ error: "Topology node not found" });
+    return;
+  }
+  const { parentId } = req.body ?? {};
+  const parent = typeof parentId === "string" ? getTopologyNode(parentId) : undefined;
+  if (node.type !== "meter" || !parent || parent.type !== "transformer") {
+    res.status(400).json({ error: "A meter must be assigned to an existing transformer" });
+    return;
+  }
+  const updated = updateNodeParent(node.id, parent.id);
+  if (!updated) {
+    res.status(400).json({ error: "Unable to reassign meter" });
+    return;
+  }
+  res.json({ node: updated, graph: generateNetworkTopology() });
 });

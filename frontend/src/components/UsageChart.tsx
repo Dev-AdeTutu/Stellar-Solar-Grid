@@ -33,21 +33,27 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Matches the "< 768px" mobile viewport described in issue #760. */
 export const MOBILE_BREAKPOINT_PX = 768;
+/** Compact phones need fewer rotated labels to keep hourly ticks readable. */
+export const NARROW_MOBILE_BREAKPOINT_PX = 375;
 
 /** True when `width` is narrower than the mobile breakpoint. */
 export function isMobileWidth(width: number): boolean {
   return width < MOBILE_BREAKPOINT_PX;
 }
 
+export function isNarrowMobileWidth(width: number): boolean {
+  return width < NARROW_MOBILE_BREAKPOINT_PX;
+}
+
 /**
  * How many x-axis ticks recharts should skip between labels. On mobile this
- * thins a dataset down to ~5 visible labels so rotated text doesn't overlap;
+ * thins a dataset down to a readable number of visible labels;
  * on desktop every tick is shown. The underlying data series is unaffected —
  * only which x-axis labels are drawn (closes #760).
  */
-export function computeXAxisTickInterval(dataLength: number, isMobile: boolean): number {
+export function computeXAxisTickInterval(dataLength: number, isMobile: boolean, maxVisibleLabels = 5): number {
   if (!isMobile) return 0;
-  return Math.max(0, Math.ceil(dataLength / 5) - 1);
+  return Math.max(0, Math.ceil(dataLength / Math.max(1, maxVisibleLabels)) - 1);
 }
 
 /**
@@ -55,21 +61,19 @@ export function computeXAxisTickInterval(dataLength: number, isMobile: boolean):
  * window.innerWidth + a resize listener rather than matchMedia so it works
  * without extra polyfills in the jsdom test environment (closes #760).
  */
-function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(
-    () => typeof window !== "undefined" && isMobileWidth(window.innerWidth),
-  );
+function useViewportWidth(): number {
+  const [width, setWidth] = useState(() => typeof window === "undefined" ? 1024 : window.innerWidth);
 
   useEffect(() => {
     function handleResize() {
-      setIsMobile(isMobileWidth(window.innerWidth));
+      setWidth(window.innerWidth);
     }
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  return isMobile;
+  return width;
 }
 
 /** True if `value` carries a time-of-day component. */
@@ -278,14 +282,16 @@ export function UsageChart({ data: rawData, loading = false, meterId }: UsageCha
   const [customStart, setCustomStart] = useState("");
   const [customEnd, setCustomEnd] = useState("");
   const isEmpty = !loading && data.length === 0;
-  const isMobile = useIsMobile();
+  const viewportWidth = useViewportWidth();
+  const isMobile = isMobileWidth(viewportWidth);
+  const isNarrowMobile = isNarrowMobileWidth(viewportWidth);
 
   const comparisonData = useMemo(
     () => buildComparisonData(data, period, customStart, customEnd),
     [data, period, customStart, customEnd],
   );
   const chartData = compareEnabled ? comparisonData : data;
-  const xAxisTickInterval = computeXAxisTickInterval(chartData.length, isMobile);
+  const xAxisTickInterval = computeXAxisTickInterval(chartData.length, isMobile, isNarrowMobile ? 3 : 5);
   const currentTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + point.units, 0) : data.reduce((sum, point) => sum + point.units, 0);
   const previousTotal = compareEnabled ? comparisonData.reduce((sum, point) => sum + (point.previousUnits ?? 0), 0) : 0;
   const differencePercent = previousTotal > 0 ? ((currentTotal - previousTotal) / previousTotal) * 100 : null;

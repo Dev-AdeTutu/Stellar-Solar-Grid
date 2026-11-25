@@ -64,6 +64,23 @@ function hasValidSessionToken(req: Request): boolean {
   }
 }
 
+function getSessionRole(req: Request): string | null {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith('Bearer ') || !ADMIN_API_KEY) return null;
+  const jwtSecret = process.env.JWT_SECRET ?? ADMIN_API_KEY;
+  try {
+    const payload = jwt.verify(auth.slice(7), jwtSecret, {
+      algorithms: ['HS256'],
+      ignoreExpiration: false,
+    });
+    if (typeof payload !== 'object' || typeof payload.role !== 'string') return null;
+    if (payload.role === 'admin' && hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin') && payload.mfa !== true) return null;
+    return payload.role;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * requireAdminKey — verifies the request carries a valid admin credential.
  *
@@ -89,4 +106,20 @@ export function requireAdminKey(req: Request, res: Response, next: NextFunction)
 
   auditLog(buildAuditEntry(req));
   return res.status(401).json({ error: 'Unauthorized', code: hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin') ? 'MFA_REQUIRED' : 'UNAUTHORIZED' });
+}
+
+/** Permit trusted admin/ops session roles or the configured admin key. */
+export function requireAdminOrOps(req: Request, res: Response, next: NextFunction) {
+  const userRole = (req as Request & { user?: { role?: unknown } }).user?.role;
+  const provided = req.headers['x-admin-key'];
+  const hasAdminKey = Boolean(ADMIN_API_KEY && provided === ADMIN_API_KEY && !hasTwoFactor(process.env.ADMIN_ID ?? 'default-admin'));
+  const role = hasAdminKey ? 'admin' : typeof userRole === 'string' ? userRole : getSessionRole(req);
+
+  if (role === 'admin' || role === 'ops') {
+    auditLog(buildAuditEntry(req));
+    return next();
+  }
+  auditLog(buildAuditEntry(req));
+  if (!role) return res.status(401).json({ error: 'Unauthorized', code: 'UNAUTHORIZED' });
+  return res.status(403).json({ error: 'Admin or ops role required', code: 'FORBIDDEN' });
 }
